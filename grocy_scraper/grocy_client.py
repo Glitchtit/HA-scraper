@@ -5,6 +5,7 @@ Provides the minimal surface needed to:
 * Look up whether a product with a given barcode already exists.
 * Create a new product.
 * Add (or update) a barcode entry for a product.
+* Upload a product picture.
 
 Grocy API reference: https://demo.grocy.info/api/
 Authentication is done via the ``GROCY-API-KEY`` HTTP header.
@@ -12,6 +13,7 @@ Authentication is done via the ``GROCY-API-KEY`` HTTP header.
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Optional
 from urllib.parse import urljoin
@@ -19,6 +21,23 @@ from urllib.parse import urljoin
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+def _response_error_detail(response: requests.Response | None) -> str:
+    """Extract a human-readable error detail from a Grocy error response."""
+    if response is None:
+        return ""
+    try:
+        data = response.json()
+        detail = data.get("error_message") or data.get("error_detail") or ""
+        if detail:
+            return f" – {detail}"
+    except (ValueError, AttributeError):
+        pass
+    text = response.text.strip()
+    if text:
+        return f" – {text[:300]}"
+    return ""
 
 
 class GrocyAPIError(Exception):
@@ -102,7 +121,11 @@ class GrocyClient:
         quantity_unit_id:
             Grocy quantity unit ID.  If ``None`` the default unit is used.
         """
-        payload: dict = {"name": name}
+        payload: dict = {
+            "name": name,
+            "treat_opened_as_out_of_stock": 0,
+            "default_best_before_days": 60,
+        }
         if description:
             payload["description"] = description
         if location_id is not None:
@@ -116,6 +139,11 @@ class GrocyClient:
             resp = self._session.post(url, json=payload, timeout=10)
             resp.raise_for_status()
             return int(resp.json()["created_object_id"])
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to create product '{name}': {exc}{body}"
+            ) from exc
         except (requests.RequestException, KeyError, ValueError) as exc:
             raise GrocyAPIError(f"Failed to create product '{name}': {exc}") from exc
 
@@ -151,9 +179,71 @@ class GrocyClient:
         try:
             resp = self._session.post(url, json=payload, timeout=10)
             resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to add barcode {barcode} to product {product_id}: {exc}{body}"
+            ) from exc
         except requests.RequestException as exc:
             raise GrocyAPIError(
                 f"Failed to add barcode {barcode} to product {product_id}: {exc}"
+            ) from exc
+
+    def upload_product_image(
+        self,
+        product_id: int,
+        filename: str,
+        image_bytes: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """Upload an image for *product_id* and set it as the product picture.
+
+        Parameters
+        ----------
+        product_id:
+            The Grocy internal product ID.
+        filename:
+            Filename to store in Grocy (e.g. ``"6410405082657.jpg"``).
+        image_bytes:
+            Raw image file contents.
+        content_type:
+            MIME type of the image (e.g. ``"image/jpeg"``).
+        """
+        encoded_name = base64.b64encode(filename.encode()).decode()
+        url = self._url(f"/api/files/productpictures/{encoded_name}")
+        try:
+            resp = self._session.put(
+                url,
+                data=image_bytes,
+                headers={"Content-Type": content_type},
+                timeout=30,
+            )
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to upload image for product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to upload image for product {product_id}: {exc}"
+            ) from exc
+
+        # Link the uploaded file to the product.
+        obj_url = self._url(f"/api/objects/products/{product_id}")
+        try:
+            resp = self._session.put(
+                obj_url, json={"picture_file_name": filename}, timeout=10
+            )
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to set picture for product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to set picture for product {product_id}: {exc}"
             ) from exc
 
     def get_all_products(self) -> list[dict]:
