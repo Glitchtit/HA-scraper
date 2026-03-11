@@ -17,14 +17,14 @@ from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 
 class TestParseArgs:
     def test_query_mode(self):
-        args = parse_args(["--store", "P048", "--query", "maito",
+        args = parse_args(["--store", "N110", "--query", "maito",
                            "--grocy-url", "https://grocy.example.com",
                            "--grocy-key", "KEY"])
         assert args.query == "maito"
         assert not args.browse
 
     def test_browse_mode(self):
-        args = parse_args(["--store", "P048", "--browse",
+        args = parse_args(["--store", "N110", "--browse",
                            "--grocy-url", "https://grocy.example.com",
                            "--grocy-key", "KEY"])
         assert args.browse
@@ -32,17 +32,27 @@ class TestParseArgs:
 
     def test_mutually_exclusive(self):
         with pytest.raises(SystemExit):
-            parse_args(["--store", "P048", "--browse", "--query", "x"])
+            parse_args(["--store", "N110", "--browse", "--query", "x"])
 
     def test_dry_run_flag(self):
-        args = parse_args(["--store", "P048", "--browse", "--dry-run"])
+        args = parse_args(["--store", "N110", "--browse", "--dry-run"])
         assert args.dry_run
 
     def test_max_products(self):
-        args = parse_args(["--store", "P048", "--browse",
+        args = parse_args(["--store", "N110", "--browse",
                            "--grocy-url", "u", "--grocy-key", "k",
                            "--max-products", "10"])
         assert args.max_products == 10
+
+    def test_graphql_default(self):
+        """use_graphql should default to True."""
+        args = parse_args(["--store", "N110", "--browse", "--dry-run"])
+        assert args.use_graphql is True
+
+    def test_no_graphql_flag(self):
+        """--no-graphql should set use_graphql=False."""
+        args = parse_args(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
+        assert args.use_graphql is False
 
 
 # ---------------------------------------------------------------------------
@@ -134,12 +144,32 @@ class TestMainDryRun:
         with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter(products)
-            rc = main(["--store", "P048", "--browse", "--dry-run"])
+            rc = main(["--store", "N110", "--browse", "--dry-run"])
 
         assert rc == 0
         out = capsys.readouterr().out
         assert "Maito" in out
         assert "111" in out
+
+    def test_dry_run_passes_use_graphql_true(self, capsys):
+        """By default, KRuokaScraper is constructed with use_graphql=True."""
+        with patch("main.KRuokaScraper") as MockScraper:
+            instance = MockScraper.return_value
+            instance.browse.return_value = iter([])
+            main(["--store", "N110", "--browse", "--dry-run"])
+
+        _, kwargs = MockScraper.call_args
+        assert kwargs.get("use_graphql", True) is True
+
+    def test_no_graphql_flag_passes_false(self, capsys):
+        """--no-graphql passes use_graphql=False to KRuokaScraper."""
+        with patch("main.KRuokaScraper") as MockScraper:
+            instance = MockScraper.return_value
+            instance.browse.return_value = iter([])
+            main(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
+
+        _, kwargs = MockScraper.call_args
+        assert kwargs.get("use_graphql") is False
 
 
 # ---------------------------------------------------------------------------
@@ -148,9 +178,9 @@ class TestMainDryRun:
 
 class TestMainMissingGrocy:
     def test_missing_grocy_url(self, capsys):
-        rc = main(["--store", "P048", "--browse", "--grocy-key", "K"])
+        rc = main(["--store", "N110", "--browse", "--grocy-key", "K"])
         assert rc == 1
 
     def test_missing_grocy_key(self, capsys):
-        rc = main(["--store", "P048", "--browse", "--grocy-url", "https://g.example.com"])
+        rc = main(["--store", "N110", "--browse", "--grocy-url", "https://g.example.com"])
         assert rc == 1

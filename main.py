@@ -2,19 +2,23 @@
 
 Usage examples
 --------------
-Search for a specific product::
+Search for a specific product (GraphQL backend, no setup needed)::
 
-    python main.py --store P048 --query "maito" \\
+    python main.py --store N110 --query "maito" \\
         --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
 
-Browse the full catalogue (may be very large)::
+Browse the full catalogue (GraphQL backend, no setup needed)::
 
-    python main.py --store P048 --browse \\
+    python main.py --store N110 --browse \\
         --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
 
 Dry-run (scrape only, do not write to Grocy)::
 
-    python main.py --store P048 --query "maito" --dry-run
+    python main.py --store N110 --query "maito" --dry-run
+
+Force the kr-api fallback backend (requires Cloudflare bypass)::
+
+    python main.py --store N110 --query "maito" --no-graphql --dry-run
 
 Configuration can also be provided via environment variables or a ``.env``
 file (see ``.env.example``).
@@ -71,7 +75,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("KRUOKA_STORE_ID", ""),
         metavar="STORE_ID",
         help=(
-            "K-group store ID (e.g. P048).  "
+            "K-group store ID (e.g. N110 = K-Supermarket Helsinki, "
+            "N137 = K-Citymarket Tammisto).  "
             "Also read from the KRUOKA_STORE_ID environment variable."
         ),
     )
@@ -134,6 +139,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="skip_existing",
         action="store_false",
         help="Re-add products even if their EAN is already in Grocy.",
+    )
+    parser.add_argument(
+        "--no-graphql",
+        dest="use_graphql",
+        action="store_false",
+        default=True,
+        help=(
+            "Use the kr-api REST backend (www.k-ruoka.fi/kr-api) instead of "
+            "the default GraphQL backend (mobile.k-ruoka.fi/graphql).  "
+            "The kr-api backend requires a Cloudflare bypass; "
+            "see FLARESOLVERR_URL / CF_CLEARANCE in .env.example."
+        ),
     )
     parser.add_argument(
         "--verbose",
@@ -261,11 +278,19 @@ def _setup_grocy(args: argparse.Namespace) -> tuple[GrocyClient | None, set[str]
 
 def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
     """Return an iterator of products from the k-ruoka.fi scraper."""
-    scraper = KRuokaScraper(store_id=args.store)
+    scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
     if args.query:
-        logger.info("Searching k-ruoka.fi (store=%s) for '%s' …", args.store, args.query)
+        backend = "GraphQL" if args.use_graphql else "kr-api"
+        logger.info(
+            "Searching k-ruoka.fi (store=%s, backend=%s) for '%s' …",
+            args.store, backend, args.query,
+        )
         return scraper.search(args.query, max_products=args.max_products)
-    logger.info("Browsing k-ruoka.fi catalogue (store=%s) …", args.store)
+    backend = "GraphQL" if args.use_graphql else "kr-api"
+    logger.info(
+        "Browsing k-ruoka.fi catalogue (store=%s, backend=%s) …",
+        args.store, backend,
+    )
     return scraper.browse(max_products=args.max_products)
 
 
