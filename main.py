@@ -96,6 +96,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "This is a destructive operation and cannot be undone."
         ),
     )
+    scrape_group.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help=(
+            "Update all existing Grocy products with names and images from "
+            "K-Ruoka (or S-kaupat as fallback).  Products are matched by "
+            "their barcode.  Requires --store."
+        ),
+    )
 
     parser.add_argument(
         "--store",
@@ -602,17 +612,18 @@ def _validate_args(args: argparse.Namespace) -> int:
     scrape_mode = bool(args.query or args.browse)
     discover_mode = args.discover
     delete_all_mode = args.delete_all
+    update_mode = args.update
 
     # At least one operational mode must be selected.
-    if not ai_mode and not scrape_mode and not discover_mode and not delete_all_mode:
+    if not ai_mode and not scrape_mode and not discover_mode and not delete_all_mode and not update_mode:
         logger.error(
             "Specify a scraping mode (--query / --browse), an AI analysis mode "
-            "(--sort / --date), --discover, or --delete-all."
+            "(--sort / --date), --discover, --update, or --delete-all."
         )
         return 1
 
-    # Store is required when scraping or discovering.
-    if scrape_mode or discover_mode:
+    # Store is required when scraping, discovering, or updating.
+    if scrape_mode or discover_mode or update_mode:
         if not args.store:
             logger.error(
                 "Store ID is required.  Use --store or set the KRUOKA_STORE_ID "
@@ -620,7 +631,7 @@ def _validate_args(args: argparse.Namespace) -> int:
             )
             return 1
 
-    if ai_mode or (scrape_mode and not args.dry_run) or discover_mode or delete_all_mode:
+    if ai_mode or (scrape_mode and not args.dry_run) or discover_mode or delete_all_mode or update_mode:
         # Grocy connection is required for AI mode, non-dry-run scraping, and discover.
         if not args.grocy_url:
             logger.error(
@@ -939,7 +950,125 @@ def _delete_all_products(grocy: GrocyClient) -> int:
     return 0 if errors == 0 else 1
 
 
-def main(argv: list[str] | None = None) -> int:
+def _update_products(args: argparse.Namespace) -> int:
+    """Update existing Grocy products with names and images from K-Ruoka / S-kaupat.
+
+    For each product in Grocy that has at least one barcode, search K-Ruoka
+    by EAN.  If not found, try S-kaupat.  When a match is found, update the
+    product name (and optionally description) and upload the product image.
+
+    Returns 0 on success, 1 if any errors occurred.
+    """
+    grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+    scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
+
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Failed to fetch products from Grocy: %s", exc)
+        return 1
+
+    try:
+        barcodes = grocy.get_all_barcodes()
+    except GrocyAPIError as exc:
+        logger.error("Failed to fetch barcodes from Grocy: %s", exc)
+        return 1
+
+    # Build product_id → list of EANs mapping.
+    pid_to_eans: dict[int, list[str]] = {}
+    for entry in barcodes:
+        pid = entry.get("product_id")
+        ean = entry.get("barcode")
+        if pid is not None and ean:
+            pid_to_eans.setdefault(int(pid), []).append(str(ean))
+
+    if not products:
+        logger.info("No products in Grocy – nothing to update.")
+        return 0
+
+    logger.info("Updating %d product(s) from K-Ruoka / S-kaupat …", len(products))
+    updated = skipped = errors = 0
+    max_products = getattr(args, "max_products", None)
+
+    for grocy_product in products:
+        if max_products is not None and updated >= max_products:
+            logger.info("Reached --max-products limit (%d).", max_products)
+            break
+
+        pid = int(grocy_product["id"])
+        current_name = grocy_product.get("name", "?")
+        eans = pid_to_eans.get(pid, [])
+
+        if not eans:
+            logger.debug("  Product %d ('%s') has no barcodes – skipping.", pid, current_name)
+            skipped += 1
+            continue
+
+        # Try each EAN until we find a match.
+        found: Product | None = None
+        matched_ean = ""
+        for ean in eans:
+            # K-Ruoka first.
+            for p in scraper.search(ean, max_products=10):
+                if p.ean == ean:
+                    found = p
+                    matched_ean = ean
+                    break
+            if found:
+                break
+
+            # S-kaupat fallback.
+            try:
+                sk = skaupat_lookup(ean)
+                if sk is not None:
+                    found = Product(
+                        name=sk.name,
+                        ean=sk.ean,
+                        description=sk.description,
+                        image_url=sk.image_url,
+                    )
+                    matched_ean = ean
+                    break
+            except SKaupatError as exc:
+                logger.debug("  S-kaupat lookup failed for %s: %s", ean, exc)
+
+        if found is None:
+            logger.debug("  Product %d ('%s') not found online – skipping.", pid, current_name)
+            skipped += 1
+            continue
+
+        # Update product in Grocy.
+        update_fields: dict = {}
+        if found.name and found.name != current_name:
+            update_fields["name"] = found.name
+        if found.description:
+            update_fields["description"] = found.description
+
+        if update_fields:
+            try:
+                grocy.update_product(pid, **update_fields)
+                new_name = update_fields.get("name", current_name)
+                logger.info(
+                    "  Updated product %d: '%s' → '%s'.", pid, current_name, new_name
+                )
+            except GrocyAPIError as exc:
+                logger.error("  Failed to update product %d ('%s'): %s", pid, current_name, exc)
+                errors += 1
+                continue
+        else:
+            logger.debug("  Product %d ('%s') already up to date.", pid, current_name)
+
+        # Upload image if available.
+        if found.image_url and args.upload_images:
+            _upload_product_image(found, grocy, pid)
+
+        updated += 1
+
+    logger.info(
+        "--update complete: updated: %d  skipped: %d  errors: %d",
+        updated, skipped, errors,
+    )
+    return 0 if errors == 0 else 1
     args = parse_args(argv)
 
     if args.verbose:
@@ -968,6 +1097,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.delete_all:
         grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
         return _delete_all_products(grocy)
+
+    # Update mode: refresh product names/images from online sources.
+    if args.update:
+        return _update_products(args)
 
     grocy, known_barcodes = _setup_grocy(args)
     return _process_products(args, grocy, known_barcodes)
