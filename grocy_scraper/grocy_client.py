@@ -289,6 +289,33 @@ class GrocyClient:
         except requests.RequestException as exc:
             raise GrocyAPIError(f"Failed to update product {product_id}: {exc}") from exc
 
+    def add_stock(self, product_id: int, amount: float = 1.0) -> None:
+        """Add *amount* units of *product_id* to Grocy stock.
+
+        Uses the ``/api/stock/products/{id}/add`` endpoint.
+
+        Parameters
+        ----------
+        product_id:
+            The Grocy internal product ID.
+        amount:
+            Number of units to add (default 1.0).
+        """
+        url = self._url(f"/api/stock/products/{product_id}/add")
+        payload = {"amount": amount, "transaction_type": "purchase"}
+        try:
+            resp = self._session.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to add stock for product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to add stock for product {product_id}: {exc}"
+            ) from exc
+
     def get_all_barcodes(self) -> list[dict]:
         """Return a list of all product barcode entries in Grocy."""
         url = self._url("/api/objects/product_barcodes")

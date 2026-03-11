@@ -15,6 +15,7 @@ A Python command-line tool that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/ka
 - Extracts product name and EAN/barcode for each item
 - Creates products in Grocy and attaches their EAN barcodes
 - Skips products whose barcode is already registered in Grocy (configurable)
+- **Barcode Buddy integration** (`--discover`): fetches unknown barcodes from [Barcode Buddy](https://github.com/Forceu/barcodebuddy), searches K-Ruoka for matching products, adds them to Grocy, stocks them, and removes from the BB unknown list
 - Supports `--dry-run` mode: scrape only, do not write to Grocy
 - Configuration via CLI flags *or* environment variables / `.env` file
 
@@ -26,6 +27,7 @@ A Python command-line tool that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/ka
 - A running Grocy instance with a valid API key
 - The K-group store ID for the store you want to scrape (see [Finding your store ID](#finding-your-store-id))
 - **No Cloudflare bypass needed** when using the default GraphQL backend
+- *(Optional)* A [Barcode Buddy](https://github.com/Forceu/barcodebuddy) instance for the `--discover` feature
 
 ## Installation
 
@@ -111,6 +113,8 @@ GROCY_BASE_URL=https://grocy.example.com
 GROCY_API_KEY=your_api_key_here
 GEMINI_API=your_gemini_api_key_here
 GEMINI_MODEL=gemini-1.5-flash
+BARCODEBDY_URL=https://bbuddy.example.com
+BARCODEBDY_API=your_bbuddy_api_key_here
 ```
 
 ---
@@ -184,13 +188,34 @@ python main.py --store N110 --browse --no-graphql \
     --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
 ```
 
+### Discover products from Barcode Buddy (--discover)
+
+Fetches unknown barcodes from your [Barcode Buddy](https://github.com/Forceu/barcodebuddy)
+instance, searches K-Ruoka for matching products by EAN, creates them in Grocy,
+adds to stock, and removes them from the Barcode Buddy unknown list:
+
+```bash
+python main.py --discover --store N110 \
+    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
+    --location-id 2 --quantity-unit-id 2 \
+    --bbuddy-url https://bbuddy.example.com --bbuddy-key MY_BBUDDY_KEY
+```
+
+Or configure via environment variables / `.env`:
+
+```dotenv
+BARCODEBDY_URL=https://bbuddy.example.com
+BARCODEBDY_API=your_bbuddy_api_key_here
+```
+
 ### All options
 
 ```
-usage: main.py [-h] (--query TERM | --browse | --sort | --date)
+usage: main.py [-h] (--query TERM | --browse | --discover | --sort | --date)
                [--store STORE_ID] [--max-products N]
                [--grocy-url URL] [--grocy-key KEY]
                [--location-id ID] [--quantity-unit-id ID]
+               [--bbuddy-url URL] [--bbuddy-key KEY]
                [--gemini-api-key KEY]
                [--dry-run] [--skip-existing | --no-skip-existing]
                [--upload-images] [--no-graphql] [--verbose]
@@ -198,6 +223,8 @@ usage: main.py [-h] (--query TERM | --browse | --sort | --date)
 options:
   --query TERM          Search for products matching this term.
   --browse              Browse the full product catalogue.
+  --discover            Fetch unknown barcodes from Barcode Buddy, search
+                        K-Ruoka, add to Grocy, stock, and remove from BB.
   --store STORE_ID      K-group store ID (e.g. N110, N137).
                         Also read from KRUOKA_STORE_ID env var.
   --max-products N      Stop after scraping N products.
@@ -207,6 +234,10 @@ options:
                         Also read from GROCY_API_KEY env var.
   --location-id ID      Grocy location ID to assign to new products.
   --quantity-unit-id ID Grocy quantity unit ID to assign to new products.
+  --bbuddy-url URL      Base URL of the Barcode Buddy instance.
+                        Also read from BARCODEBDY_URL env var.
+  --bbuddy-key KEY      Barcode Buddy API key.
+                        Also read from BARCODEBDY_API env var.
   --sort                Use Gemini AI to assign each product in the Grocy
                         database to the most appropriate available location.
   --date                Use Gemini AI to set default best-before days for
@@ -243,11 +274,13 @@ Common store IDs: `N110` (K-Supermarket Helsinki), `N137` (K-Citymarket Tammisto
 grocy_scraper/
 ├── grocy_scraper/
 │   ├── __init__.py
-│   ├── scraper.py        # k-ruoka.fi product scraper (GraphQL + kr-api backends)
-│   └── grocy_client.py   # Grocy REST API client
+│   ├── scraper.py              # k-ruoka.fi product scraper (GraphQL + kr-api backends)
+│   ├── grocy_client.py         # Grocy REST API client
+│   └── barcodebuddy_client.py  # Barcode Buddy client (for --discover)
 ├── tests/
 │   ├── test_scraper.py
 │   ├── test_grocy_client.py
+│   ├── test_barcodebuddy_client.py
 │   └── test_main.py
 ├── main.py               # CLI entry point
 ├── requirements.txt
@@ -274,6 +307,7 @@ The tool uses the following Grocy endpoints:
 | `GET`  | `/api/stock/products/by-barcode/{barcode}` | Check if a barcode already exists |
 | `POST` | `/api/objects/products` | Create a new product |
 | `POST` | `/api/objects/product_barcodes` | Add an EAN barcode to a product |
+| `POST` | `/api/stock/products/{id}/add` | Add units to stock (used by --discover) |
 | `GET`  | `/api/objects/products` | List all products |
 | `GET`  | `/api/objects/product_barcodes` | List all registered barcodes |
 

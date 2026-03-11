@@ -620,3 +620,240 @@ class TestMainAIMode:
             "--grocy-key", "KEY",
         ])
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# parse_args – --discover flag
+# ---------------------------------------------------------------------------
+
+class TestParseArgsDiscover:
+    def test_discover_flag(self):
+        args = parse_args([
+            "--discover",
+            "--store", "N110",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-key", "BBKEY",
+            "--location-id", "2",
+            "--quantity-unit-id", "2",
+        ])
+        assert args.discover is True
+        assert args.bbuddy_url == "https://bb.example.com"
+        assert args.bbuddy_key == "BBKEY"
+
+    def test_discover_mutually_exclusive_with_query(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--discover", "--query", "maito"])
+
+    def test_discover_mutually_exclusive_with_browse(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--discover", "--browse"])
+
+    def test_bbuddy_url_from_env(self, monkeypatch):
+        monkeypatch.setenv("BARCODEBDY_URL", "https://env-bb.example.com")
+        args = parse_args([
+            "--discover", "--store", "N110",
+            "--grocy-url", "u", "--grocy-key", "k",
+            "--bbuddy-key", "K",
+            "--location-id", "1", "--quantity-unit-id", "1",
+        ])
+        assert args.bbuddy_url == "https://env-bb.example.com"
+
+    def test_bbuddy_key_from_env(self, monkeypatch):
+        monkeypatch.setenv("BARCODEBDY_API", "env-bb-key")
+        args = parse_args([
+            "--discover", "--store", "N110",
+            "--grocy-url", "u", "--grocy-key", "k",
+            "--bbuddy-url", "https://bb.example.com",
+            "--location-id", "1", "--quantity-unit-id", "1",
+        ])
+        assert args.bbuddy_key == "env-bb-key"
+
+
+# ---------------------------------------------------------------------------
+# _validate_args – --discover mode
+# ---------------------------------------------------------------------------
+
+class TestValidateArgsDiscover:
+    def _base_discover_args(self, **overrides):
+        from argparse import Namespace
+        defaults = dict(
+            discover=True, query=None, browse=False,
+            sort=False, date=False,
+            store="N110",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="BBKEY",
+            location_id=2,
+            quantity_unit_id=2,
+            dry_run=False,
+            gemini_api_key="",
+        )
+        defaults.update(overrides)
+        return Namespace(**defaults)
+
+    def test_valid_discover_passes(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args()) == 0
+
+    def test_missing_store_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(store="")) == 1
+
+    def test_missing_grocy_url_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(grocy_url="")) == 1
+
+    def test_missing_grocy_key_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(grocy_key="")) == 1
+
+    def test_missing_bbuddy_url_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(bbuddy_url="")) == 1
+
+    def test_missing_bbuddy_key_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(bbuddy_key="")) == 1
+
+    def test_missing_location_id_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(location_id=None)) == 1
+
+    def test_missing_quantity_unit_id_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(quantity_unit_id=None)) == 1
+
+
+# ---------------------------------------------------------------------------
+# _discover_products
+# ---------------------------------------------------------------------------
+
+class TestDiscoverProducts:
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_no_unknowns_returns_0(self, MockBB, MockGrocy, MockScraper):
+        MockBB.return_value.get_unknown_barcodes.return_value = []
+        MockGrocy.return_value.get_all_barcodes.return_value = []
+
+        from main import _discover_products
+        from argparse import Namespace
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 0
+
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_found_product_creates_and_stocks(self, MockBB, MockGrocy, MockScraper):
+        from grocy_scraper.barcodebuddy_client import UnknownBarcode
+        from main import _discover_products
+        from argparse import Namespace
+
+        bb_instance = MockBB.return_value
+        bb_instance.get_unknown_barcodes.return_value = [
+            UnknownBarcode(id="42", barcode="6410405082657", amount="1"),
+        ]
+
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_barcodes.return_value = []
+        grocy_instance.get_product_by_barcode.side_effect = [
+            None,  # sync_product check
+            {"id": 99, "name": "Maito"},  # post-creation lookup
+        ]
+        grocy_instance.create_product.return_value = 99
+
+        scraper_instance = MockScraper.return_value
+        scraper_instance.search.return_value = iter([
+            Product(name="Pirkka kevytmaito 1l", ean="6410405082657"),
+        ])
+
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 0
+        grocy_instance.create_product.assert_called_once()
+        grocy_instance.add_stock.assert_called_once_with(99, amount=1.0)
+        bb_instance.delete_barcode.assert_called_once_with("42")
+
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_not_found_on_kruoka_skips(self, MockBB, MockGrocy, MockScraper):
+        from grocy_scraper.barcodebuddy_client import UnknownBarcode
+        from main import _discover_products
+        from argparse import Namespace
+
+        bb_instance = MockBB.return_value
+        bb_instance.get_unknown_barcodes.return_value = [
+            UnknownBarcode(id="42", barcode="0000000000000", amount="1"),
+        ]
+
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_barcodes.return_value = []
+
+        scraper_instance = MockScraper.return_value
+        scraper_instance.search.return_value = iter([])
+
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 0
+        grocy_instance.create_product.assert_not_called()
+        bb_instance.delete_barcode.assert_not_called()
+
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_bb_fetch_error_returns_1(self, MockBB, MockGrocy, MockScraper):
+        from grocy_scraper.barcodebuddy_client import BarcodeBuddyError
+        from main import _discover_products
+        from argparse import Namespace
+
+        MockGrocy.return_value.get_all_barcodes.return_value = []
+        MockBB.return_value.get_unknown_barcodes.side_effect = BarcodeBuddyError("fail")
+
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 1
