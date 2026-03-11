@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Fetch unknown barcodes from Barcode Buddy, search K-Ruoka for "
             "matching products, add them to Grocy, stock them, and remove "
             "from the Barcode Buddy unknown list.  "
-            "Requires --bbuddy-url and --bbuddy-key (or env vars)."
+            "Requires --bbuddy-url and --bbuddy-user/--bbuddy-password (or env vars)."
         ),
     )
 
@@ -161,8 +161,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("BARCODEBDY_API", ""),
         metavar="KEY",
         help=(
-            "Barcode Buddy API key.  "
+            "Barcode Buddy API key (for /api endpoints).  "
             "Also read from the BARCODEBDY_API environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--bbuddy-user",
+        default=os.environ.get("BARCODEBDY_USER", ""),
+        metavar="USER",
+        help=(
+            "Barcode Buddy web UI username.  "
+            "Also read from the BARCODEBDY_USER environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--bbuddy-password",
+        default=os.environ.get("BARCODEBDY_PASSWORD", ""),
+        metavar="PASS",
+        help=(
+            "Barcode Buddy web UI password.  "
+            "Also read from the BARCODEBDY_PASSWORD environment variable."
         ),
     )
 
@@ -631,10 +649,11 @@ def _validate_args(args: argparse.Namespace) -> int:
                 "Use --bbuddy-url or set the BARCODEBDY_URL environment variable."
             )
             return 1
-        if not args.bbuddy_key:
+        if not args.bbuddy_user or not args.bbuddy_password:
             logger.error(
-                "Barcode Buddy API key is required for --discover.  "
-                "Use --bbuddy-key or set the BARCODEBDY_API environment variable."
+                "Barcode Buddy username and password are required for --discover.  "
+                "Use --bbuddy-user / --bbuddy-password or set "
+                "BARCODEBDY_USER / BARCODEBDY_PASSWORD environment variables."
             )
             return 1
 
@@ -744,7 +763,10 @@ def _discover_products(args: argparse.Namespace) -> int:
     Returns 0 on success, 1 if any errors occurred.
     """
     bbuddy = BarcodeBuddyClient(
-        base_url=args.bbuddy_url, api_key=args.bbuddy_key
+        base_url=args.bbuddy_url,
+        api_key=args.bbuddy_key,
+        username=args.bbuddy_user,
+        password=args.bbuddy_password,
     )
     grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
     scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
