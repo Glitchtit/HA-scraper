@@ -256,6 +256,39 @@ class GrocyClient:
         except requests.RequestException as exc:
             raise GrocyAPIError(f"Failed to fetch products: {exc}") from exc
 
+    def get_locations(self) -> list[dict]:
+        """Return a list of all locations in the Grocy database."""
+        url = self._url("/api/objects/locations")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json() or []
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to fetch locations: {exc}") from exc
+
+    def update_product(self, product_id: int, **fields) -> None:
+        """Update fields on an existing product.
+
+        Parameters
+        ----------
+        product_id:
+            The Grocy internal product ID.
+        **fields:
+            Arbitrary product fields to update (e.g. ``location_id=2``,
+            ``default_best_before_days=14``).
+        """
+        url = self._url(f"/api/objects/products/{product_id}")
+        try:
+            resp = self._session.put(url, json=fields, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to update product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to update product {product_id}: {exc}") from exc
+
     def get_all_barcodes(self) -> list[dict]:
         """Return a list of all product barcode entries in Grocy."""
         url = self._url("/api/objects/product_barcodes")

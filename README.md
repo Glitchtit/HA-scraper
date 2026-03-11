@@ -109,6 +109,8 @@ cp .env.example .env
 KRUOKA_STORE_ID=N110
 GROCY_BASE_URL=https://grocy.example.com
 GROCY_API_KEY=your_api_key_here
+GEMINI_API=your_gemini_api_key_here
+GEMINI_MODEL=gemini-1.5-flash
 ```
 
 ---
@@ -142,6 +144,39 @@ python main.py --store N110 --browse --max-products 100 \
 python main.py --store N110 --query "juusto" --dry-run
 ```
 
+### AI: assign products to locations (--sort)
+
+Uses Gemini AI to read your Grocy product list and available locations, then
+sets each product's storage location to the most appropriate one (e.g. dairy →
+fridge, cleaning supplies → cleaning cabinet).  Requires a Gemini API key.
+
+```bash
+python main.py --sort \
+    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
+    --gemini-api-key MY_GEMINI_KEY
+```
+
+### AI: set default best-before days (--date)
+
+Uses Gemini AI to estimate typical best-before days for every product in your
+Grocy database and updates the `default_best_before_days` field accordingly.
+
+```bash
+python main.py --date \
+    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
+    --gemini-api-key MY_GEMINI_KEY
+```
+
+You can combine `--sort` and `--date` in a single run, and also combine them
+with `--browse` or `--query` to scrape *and* analyse in one step:
+
+```bash
+python main.py --sort --date --browse --store N110 \
+    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
+    --gemini-api-key MY_GEMINI_KEY \
+    --location-id 2 --quantity-unit-id 2
+```
+
 ### Use the kr-api fallback backend
 
 ```bash
@@ -152,12 +187,13 @@ python main.py --store N110 --browse --no-graphql \
 ### All options
 
 ```
-usage: main.py [-h] (--query TERM | --browse)
+usage: main.py [-h] (--query TERM | --browse | --sort | --date)
                [--store STORE_ID] [--max-products N]
                [--grocy-url URL] [--grocy-key KEY]
                [--location-id ID] [--quantity-unit-id ID]
+               [--gemini-api-key KEY]
                [--dry-run] [--skip-existing | --no-skip-existing]
-               [--no-graphql] [--verbose]
+               [--upload-images] [--no-graphql] [--verbose]
 
 options:
   --query TERM          Search for products matching this term.
@@ -171,9 +207,19 @@ options:
                         Also read from GROCY_API_KEY env var.
   --location-id ID      Grocy location ID to assign to new products.
   --quantity-unit-id ID Grocy quantity unit ID to assign to new products.
+  --sort                Use Gemini AI to assign each product in the Grocy
+                        database to the most appropriate available location.
+  --date                Use Gemini AI to set default best-before days for
+                        each product in the Grocy database.
+  --gemini-api-key KEY  Gemini API key for --sort / --date analysis.
+                        Also read from GEMINI_API env var.
+  --gemini-model MODEL  Gemini model to use for --sort / --date analysis
+                        (default: gemini-1.5-flash).
+                        Also read from GEMINI_MODEL env var.
   --dry-run             Scrape products but do not write to Grocy.
   --skip-existing       Skip products whose EAN is already in Grocy (default).
   --no-skip-existing    Re-add products even if their EAN is already in Grocy.
+  --upload-images       Download and upload product images to Grocy.
   --no-graphql          Use the kr-api REST backend instead of GraphQL.
                         Requires a Cloudflare bypass (see .env.example).
   -v, --verbose         Enable DEBUG logging.
