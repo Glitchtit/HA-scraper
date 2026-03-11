@@ -938,6 +938,16 @@ def _delete_all_products(grocy: GrocyClient) -> int:
     for product in products:
         pid = product.get("id")
         name = product.get("name", "?")
+        picture = product.get("picture_file_name", "")
+
+        # Delete the product image first (if any).
+        if picture:
+            try:
+                grocy.delete_product_image(picture)
+                logger.debug("  Deleted image '%s' for product %s.", picture, pid)
+            except GrocyAPIError as exc:
+                logger.debug("  Could not delete image for product %s: %s", pid, exc)
+
         try:
             grocy.delete_product(int(pid))
             logger.debug("  Deleted product %s ('%s').", pid, name)
