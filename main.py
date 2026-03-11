@@ -27,6 +27,7 @@ file (see ``.env.example``).
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import posixpath
@@ -60,8 +61,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # Scraping options
-    scrape_group = parser.add_mutually_exclusive_group(required=True)
+    # Scraping options (not required when --sort / --date are used)
+    scrape_group = parser.add_mutually_exclusive_group(required=False)
     scrape_group.add_argument(
         "--query",
         metavar="TERM",
@@ -70,6 +71,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     scrape_group.add_argument(
         "--browse",
         action="store_true",
+        default=False,
         help="Browse the full product catalogue (may be very large).",
     )
 
@@ -128,6 +130,47 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Grocy quantity unit ID to assign to new products. "
             "Also read from the GROCY_QUANTITY_UNIT_ID environment variable."
+        ),
+    )
+
+    # AI analysis flags
+    parser.add_argument(
+        "--sort",
+        action="store_true",
+        default=False,
+        help=(
+            "Use Gemini AI to analyse the Grocy products database and assign each "
+            "product to the most appropriate available location.  "
+            "Requires --grocy-url, --grocy-key, and the GEMINI_API environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--date",
+        action="store_true",
+        default=False,
+        help=(
+            "Use Gemini AI to guess the default best-before days for each product "
+            "in the Grocy database and update the value.  "
+            "Requires --grocy-url, --grocy-key, and the GEMINI_API environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--gemini-api-key",
+        default=os.environ.get("GEMINI_API", ""),
+        metavar="KEY",
+        help=(
+            "Gemini API key used for AI-powered --sort and --date analysis.  "
+            "Also read from the GEMINI_API environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--gemini-model",
+        default=os.environ.get("GEMINI_MODEL", _GEMINI_DEFAULT_MODEL),
+        metavar="MODEL",
+        help=(
+            "Gemini model name to use for --sort and --date analysis "
+            f"(default: {_GEMINI_DEFAULT_MODEL}).  "
+            "Also read from the GEMINI_MODEL environment variable."
         ),
     )
 
@@ -288,15 +331,234 @@ def _image_extension(content_type: str, url: str) -> str:
     return ext
 
 
+# ---------------------------------------------------------------------------
+# Gemini AI helpers
+# ---------------------------------------------------------------------------
+
+_GEMINI_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+)
+_GEMINI_DEFAULT_MODEL = "gemini-1.5-flash"
+_GEMINI_BATCH_SIZE = 100
+
+
+def _call_gemini(prompt: str, api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> str:
+    """Send *prompt* to the Gemini API and return the text response.
+
+    Parameters
+    ----------
+    prompt:
+        The text prompt to send.
+    api_key:
+        A valid Gemini API key (from the GEMINI_API env var).
+    model:
+        The Gemini model name to use (from the GEMINI_MODEL env var).
+    """
+    url = f"{_GEMINI_BASE_URL}{model}:generateContent"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"response_mime_type": "application/json"},
+    }
+    try:
+        resp = requests.post(
+            url,
+            json=payload,
+            params={"key": api_key},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+    except requests.HTTPError as exc:
+        raise GrocyAPIError(f"Gemini API error: {exc}") from exc
+    except requests.RequestException as exc:
+        raise GrocyAPIError(f"Gemini request failed: {exc}") from exc
+    except (KeyError, IndexError, ValueError) as exc:
+        raise GrocyAPIError(f"Unexpected Gemini response format: {exc}") from exc
+
+
+def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> int:
+    """Use Gemini AI to assign each Grocy product to an appropriate location.
+
+    Fetches all locations and products from Grocy, asks Gemini to map each
+    product to a location, then updates the products in Grocy.
+
+    Returns the number of products updated.
+    """
+    try:
+        locations = grocy.get_locations()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch locations from Grocy: %s", exc)
+        return 0
+
+    if not locations:
+        logger.warning("No locations found in Grocy – skipping --sort.")
+        return 0
+
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch products from Grocy: %s", exc)
+        return 0
+
+    if not products:
+        logger.info("No products found in Grocy – nothing to sort.")
+        return 0
+
+    location_lines = "\n".join(
+        f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
+    )
+    logger.info(
+        "Asking Gemini to assign locations for %d product(s) …", len(products)
+    )
+
+    updated = 0
+    for i in range(0, len(products), _GEMINI_BATCH_SIZE):
+        batch = products[i : i + _GEMINI_BATCH_SIZE]
+        product_lines = "\n".join(
+            f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
+        )
+        prompt = (
+            "You are a grocery storage expert helping to organise a home pantry.\n\n"
+            "Available storage locations:\n"
+            f"{location_lines}\n\n"
+            "For each product below, choose the single most appropriate location ID "
+            "from the list above.\n"
+            "Consider: dairy / meat / fresh produce → refrigerator; "
+            "cleaning / laundry supplies → cleaning cabinet; "
+            "dry goods / canned / packaged → cupboard / pantry.\n\n"
+            "Return ONLY a JSON object mapping product IDs (as strings) to "
+            "location IDs (as integers), e.g. {\"1\": 2, \"5\": 4}.\n\n"
+            "Products:\n"
+            f"{product_lines}"
+        )
+        try:
+            raw = _call_gemini(prompt, gemini_api_key, model)
+            mapping: dict = json.loads(raw)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.error("Gemini sort batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
+            continue
+
+        for product in batch:
+            pid = str(product["id"])
+            location_id = mapping.get(pid)
+            if location_id is None:
+                logger.debug("No location assigned for product %s ('%s').", pid, product.get("name"))
+                continue
+            try:
+                grocy.update_product(int(product["id"]), location_id=int(location_id))
+                logger.info(
+                    "  → Set location %s for '%s' (ID %s).",
+                    location_id, product.get("name"), pid,
+                )
+                updated += 1
+            except (GrocyAPIError, ValueError) as exc:
+                logger.warning(
+                    "Could not update location for '%s': %s", product.get("name"), exc
+                )
+
+    logger.info("--sort complete: %d product(s) updated.", updated)
+    return updated
+
+
+def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> int:
+    """Use Gemini AI to set default best-before days for each Grocy product.
+
+    Fetches all products from Grocy, asks Gemini to estimate typical best-before
+    days for each, then updates the products in Grocy.
+
+    Returns the number of products updated.
+    """
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch products from Grocy: %s", exc)
+        return 0
+
+    if not products:
+        logger.info("No products found in Grocy – nothing to date.")
+        return 0
+
+    logger.info(
+        "Asking Gemini to estimate due dates for %d product(s) …", len(products)
+    )
+
+    updated = 0
+    for i in range(0, len(products), _GEMINI_BATCH_SIZE):
+        batch = products[i : i + _GEMINI_BATCH_SIZE]
+        product_lines = "\n".join(
+            f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
+        )
+        prompt = (
+            "You are a grocery best-before date expert.\n\n"
+            "For each product below, estimate the typical number of days until the "
+            "best-before date for an unopened product stored under normal home "
+            "conditions.\n"
+            "Guidelines: fresh milk ≈ 7–14 days; yogurt ≈ 21 days; butter ≈ 90 days; "
+            "hard cheese ≈ 180 days; eggs ≈ 28 days; bread ≈ 7 days; "
+            "canned goods ≈ 730 days; dry pasta / rice ≈ 1095 days; "
+            "cooking oil ≈ 365 days; frozen products ≈ 730 days; "
+            "cleaning / laundry products ≈ 1095 days.\n\n"
+            "Return ONLY a JSON object mapping product IDs (as strings) to days "
+            "(as integers), e.g. {\"1\": 14, \"5\": 730}.\n\n"
+            "Products:\n"
+            f"{product_lines}"
+        )
+        try:
+            raw = _call_gemini(prompt, gemini_api_key, model)
+            mapping: dict = json.loads(raw)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.error("Gemini date batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
+            continue
+
+        for product in batch:
+            pid = str(product["id"])
+            days = mapping.get(pid)
+            if days is None:
+                logger.debug("No due days assigned for product %s ('%s').", pid, product.get("name"))
+                continue
+            try:
+                grocy.update_product(
+                    int(product["id"]), default_best_before_days=int(days)
+                )
+                logger.info(
+                    "  → Set %d best-before days for '%s' (ID %s).",
+                    days, product.get("name"), pid,
+                )
+                updated += 1
+            except (GrocyAPIError, ValueError) as exc:
+                logger.warning(
+                    "Could not update due days for '%s': %s", product.get("name"), exc
+                )
+
+    logger.info("--date complete: %d product(s) updated.", updated)
+    return updated
+
+
 def _validate_args(args: argparse.Namespace) -> int:
     """Return 0 if arguments are valid, 1 otherwise."""
-    if not args.store:
+    ai_mode = args.sort or args.date
+    scrape_mode = bool(args.query or args.browse)
+
+    # At least one operational mode must be selected.
+    if not ai_mode and not scrape_mode:
         logger.error(
-            "Store ID is required.  Use --store or set the KRUOKA_STORE_ID "
-            "environment variable."
+            "Specify a scraping mode (--query / --browse) or an AI analysis mode "
+            "(--sort / --date)."
         )
         return 1
-    if not args.dry_run:
+
+    # Store is required only when actually scraping.
+    if scrape_mode:
+        if not args.store:
+            logger.error(
+                "Store ID is required.  Use --store or set the KRUOKA_STORE_ID "
+                "environment variable."
+            )
+            return 1
+
+    if ai_mode or (scrape_mode and not args.dry_run):
+        # Grocy connection is required for AI mode and non-dry-run scraping.
         if not args.grocy_url:
             logger.error(
                 "Grocy URL is required.  Use --grocy-url or set GROCY_BASE_URL."
@@ -307,6 +569,16 @@ def _validate_args(args: argparse.Namespace) -> int:
                 "Grocy API key is required.  Use --grocy-key or set GROCY_API_KEY."
             )
             return 1
+
+    if ai_mode:
+        if not args.gemini_api_key:
+            logger.error(
+                "Gemini API key is required for --sort / --date.  "
+                "Use --gemini-api-key or set the GEMINI_API environment variable."
+            )
+            return 1
+
+    if scrape_mode and not args.dry_run:
         if args.location_id is None:
             logger.error(
                 "Location ID is required.  Use --location-id or set GROCY_LOCATION_ID."
@@ -414,6 +686,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if _validate_args(args) != 0:
         return 1
+
+    # AI analysis modes operate on the existing Grocy database independently
+    # of the scraping pipeline.
+    if args.sort or args.date:
+        grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+        if args.sort:
+            _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model)
+        if args.date:
+            _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model)
+        # If no scraping mode was also requested, we are done.
+        if not args.query and not args.browse:
+            return 0
 
     grocy, known_barcodes = _setup_grocy(args)
     return _process_products(args, grocy, known_barcodes)
