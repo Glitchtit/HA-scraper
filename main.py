@@ -728,13 +728,18 @@ def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known
 
 
 def _discover_products(args: argparse.Namespace) -> int:
-    """Discover products via Barcode Buddy unknown barcodes.
+    """Discover products via Barcode Buddy pending barcodes.
 
-    1. Fetch unknown barcodes from Barcode Buddy.
-    2. For each barcode, search K-Ruoka by EAN.
-    3. If found, create the product in Grocy (via ``sync_product``).
-    4. Add 1 unit to Grocy stock.
-    5. Remove the barcode from Barcode Buddy's unknown list.
+    Processes both "New Barcodes" (looked-up but unassigned) and "Unknown
+    Barcodes" (not resolved at all) from Barcode Buddy.
+
+    For each barcode:
+
+    1. If Barcode Buddy already has a product name (New Barcode), use it
+       directly; otherwise search K-Ruoka by EAN.
+    2. Create the product in Grocy (via ``sync_product``).
+    3. Add units to Grocy stock (using the quantity from BB).
+    4. Remove the barcode from Barcode Buddy.
 
     Returns 0 on success, 1 if any errors occurred.
     """
@@ -755,31 +760,37 @@ def _discover_products(args: argparse.Namespace) -> int:
     except GrocyAPIError as exc:
         logger.warning("Could not fetch existing barcodes: %s", exc)
 
-    # Fetch unknown barcodes from Barcode Buddy.
+    # Fetch pending barcodes (new + unknown) from Barcode Buddy.
     try:
-        unknowns = bbuddy.get_unknown_barcodes()
+        pending = bbuddy.get_pending_barcodes()
     except BarcodeBuddyError as exc:
-        logger.error("Failed to fetch unknown barcodes from Barcode Buddy: %s", exc)
+        logger.error("Failed to fetch barcodes from Barcode Buddy: %s", exc)
         return 1
 
-    if not unknowns:
-        logger.info("No unknown barcodes in Barcode Buddy.")
+    if not pending:
+        logger.info("No pending barcodes in Barcode Buddy.")
         return 0
 
-    logger.info("Found %d unknown barcode(s) in Barcode Buddy.", len(unknowns))
+    logger.info("Found %d pending barcode(s) in Barcode Buddy.", len(pending))
 
     created = skipped = errors = 0
 
-    for entry in unknowns:
+    for entry in pending:
         barcode = entry.barcode
-        logger.info("Looking up EAN %s on K-Ruoka …", barcode)
+        bb_name = entry.name  # Non-empty for "New Barcodes", empty for unknown.
+        logger.info("Looking up EAN %s …", barcode)
 
-        # Search K-Ruoka using the barcode as query (EAN search).
+        # If BB already resolved a name, use it directly to build a Product.
+        # Otherwise, search K-Ruoka by EAN.
         product = None
-        for p in scraper.search(barcode, max_products=10):
-            if p.ean == barcode:
-                product = p
-                break
+        if bb_name:
+            logger.info("  Barcode Buddy name: '%s'.", bb_name)
+            product = Product(name=bb_name, ean=barcode)
+        else:
+            for p in scraper.search(barcode, max_products=10):
+                if p.ean == barcode:
+                    product = p
+                    break
 
         if product is None:
             logger.info("  EAN %s not found on K-Ruoka – skipping.", barcode)
@@ -830,7 +841,7 @@ def _discover_products(args: argparse.Namespace) -> int:
             except (GrocyAPIError, ValueError) as exc:
                 logger.warning("  Could not add stock for '%s': %s", product.name, exc)
 
-        # Remove from Barcode Buddy unknown list.
+        # Remove from Barcode Buddy.
         try:
             bbuddy.delete_barcode(entry.id)
             logger.info("  → Removed EAN %s from Barcode Buddy.", barcode)

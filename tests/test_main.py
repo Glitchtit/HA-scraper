@@ -735,8 +735,8 @@ class TestDiscoverProducts:
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
     @patch("main.BarcodeBuddyClient")
-    def test_no_unknowns_returns_0(self, MockBB, MockGrocy, MockScraper):
-        MockBB.return_value.get_unknown_barcodes.return_value = []
+    def test_no_pending_returns_0(self, MockBB, MockGrocy, MockScraper):
+        MockBB.return_value.get_pending_barcodes.return_value = []
         MockGrocy.return_value.get_all_barcodes.return_value = []
 
         from main import _discover_products
@@ -758,14 +758,14 @@ class TestDiscoverProducts:
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
     @patch("main.BarcodeBuddyClient")
-    def test_found_product_creates_and_stocks(self, MockBB, MockGrocy, MockScraper):
-        from grocy_scraper.barcodebuddy_client import UnknownBarcode
+    def test_unknown_barcode_searched_on_kruoka(self, MockBB, MockGrocy, MockScraper):
+        from grocy_scraper.barcodebuddy_client import PendingBarcode
         from main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
-        bb_instance.get_unknown_barcodes.return_value = [
-            UnknownBarcode(id="42", barcode="6410405082657", amount="1"),
+        bb_instance.get_pending_barcodes.return_value = [
+            PendingBarcode(id="42", barcode="6410405082657", amount="1"),
         ]
 
         grocy_instance = MockGrocy.return_value
@@ -794,6 +794,8 @@ class TestDiscoverProducts:
         )
         rc = _discover_products(args)
         assert rc == 0
+        # Unknown barcode → should search K-Ruoka.
+        scraper_instance.search.assert_called_once()
         grocy_instance.create_product.assert_called_once()
         grocy_instance.add_stock.assert_called_once_with(99, amount=1.0)
         bb_instance.delete_barcode.assert_called_once_with("42")
@@ -801,14 +803,59 @@ class TestDiscoverProducts:
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
     @patch("main.BarcodeBuddyClient")
-    def test_not_found_on_kruoka_skips(self, MockBB, MockGrocy, MockScraper):
-        from grocy_scraper.barcodebuddy_client import UnknownBarcode
+    def test_new_barcode_uses_bb_name_directly(self, MockBB, MockGrocy, MockScraper):
+        """New Barcodes (with a name from BB) should skip the K-Ruoka search."""
+        from grocy_scraper.barcodebuddy_client import PendingBarcode
         from main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
-        bb_instance.get_unknown_barcodes.return_value = [
-            UnknownBarcode(id="42", barcode="0000000000000", amount="1"),
+        bb_instance.get_pending_barcodes.return_value = [
+            PendingBarcode(id="10", barcode="6410405082657", amount="2",
+                           name="Pirkka kevytmaito 1l"),
+        ]
+
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_barcodes.return_value = []
+        grocy_instance.get_product_by_barcode.side_effect = [
+            None,  # sync_product check
+            {"id": 50, "name": "Pirkka kevytmaito 1l"},  # post-creation lookup
+        ]
+        grocy_instance.create_product.return_value = 50
+
+        scraper_instance = MockScraper.return_value
+
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 0
+        # New Barcode with name → should NOT search K-Ruoka.
+        scraper_instance.search.assert_not_called()
+        grocy_instance.create_product.assert_called_once()
+        # Amount from BB entry is 2.
+        grocy_instance.add_stock.assert_called_once_with(50, amount=2.0)
+        bb_instance.delete_barcode.assert_called_once_with("10")
+
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_not_found_on_kruoka_skips(self, MockBB, MockGrocy, MockScraper):
+        from grocy_scraper.barcodebuddy_client import PendingBarcode
+        from main import _discover_products
+        from argparse import Namespace
+
+        bb_instance = MockBB.return_value
+        bb_instance.get_pending_barcodes.return_value = [
+            PendingBarcode(id="42", barcode="0000000000000", amount="1"),
         ]
 
         grocy_instance = MockGrocy.return_value
@@ -842,7 +889,7 @@ class TestDiscoverProducts:
         from argparse import Namespace
 
         MockGrocy.return_value.get_all_barcodes.return_value = []
-        MockBB.return_value.get_unknown_barcodes.side_effect = BarcodeBuddyError("fail")
+        MockBB.return_value.get_pending_barcodes.side_effect = BarcodeBuddyError("fail")
 
         args = Namespace(
             bbuddy_url="https://bb.example.com",
