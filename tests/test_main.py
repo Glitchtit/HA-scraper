@@ -803,8 +803,8 @@ class TestDiscoverProducts:
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
     @patch("main.BarcodeBuddyClient")
-    def test_new_barcode_uses_bb_name_directly(self, MockBB, MockGrocy, MockScraper):
-        """New Barcodes (with a name from BB) should skip the K-Ruoka search."""
+    def test_new_barcode_kruoka_overrides_bb_name(self, MockBB, MockGrocy, MockScraper):
+        """K-Ruoka result takes priority over Barcode Buddy name."""
         from grocy_scraper.barcodebuddy_client import PendingBarcode
         from main import _discover_products
         from argparse import Namespace
@@ -812,7 +812,7 @@ class TestDiscoverProducts:
         bb_instance = MockBB.return_value
         bb_instance.get_pending_barcodes.return_value = [
             PendingBarcode(id="10", barcode="6410405082657", amount="2",
-                           name="Pirkka kevytmaito 1l"),
+                           name="BB Resolved Name"),
         ]
 
         grocy_instance = MockGrocy.return_value
@@ -824,6 +824,9 @@ class TestDiscoverProducts:
         grocy_instance.create_product.return_value = 50
 
         scraper_instance = MockScraper.return_value
+        scraper_instance.search.return_value = iter([
+            Product(name="Pirkka kevytmaito 1l", ean="6410405082657"),
+        ])
 
         args = Namespace(
             bbuddy_url="https://bb.example.com",
@@ -838,11 +841,53 @@ class TestDiscoverProducts:
         )
         rc = _discover_products(args)
         assert rc == 0
-        # New Barcode with name → should NOT search K-Ruoka.
-        scraper_instance.search.assert_not_called()
+        # K-Ruoka search should always run, even when BB has a name.
+        scraper_instance.search.assert_called_once()
         grocy_instance.create_product.assert_called_once()
-        # Amount from BB entry is 2.
         grocy_instance.add_stock.assert_called_once_with(50, amount=2.0)
+        bb_instance.delete_barcode.assert_called_once_with("10")
+
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_new_barcode_falls_back_to_bb_name(self, MockBB, MockGrocy, MockScraper):
+        """When K-Ruoka has no match, fall back to the BB-resolved name."""
+        from grocy_scraper.barcodebuddy_client import PendingBarcode
+        from main import _discover_products
+        from argparse import Namespace
+
+        bb_instance = MockBB.return_value
+        bb_instance.get_pending_barcodes.return_value = [
+            PendingBarcode(id="10", barcode="6410405082657", amount="1",
+                           name="BB Fallback Name"),
+        ]
+
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_barcodes.return_value = []
+        grocy_instance.get_product_by_barcode.side_effect = [
+            None,
+            {"id": 60, "name": "BB Fallback Name"},
+        ]
+        grocy_instance.create_product.return_value = 60
+
+        scraper_instance = MockScraper.return_value
+        scraper_instance.search.return_value = iter([])  # K-Ruoka finds nothing.
+
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 0
+        scraper_instance.search.assert_called_once()
+        grocy_instance.create_product.assert_called_once()
         bb_instance.delete_barcode.assert_called_once_with("10")
 
     @patch("main.KRuokaScraper")
