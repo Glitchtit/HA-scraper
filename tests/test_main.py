@@ -635,12 +635,16 @@ class TestParseArgsDiscover:
             "--grocy-key", "KEY",
             "--bbuddy-url", "https://bb.example.com",
             "--bbuddy-key", "BBKEY",
+            "--bbuddy-user", "admin",
+            "--bbuddy-password", "secret",
             "--location-id", "2",
             "--quantity-unit-id", "2",
         ])
         assert args.discover is True
         assert args.bbuddy_url == "https://bb.example.com"
         assert args.bbuddy_key == "BBKEY"
+        assert args.bbuddy_user == "admin"
+        assert args.bbuddy_password == "secret"
 
     def test_discover_mutually_exclusive_with_query(self):
         with pytest.raises(SystemExit):
@@ -655,7 +659,7 @@ class TestParseArgsDiscover:
         args = parse_args([
             "--discover", "--store", "N110",
             "--grocy-url", "u", "--grocy-key", "k",
-            "--bbuddy-key", "K",
+            "--bbuddy-user", "u", "--bbuddy-password", "p",
             "--location-id", "1", "--quantity-unit-id", "1",
         ])
         assert args.bbuddy_url == "https://env-bb.example.com"
@@ -666,9 +670,32 @@ class TestParseArgsDiscover:
             "--discover", "--store", "N110",
             "--grocy-url", "u", "--grocy-key", "k",
             "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-user", "u", "--bbuddy-password", "p",
             "--location-id", "1", "--quantity-unit-id", "1",
         ])
         assert args.bbuddy_key == "env-bb-key"
+
+    def test_bbuddy_user_from_env(self, monkeypatch):
+        monkeypatch.setenv("BARCODEBDY_USER", "envuser")
+        args = parse_args([
+            "--discover", "--store", "N110",
+            "--grocy-url", "u", "--grocy-key", "k",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-password", "p",
+            "--location-id", "1", "--quantity-unit-id", "1",
+        ])
+        assert args.bbuddy_user == "envuser"
+
+    def test_bbuddy_password_from_env(self, monkeypatch):
+        monkeypatch.setenv("BARCODEBDY_PASSWORD", "envpass")
+        args = parse_args([
+            "--discover", "--store", "N110",
+            "--grocy-url", "u", "--grocy-key", "k",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-user", "u",
+            "--location-id", "1", "--quantity-unit-id", "1",
+        ])
+        assert args.bbuddy_password == "envpass"
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +713,8 @@ class TestValidateArgsDiscover:
             grocy_key="KEY",
             bbuddy_url="https://bb.example.com",
             bbuddy_key="BBKEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             location_id=2,
             quantity_unit_id=2,
             dry_run=False,
@@ -714,9 +743,13 @@ class TestValidateArgsDiscover:
         from main import _validate_args
         assert _validate_args(self._base_discover_args(bbuddy_url="")) == 1
 
-    def test_missing_bbuddy_key_fails(self):
+    def test_missing_bbuddy_user_fails(self):
         from main import _validate_args
-        assert _validate_args(self._base_discover_args(bbuddy_key="")) == 1
+        assert _validate_args(self._base_discover_args(bbuddy_user="")) == 1
+
+    def test_missing_bbuddy_password_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_discover_args(bbuddy_password="")) == 1
 
     def test_missing_location_id_fails(self):
         from main import _validate_args
@@ -744,6 +777,8 @@ class TestDiscoverProducts:
         args = Namespace(
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             store="N110",
@@ -784,6 +819,8 @@ class TestDiscoverProducts:
         args = Namespace(
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             store="N110",
@@ -831,6 +868,8 @@ class TestDiscoverProducts:
         args = Namespace(
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             store="N110",
@@ -876,6 +915,8 @@ class TestDiscoverProducts:
         args = Namespace(
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             store="N110",
@@ -912,6 +953,8 @@ class TestDiscoverProducts:
         args = Namespace(
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             store="N110",
@@ -939,6 +982,8 @@ class TestDiscoverProducts:
         args = Namespace(
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             store="N110",

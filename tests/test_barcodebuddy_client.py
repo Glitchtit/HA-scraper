@@ -151,6 +151,7 @@ class TestGetPendingBarcodes:
         session.headers = {}
         resp = MagicMock()
         resp.text = _HTML_WITH_NEW_BARCODES
+        resp.url = "https://bb.example.com/index.php"
         resp.raise_for_status.return_value = None
         session.get.return_value = resp
 
@@ -177,6 +178,7 @@ class TestGetUnknownBarcodes:
         session.headers = {}
         resp = MagicMock()
         resp.text = _HTML_WITH_UNKNOWNS
+        resp.url = "https://bb.example.com/index.php"
         resp.raise_for_status.return_value = None
         session.get.return_value = resp
 
@@ -246,3 +248,113 @@ class TestAuth:
         session.headers = {}
         BarcodeBuddyClient("https://bb.example.com", "my-secret-key", session=session)
         assert session.headers.get("BBUDDY-API-KEY") == "my-secret-key"
+
+    def test_no_api_key_header_when_empty(self):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        BarcodeBuddyClient("https://bb.example.com", session=session)
+        assert "BBUDDY-API-KEY" not in session.headers
+
+
+# ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
+
+class TestLogin:
+    def test_login_posts_credentials(self):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        # Login returns a 302 redirect.
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        login_resp.raise_for_status.return_value = None
+        # Index page returns HTML.
+        index_resp = MagicMock()
+        index_resp.text = _HTML_WITH_UNKNOWNS
+        index_resp.url = "https://bb.example.com/index.php"
+        index_resp.raise_for_status.return_value = None
+        session.post.return_value = login_resp
+        session.get.return_value = index_resp
+
+        client = BarcodeBuddyClient(
+            "https://bb.example.com",
+            username="admin", password="secret",
+            session=session,
+        )
+        unknowns = client.get_unknown_barcodes()
+
+        # Login POST was made.
+        session.post.assert_called_once()
+        _, kwargs = session.post.call_args
+        assert kwargs["data"]["username"] == "admin"
+        assert kwargs["data"]["password"] == "secret"
+        assert kwargs["data"]["button_login"] == ""
+        assert len(unknowns) == 2
+
+    def test_login_wrong_credentials_raises(self):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        login_resp = MagicMock()
+        login_resp.status_code = 200
+        login_resp.text = '<font color="red">Wrong username or password</font>'
+        login_resp.raise_for_status.return_value = None
+        session.post.return_value = login_resp
+
+        client = BarcodeBuddyClient(
+            "https://bb.example.com",
+            username="admin", password="wrong",
+            session=session,
+        )
+        with pytest.raises(BarcodeBuddyError, match="wrong username or password"):
+            client.get_unknown_barcodes()
+
+    def test_login_skipped_when_no_credentials(self):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        resp = MagicMock()
+        resp.text = _HTML_WITH_UNKNOWNS
+        resp.url = "https://bb.example.com/index.php"
+        resp.raise_for_status.return_value = None
+        session.get.return_value = resp
+
+        client = BarcodeBuddyClient("https://bb.example.com", "key", session=session)
+        client.get_unknown_barcodes()
+
+        # No POST to login.php.
+        session.post.assert_not_called()
+
+    def test_login_only_happens_once(self):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        login_resp = MagicMock()
+        login_resp.status_code = 302
+        session.post.return_value = login_resp
+        index_resp = MagicMock()
+        index_resp.text = _HTML_WITH_UNKNOWNS
+        index_resp.url = "https://bb.example.com/index.php"
+        index_resp.raise_for_status.return_value = None
+        session.get.return_value = index_resp
+
+        client = BarcodeBuddyClient(
+            "https://bb.example.com",
+            username="admin", password="secret",
+            session=session,
+        )
+        client.get_unknown_barcodes()
+        client.get_unknown_barcodes()
+
+        # Login POST only once, not twice.
+        assert session.post.call_count == 1
+
+    def test_redirect_to_login_raises(self):
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        resp = MagicMock()
+        resp.text = '<form><button name="button_login">Login</button></form>'
+        resp.url = "https://bb.example.com/login.php"
+        resp.raise_for_status.return_value = None
+        session.get.return_value = resp
+
+        client = BarcodeBuddyClient("https://bb.example.com", "key", session=session)
+        with pytest.raises(BarcodeBuddyError, match="authentication failed"):
+            client.get_unknown_barcodes()
