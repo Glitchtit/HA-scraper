@@ -264,10 +264,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Re-add products even if their EAN is already in Grocy.",
     )
     parser.add_argument(
-        "--upload-images",
-        action="store_true",
-        default=False,
-        help="Download product images from k-ruoka.fi and upload them to Grocy.",
+        "--no-images",
+        dest="upload_images",
+        action="store_false",
+        default=True,
+        help="Skip downloading and uploading product images to Grocy.",
     )
     parser.add_argument(
         "--no-graphql",
@@ -299,7 +300,7 @@ def sync_product(
     quantity_unit_id: int | None,
     skip_existing: bool,
     known_barcodes: set[str],
-    upload_images: bool = False,
+    upload_images: bool = True,
 ) -> bool:
     """Add *product* to Grocy.
 
