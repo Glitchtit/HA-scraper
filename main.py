@@ -780,17 +780,17 @@ def _discover_products(args: argparse.Namespace) -> int:
         bb_name = entry.name  # Non-empty for "New Barcodes", empty for unknown.
         logger.info("Looking up EAN %s …", barcode)
 
-        # If BB already resolved a name, use it directly to build a Product.
-        # Otherwise, search K-Ruoka by EAN.
+        # Always search K-Ruoka first; its data takes priority.
+        # Fall back to the BB-resolved name only when K-Ruoka has no match.
         product = None
-        if bb_name:
-            logger.info("  Barcode Buddy name: '%s'.", bb_name)
+        for p in scraper.search(barcode, max_products=10):
+            if p.ean == barcode:
+                product = p
+                break
+
+        if product is None and bb_name:
+            logger.info("  Not on K-Ruoka; using Barcode Buddy name '%s'.", bb_name)
             product = Product(name=bb_name, ean=barcode)
-        else:
-            for p in scraper.search(barcode, max_products=10):
-                if p.ean == barcode:
-                    product = p
-                    break
 
         if product is None:
             logger.info("  EAN %s not found on K-Ruoka – skipping.", barcode)
