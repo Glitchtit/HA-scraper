@@ -368,6 +368,32 @@ class GrocyClient:
                 f"Failed to delete product {product_id}: {exc}"
             ) from exc
 
+    def delete_product_image(self, filename: str) -> None:
+        """Delete a product picture file from Grocy.
+
+        Parameters
+        ----------
+        filename:
+            The picture filename (e.g. ``"6410405082657.png"``).
+            Ignored silently if the file does not exist (404).
+        """
+        encoded_name = base64.b64encode(filename.encode()).decode()
+        url = self._url(f"/api/files/productpictures/{encoded_name}")
+        try:
+            resp = self._session.delete(url, timeout=10)
+            if resp.status_code == 404:
+                return  # File doesn't exist — nothing to do.
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to delete image '{filename}': {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to delete image '{filename}': {exc}"
+            ) from exc
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
