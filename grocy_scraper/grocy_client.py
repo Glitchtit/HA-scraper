@@ -220,10 +220,30 @@ class GrocyClient:
             )
             resp.raise_for_status()
         except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise GrocyAPIError(
-                f"Failed to upload image for product {product_id}: {exc}{body}"
-            ) from exc
+            if exc.response is not None and exc.response.status_code == 400:
+                # File may already exist — delete it and retry once.
+                try:
+                    self._session.delete(url, timeout=10).raise_for_status()
+                    resp = self._session.put(
+                        url,
+                        data=image_bytes,
+                        headers={"Content-Type": content_type},
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                except requests.RequestException as retry_exc:
+                    body = _response_error_detail(
+                        getattr(retry_exc, "response", None)
+                    )
+                    raise GrocyAPIError(
+                        f"Failed to upload image for product {product_id} "
+                        f"(after retry): {retry_exc}{body}"
+                    ) from retry_exc
+            else:
+                body = _response_error_detail(exc.response)
+                raise GrocyAPIError(
+                    f"Failed to upload image for product {product_id}: {exc}{body}"
+                ) from exc
         except requests.RequestException as exc:
             raise GrocyAPIError(
                 f"Failed to upload image for product {product_id}: {exc}"
