@@ -386,10 +386,16 @@ class KRuokaScraper:
         else:
             results = self._paginate_search(query, max_products)
 
-        query_lower = query.lower()
-        for product in results:
-            if query_lower in product.name.lower():
-                yield product
+        # When the query looks like a barcode (digits only), skip the name
+        # filter — the API will return matching products by EAN which won't
+        # contain the numeric string in their name.
+        if query.isdigit():
+            yield from results
+        else:
+            query_lower = query.lower()
+            for product in results:
+                if query_lower in product.name.lower():
+                    yield product
 
     def browse(self, max_products: Optional[int] = None) -> Iterator[Product]:
         """Yield all available products in the store catalogue.
