@@ -326,6 +326,28 @@ class GrocyClient:
         except requests.RequestException as exc:
             raise GrocyAPIError(f"Failed to fetch barcodes: {exc}") from exc
 
+    def delete_product(self, product_id: int) -> None:
+        """Delete a product from Grocy by its internal ID.
+
+        Parameters
+        ----------
+        product_id:
+            The Grocy internal product ID.
+        """
+        url = self._url(f"/api/objects/products/{product_id}")
+        try:
+            resp = self._session.delete(url, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to delete product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to delete product {product_id}: {exc}"
+            ) from exc
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

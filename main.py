@@ -87,6 +87,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Requires --bbuddy-url and --bbuddy-user/--bbuddy-password (or env vars)."
         ),
     )
+    scrape_group.add_argument(
+        "--delete-all",
+        action="store_true",
+        default=False,
+        help=(
+            "Delete ALL products from the Grocy database.  "
+            "This is a destructive operation and cannot be undone."
+        ),
+    )
 
     parser.add_argument(
         "--store",
@@ -592,12 +601,13 @@ def _validate_args(args: argparse.Namespace) -> int:
     ai_mode = args.sort or args.date
     scrape_mode = bool(args.query or args.browse)
     discover_mode = args.discover
+    delete_all_mode = args.delete_all
 
     # At least one operational mode must be selected.
-    if not ai_mode and not scrape_mode and not discover_mode:
+    if not ai_mode and not scrape_mode and not discover_mode and not delete_all_mode:
         logger.error(
             "Specify a scraping mode (--query / --browse), an AI analysis mode "
-            "(--sort / --date), or --discover."
+            "(--sort / --date), --discover, or --delete-all."
         )
         return 1
 
@@ -610,7 +620,7 @@ def _validate_args(args: argparse.Namespace) -> int:
             )
             return 1
 
-    if ai_mode or (scrape_mode and not args.dry_run) or discover_mode:
+    if ai_mode or (scrape_mode and not args.dry_run) or discover_mode or delete_all_mode:
         # Grocy connection is required for AI mode, non-dry-run scraping, and discover.
         if not args.grocy_url:
             logger.error(
@@ -897,6 +907,38 @@ def _discover_products(args: argparse.Namespace) -> int:
     return 0 if errors == 0 else 1
 
 
+def _delete_all_products(grocy: GrocyClient) -> int:
+    """Delete every product from the Grocy database.
+
+    Returns 0 on success, 1 if any errors occurred.
+    """
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Failed to fetch products from Grocy: %s", exc)
+        return 1
+
+    if not products:
+        logger.info("No products in Grocy – nothing to delete.")
+        return 0
+
+    logger.info("Deleting %d product(s) from Grocy …", len(products))
+    errors = 0
+    for product in products:
+        pid = product.get("id")
+        name = product.get("name", "?")
+        try:
+            grocy.delete_product(int(pid))
+            logger.debug("  Deleted product %s ('%s').", pid, name)
+        except GrocyAPIError as exc:
+            logger.error("  Failed to delete product %s ('%s'): %s", pid, name, exc)
+            errors += 1
+
+    deleted = len(products) - errors
+    logger.info("Deleted %d product(s), %d error(s).", deleted, errors)
+    return 0 if errors == 0 else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -921,6 +963,11 @@ def main(argv: list[str] | None = None) -> int:
     # Discover mode: Barcode Buddy → K-Ruoka → Grocy pipeline.
     if args.discover:
         return _discover_products(args)
+
+    # Delete-all mode: wipe all products from Grocy.
+    if args.delete_all:
+        grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+        return _delete_all_products(grocy)
 
     grocy, known_barcodes = _setup_grocy(args)
     return _process_products(args, grocy, known_barcodes)

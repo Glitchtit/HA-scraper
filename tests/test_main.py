@@ -623,6 +623,121 @@ class TestMainAIMode:
 
 
 # ---------------------------------------------------------------------------
+# parse_args – --delete-all flag
+# ---------------------------------------------------------------------------
+
+class TestParseArgsDeleteAll:
+    def test_delete_all_flag(self):
+        args = parse_args([
+            "--delete-all",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+        ])
+        assert args.delete_all is True
+
+    def test_delete_all_mutually_exclusive_with_query(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--delete-all", "--query", "maito"])
+
+    def test_delete_all_mutually_exclusive_with_browse(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--delete-all", "--browse"])
+
+    def test_delete_all_mutually_exclusive_with_discover(self):
+        with pytest.raises(SystemExit):
+            parse_args(["--delete-all", "--discover"])
+
+
+# ---------------------------------------------------------------------------
+# _validate_args – --delete-all
+# ---------------------------------------------------------------------------
+
+class TestValidateArgsDeleteAll:
+    def _base_args(self, **overrides):
+        from argparse import Namespace
+        defaults = dict(
+            delete_all=True,
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            query=None, browse=False, discover=False,
+            sort=False, date=False,
+            dry_run=False,
+            store="",
+            location_id=None,
+            quantity_unit_id=None,
+            bbuddy_url="", bbuddy_key="",
+            bbuddy_user="", bbuddy_password="",
+            gemini_api_key="",
+        )
+        defaults.update(overrides)
+        return Namespace(**defaults)
+
+    def test_valid_delete_all_passes(self):
+        from main import _validate_args
+        assert _validate_args(self._base_args()) == 0
+
+    def test_missing_grocy_url_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_args(grocy_url="")) == 1
+
+    def test_missing_grocy_key_fails(self):
+        from main import _validate_args
+        assert _validate_args(self._base_args(grocy_key="")) == 1
+
+    def test_store_not_required(self):
+        from main import _validate_args
+        assert _validate_args(self._base_args(store="")) == 0
+
+
+# ---------------------------------------------------------------------------
+# _delete_all_products
+# ---------------------------------------------------------------------------
+
+class TestDeleteAllProducts:
+    @patch("main.GrocyClient")
+    def test_empty_database_returns_0(self, MockGrocy):
+        from main import _delete_all_products
+        grocy = MockGrocy.return_value
+        grocy.get_all_products.return_value = []
+        assert _delete_all_products(grocy) == 0
+        grocy.delete_product.assert_not_called()
+
+    @patch("main.GrocyClient")
+    def test_deletes_all_products(self, MockGrocy):
+        from main import _delete_all_products
+        grocy = MockGrocy.return_value
+        grocy.get_all_products.return_value = [
+            {"id": 1, "name": "Milk"},
+            {"id": 2, "name": "Bread"},
+            {"id": 3, "name": "Eggs"},
+        ]
+        assert _delete_all_products(grocy) == 0
+        assert grocy.delete_product.call_count == 3
+        grocy.delete_product.assert_any_call(1)
+        grocy.delete_product.assert_any_call(2)
+        grocy.delete_product.assert_any_call(3)
+
+    @patch("main.GrocyClient")
+    def test_fetch_error_returns_1(self, MockGrocy):
+        from main import _delete_all_products
+        grocy = MockGrocy.return_value
+        grocy.get_all_products.side_effect = GrocyAPIError("connection refused")
+        assert _delete_all_products(grocy) == 1
+
+    @patch("main.GrocyClient")
+    def test_partial_failure_returns_1(self, MockGrocy):
+        from main import _delete_all_products
+        grocy = MockGrocy.return_value
+        grocy.get_all_products.return_value = [
+            {"id": 1, "name": "Milk"},
+            {"id": 2, "name": "Bread"},
+        ]
+        grocy.delete_product.side_effect = [None, GrocyAPIError("failed")]
+        assert _delete_all_products(grocy) == 1
+        assert grocy.delete_product.call_count == 2
+
+
+# ---------------------------------------------------------------------------
 # parse_args – --discover flag
 # ---------------------------------------------------------------------------
 

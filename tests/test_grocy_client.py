@@ -223,6 +223,33 @@ class TestGetAllBarcodes:
 
 
 # ---------------------------------------------------------------------------
+# GrocyClient.delete_product
+# ---------------------------------------------------------------------------
+
+class TestDeleteProduct:
+    def test_success(self):
+        client, session = _make_client()
+        session.delete.return_value = _mock_response()
+        client.delete_product(42)
+        session.delete.assert_called_once()
+        url = session.delete.call_args[0][0]
+        assert "/api/objects/products/42" in url
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=404))
+        session.delete.return_value = _mock_response(raise_for=http_err, status_code=404)
+        with pytest.raises(GrocyAPIError, match="delete product"):
+            client.delete_product(42)
+
+    def test_request_error_raises(self):
+        client, session = _make_client()
+        session.delete.side_effect = requests.ConnectionError("refused")
+        with pytest.raises(GrocyAPIError, match="delete product"):
+            client.delete_product(42)
+
+
+# ---------------------------------------------------------------------------
 # GrocyClient.upload_product_image
 # ---------------------------------------------------------------------------
 
