@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import posixpath
 import sys
 
 try:
@@ -40,6 +41,8 @@ except ImportError:
 
 from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 from grocy_scraper.scraper import KRuokaScraper, Product
+
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -110,16 +113,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--location-id",
         type=int,
-        default=None,
+        default=os.environ.get("GROCY_LOCATION_ID"),
         metavar="ID",
-        help="Grocy location ID to assign to new products.",
+        help=(
+            "Grocy location ID to assign to new products (required). "
+            "Also read from the GROCY_LOCATION_ID environment variable."
+        ),
     )
     parser.add_argument(
         "--quantity-unit-id",
         type=int,
-        default=None,
+        default=os.environ.get("GROCY_QUANTITY_UNIT_ID"),
         metavar="ID",
-        help="Grocy quantity unit ID to assign to new products.",
+        help=(
+            "Grocy quantity unit ID to assign to new products. "
+            "Also read from the GROCY_QUANTITY_UNIT_ID environment variable."
+        ),
     )
 
     # Behaviour flags
@@ -139,6 +148,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="skip_existing",
         action="store_false",
         help="Re-add products even if their EAN is already in Grocy.",
+    )
+    parser.add_argument(
+        "--upload-images",
+        action="store_true",
+        default=False,
+        help="Download product images from k-ruoka.fi and upload them to Grocy.",
     )
     parser.add_argument(
         "--no-graphql",
@@ -170,6 +185,7 @@ def sync_product(
     quantity_unit_id: int | None,
     skip_existing: bool,
     known_barcodes: set[str],
+    upload_images: bool = False,
 ) -> bool:
     """Add *product* to Grocy.
 
@@ -226,7 +242,50 @@ def sync_product(
             exc,
         )
 
+    # Upload product image.
+    if upload_images and product.image_url:
+        _upload_product_image(product, grocy, grocy_id)
+
     return True
+
+
+def _upload_product_image(product: Product, grocy: GrocyClient, grocy_id: int) -> None:
+    """Download the product image and upload it to Grocy."""
+    url = product.image_url
+    try:
+        resp = requests.get(url, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("Could not download image for '%s': %s", product.name, exc)
+        return
+
+    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+    ext = _image_extension(content_type, url)
+    filename = f"{product.ean}{ext}"
+
+    try:
+        grocy.upload_product_image(
+            grocy_id, filename, resp.content, content_type=content_type
+        )
+        logger.info("  → Uploaded image %s.", filename)
+    except GrocyAPIError as exc:
+        logger.warning("Could not upload image for '%s': %s", product.name, exc)
+
+
+_MIME_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def _image_extension(content_type: str, url: str) -> str:
+    """Derive a file extension from the MIME type, falling back to the URL."""
+    ext = _MIME_TO_EXT.get(content_type, "")
+    if not ext:
+        ext = posixpath.splitext(url.split("?")[0])[1] or ".jpg"
+    return ext
 
 
 def _validate_args(args: argparse.Namespace) -> int:
@@ -246,6 +305,16 @@ def _validate_args(args: argparse.Namespace) -> int:
         if not args.grocy_key:
             logger.error(
                 "Grocy API key is required.  Use --grocy-key or set GROCY_API_KEY."
+            )
+            return 1
+        if args.location_id is None:
+            logger.error(
+                "Location ID is required.  Use --location-id or set GROCY_LOCATION_ID."
+            )
+            return 1
+        if args.quantity_unit_id is None:
+            logger.error(
+                "Quantity unit ID is required.  Use --quantity-unit-id or set GROCY_QUANTITY_UNIT_ID."
             )
             return 1
     return 0
@@ -301,7 +370,8 @@ def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known
     for product in _run_scraper(args):
         if args.dry_run:
             ean_display = product.ean or "(no EAN)"
-            print(f"{product.name!r}  EAN:{ean_display}")
+            img_display = f"  IMG:{product.image_url}" if product.image_url else ""
+            print(f"{product.name!r}  EAN:{ean_display}{img_display}")
             created += 1
             continue
 
@@ -314,6 +384,7 @@ def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known
                 quantity_unit_id=args.quantity_unit_id,
                 skip_existing=args.skip_existing,
                 known_barcodes=known_barcodes,
+                upload_images=args.upload_images,
             )
         except GrocyAPIError as exc:
             logger.error("Grocy error for '%s': %s", product.name, exc)

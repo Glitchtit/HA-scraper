@@ -363,7 +363,12 @@ class KRuokaScraper:
     # ------------------------------------------------------------------
 
     def search(self, query: str, max_products: Optional[int] = None) -> Iterator[Product]:
-        """Yield products whose name or description matches *query*.
+        """Yield products whose name matches *query* (case-insensitive).
+
+        The upstream API performs broad full-text matching that can return
+        unrelated products (e.g. searching "kevytmaito" also returns
+        "maitosuklaa").  Results are therefore filtered client-side so that
+        only products whose name contains the query string are yielded.
 
         Uses the GraphQL backend by default (``use_graphql=True``).  Each page
         returns up to 100 results; the server stops serving results at
@@ -377,9 +382,14 @@ class KRuokaScraper:
             Stop after this many products.  ``None`` means no limit.
         """
         if self._use_graphql:
-            yield from self._paginate_graphql(query=query, max_products=max_products)
+            results = self._paginate_graphql(query=query, max_products=max_products)
         else:
-            yield from self._paginate_search(query, max_products)
+            results = self._paginate_search(query, max_products)
+
+        query_lower = query.lower()
+        for product in results:
+            if query_lower in product.name.lower():
+                yield product
 
     def browse(self, max_products: Optional[int] = None) -> Iterator[Product]:
         """Yield all available products in the store catalogue.

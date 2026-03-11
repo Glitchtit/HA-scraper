@@ -220,3 +220,52 @@ class TestGetAllBarcodes:
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
         with pytest.raises(GrocyAPIError):
             client.get_all_barcodes()
+
+
+# ---------------------------------------------------------------------------
+# GrocyClient.upload_product_image
+# ---------------------------------------------------------------------------
+
+class TestUploadProductImage:
+    def test_uploads_and_sets_picture(self):
+        client, session = _make_client()
+        session.put.return_value = _mock_response()
+        client.upload_product_image(42, "test.jpg", b"\xff\xd8", content_type="image/jpeg")
+
+        assert session.put.call_count == 2
+        # First call: file upload
+        upload_url = session.put.call_args_list[0][0][0]
+        assert "/api/files/productpictures/" in upload_url
+        upload_kwargs = session.put.call_args_list[0][1]
+        assert upload_kwargs["data"] == b"\xff\xd8"
+        assert upload_kwargs["headers"]["Content-Type"] == "image/jpeg"
+        # Second call: set picture_file_name
+        set_url = session.put.call_args_list[1][0][0]
+        assert "/api/objects/products/42" in set_url
+        assert session.put.call_args_list[1][1]["json"]["picture_file_name"] == "test.jpg"
+
+    def test_filename_is_base64_encoded_in_url(self):
+        import base64
+        client, session = _make_client()
+        session.put.return_value = _mock_response()
+        client.upload_product_image(1, "photo.png", b"\x89PNG")
+
+        upload_url = session.put.call_args_list[0][0][0]
+        expected = base64.b64encode(b"photo.png").decode()
+        assert expected in upload_url
+
+    def test_upload_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500))
+        session.put.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="upload image"):
+            client.upload_product_image(1, "x.jpg", b"data")
+
+    def test_set_picture_http_error_raises(self):
+        client, session = _make_client()
+        ok_resp = _mock_response()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500))
+        err_resp = _mock_response(raise_for=http_err, status_code=500)
+        session.put.side_effect = [ok_resp, err_resp]
+        with pytest.raises(GrocyAPIError, match="set picture"):
+            client.upload_product_image(1, "x.jpg", b"data")

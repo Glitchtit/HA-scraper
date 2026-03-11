@@ -198,7 +198,7 @@ class TestParseGraphqlResult:
 
 class TestGraphqlSearch:
     def test_single_page(self):
-        items = [_gql_product("Maito", "111"), _gql_product("Kerma", "222")]
+        items = [_gql_product("Maito", "111"), _gql_product("Maitojuoma", "222")]
         session = _make_mock_session([_gql_page(items, total=2)])
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
         products = list(scraper.search("maito"))
@@ -243,14 +243,14 @@ class TestGraphqlSearch:
         )
         session = _make_mock_session([p1, p2])
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        products = list(scraper.search("all"))
+        products = list(scraper.search("P"))
 
         assert len(products) == 150
         assert session.post.call_count == 2
 
     def test_stops_on_partial_page(self):
         """A page with fewer than 100 items signals the end of results."""
-        p1 = _gql_page([_gql_product("A", "1")], total=500)
+        p1 = _gql_page([_gql_product("Ax", "1")], total=500)
         session = _make_mock_session([p1])
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
         products = list(scraper.search("x"))
@@ -259,7 +259,7 @@ class TestGraphqlSearch:
         assert session.post.call_count == 1
 
     def test_stops_on_empty_page(self):
-        p1 = _gql_page([_gql_product("A", "1")], total=500)
+        p1 = _gql_page([_gql_product("Ax", "1")], total=500)
         p2 = _gql_page([], total=500)
         session = _make_mock_session([p1, p2])
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
@@ -282,7 +282,7 @@ class TestGraphqlSearch:
         )
         session = _make_mock_session([p1])
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        products = list(scraper.search("x", max_products=5))
+        products = list(scraper.search("P", max_products=5))
 
         assert len(products) == 5
 
@@ -326,7 +326,7 @@ class TestGraphqlSearch:
             )
         session = _make_mock_session(pages)
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        products = list(scraper.search("all"))
+        products = list(scraper.search("P"))
 
         # Extract all offset values used
         offsets = [
@@ -336,6 +336,29 @@ class TestGraphqlSearch:
         assert all(o <= _GRAPHQL_MAX_OFFSET for o in offsets), (
             f"Offset exceeded max: {offsets}"
         )
+
+    def test_filters_non_matching_products(self):
+        """Products whose name does not contain the query are excluded."""
+        items = [
+            _gql_product("Kevytmaito 1l", "1"),
+            _gql_product("Maitosuklaa", "2"),
+            _gql_product("Pirkka kevytmaito", "3"),
+            _gql_product("Kerma 2dl", "4"),
+        ]
+        session = _make_mock_session([_gql_page(items, total=4)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("kevytmaito"))
+
+        assert [p.name for p in products] == ["Kevytmaito 1l", "Pirkka kevytmaito"]
+
+    def test_filter_is_case_insensitive(self):
+        items = [_gql_product("KEVYTMAITO 1L", "1"), _gql_product("Kerma", "2")]
+        session = _make_mock_session([_gql_page(items, total=2)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("kevytmaito"))
+
+        assert len(products) == 1
+        assert products[0].name == "KEVYTMAITO 1L"
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +461,7 @@ class TestGraphqlBrowse:
 class TestKrapiSearch:
     def test_search_single_page(self):
         page = _kr_search_page(
-            [_kr_make_search_item("Maito", "111"), _kr_make_search_item("Kerma", "222")],
+            [_kr_make_search_item("Kevytmaito", "111"), _kr_make_search_item("Rasvaton maito", "222")],
             total=2,
         )
         session = _make_mock_session([page])
@@ -448,7 +471,7 @@ class TestKrapiSearch:
         products = list(scraper.search("maito"))
 
         assert len(products) == 2
-        assert products[0].name == "Maito"
+        assert products[0].name == "Kevytmaito"
         assert products[1].ean == "222"
 
     def test_search_posts_to_krapi(self):
@@ -473,7 +496,7 @@ class TestKrapiSearch:
         scraper = KRuokaScraper(
             store_id="N110", session=session, request_delay=0, use_graphql=False
         )
-        products = list(scraper.search("all"))
+        products = list(scraper.search("P"))
 
         assert len(products) == 110
         assert session.post.call_count == 2
@@ -486,12 +509,12 @@ class TestKrapiSearch:
         scraper = KRuokaScraper(
             store_id="N110", session=session, request_delay=0, use_graphql=False
         )
-        products = list(scraper.search("x", max_products=5))
+        products = list(scraper.search("P", max_products=5))
 
         assert len(products) == 5
 
     def test_search_stops_on_empty_page(self):
-        p1 = _kr_search_page([_kr_make_search_item("A", "1")], total=10)
+        p1 = _kr_search_page([_kr_make_search_item("Ax", "1")], total=10)
         p2 = _kr_search_page([], total=10)
         session = _make_mock_session([p1, p2])
         scraper = KRuokaScraper(

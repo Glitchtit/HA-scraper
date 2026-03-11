@@ -126,6 +126,73 @@ class TestSyncProduct:
         )
         assert result is False
 
+    @patch("main.requests.get")
+    def test_uploads_image_when_enabled(self, mock_get):
+        mock_resp = MagicMock()
+        mock_resp.content = b"\xff\xd8image-data"
+        mock_resp.headers = {"Content-Type": "image/jpeg"}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+
+        grocy = self._grocy()
+        product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
+        sync_product(
+            product, grocy,
+            location_id=1, quantity_unit_id=1,
+            skip_existing=False, known_barcodes=set(),
+            upload_images=True,
+        )
+        grocy.upload_product_image.assert_called_once_with(
+            99, "123.jpg", b"\xff\xd8image-data", content_type="image/jpeg"
+        )
+
+    def test_no_image_upload_by_default(self):
+        grocy = self._grocy()
+        product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
+        sync_product(
+            product, grocy,
+            location_id=1, quantity_unit_id=1,
+            skip_existing=False, known_barcodes=set(),
+        )
+        grocy.upload_product_image.assert_not_called()
+
+    @patch("main.requests.get")
+    def test_image_download_failure_does_not_break_sync(self, mock_get):
+        import requests as req
+        mock_get.side_effect = req.RequestException("timeout")
+
+        grocy = self._grocy()
+        product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
+        result = sync_product(
+            product, grocy,
+            location_id=1, quantity_unit_id=1,
+            skip_existing=False, known_barcodes=set(),
+            upload_images=True,
+        )
+        assert result is True
+        grocy.create_product.assert_called_once()
+        grocy.upload_product_image.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _image_extension helper
+# ---------------------------------------------------------------------------
+
+class TestImageExtension:
+    def test_known_mime_types(self):
+        from main import _image_extension
+        assert _image_extension("image/jpeg", "") == ".jpg"
+        assert _image_extension("image/png", "") == ".png"
+        assert _image_extension("image/webp", "") == ".webp"
+
+    def test_unknown_mime_falls_back_to_url(self):
+        from main import _image_extension
+        assert _image_extension("application/octet-stream", "https://example.com/img.png?w=100") == ".png"
+
+    def test_unknown_mime_no_ext_defaults_to_jpg(self):
+        from main import _image_extension
+        assert _image_extension("application/octet-stream", "https://example.com/img") == ".jpg"
+
 
 # ---------------------------------------------------------------------------
 # main – dry run
