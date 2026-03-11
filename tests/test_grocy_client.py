@@ -269,3 +269,57 @@ class TestUploadProductImage:
         session.put.side_effect = [ok_resp, err_resp]
         with pytest.raises(GrocyAPIError, match="set picture"):
             client.upload_product_image(1, "x.jpg", b"data")
+
+
+# ---------------------------------------------------------------------------
+# get_locations
+# ---------------------------------------------------------------------------
+
+class TestGetLocations:
+    def test_returns_locations_list(self):
+        client, session = _make_client()
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 4, "name": "Cupboard"}]
+        session.get.return_value = _mock_response(locations)
+        result = client.get_locations()
+        assert result == locations
+        url = session.get.call_args[0][0]
+        assert "/api/objects/locations" in url
+
+    def test_returns_empty_list_on_null_response(self):
+        client, session = _make_client()
+        session.get.return_value = _mock_response(None)
+        assert client.get_locations() == []
+
+    def test_request_error_raises(self):
+        client, session = _make_client()
+        session.get.side_effect = requests.RequestException("timeout")
+        with pytest.raises(GrocyAPIError, match="locations"):
+            client.get_locations()
+
+
+# ---------------------------------------------------------------------------
+# update_product
+# ---------------------------------------------------------------------------
+
+class TestUpdateProduct:
+    def test_sends_put_with_fields(self):
+        client, session = _make_client()
+        session.put.return_value = _mock_response()
+        client.update_product(7, location_id=3, default_best_before_days=30)
+        url = session.put.call_args[0][0]
+        assert "/api/objects/products/7" in url
+        body = session.put.call_args[1]["json"]
+        assert body == {"location_id": 3, "default_best_before_days": 30}
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=422, text=""))
+        session.put.return_value = _mock_response(raise_for=http_err, status_code=422)
+        with pytest.raises(GrocyAPIError, match="update product"):
+            client.update_product(7, location_id=99)
+
+    def test_request_error_raises(self):
+        client, session = _make_client()
+        session.put.side_effect = requests.RequestException("connection refused")
+        with pytest.raises(GrocyAPIError, match="update product"):
+            client.update_product(5, location_id=2)

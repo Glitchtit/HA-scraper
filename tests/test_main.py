@@ -251,3 +251,372 @@ class TestMainMissingGrocy:
     def test_missing_grocy_key(self, capsys):
         rc = main(["--store", "N110", "--browse", "--grocy-url", "https://g.example.com"])
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# parse_args – AI flags
+# ---------------------------------------------------------------------------
+
+class TestParseArgsAIFlags:
+    def test_sort_flag(self):
+        args = parse_args([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI_KEY",
+        ])
+        assert args.sort is True
+        assert args.date is False
+        assert args.gemini_api_key == "GEMINI_KEY"
+
+    def test_date_flag(self):
+        args = parse_args([
+            "--date",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI_KEY",
+        ])
+        assert args.date is True
+        assert args.sort is False
+
+    def test_sort_and_date_together(self):
+        args = parse_args([
+            "--sort", "--date",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI_KEY",
+        ])
+        assert args.sort is True
+        assert args.date is True
+
+    def test_gemini_key_from_env(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API", "env-key-123")
+        args = parse_args([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+        ])
+        assert args.gemini_api_key == "env-key-123"
+
+    def test_gemini_model_default(self):
+        from main import _GEMINI_DEFAULT_MODEL
+        args = parse_args([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "KEY",
+        ])
+        assert args.gemini_model == _GEMINI_DEFAULT_MODEL
+
+    def test_gemini_model_flag(self):
+        args = parse_args([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "KEY",
+            "--gemini-model", "gemini-2.0-flash",
+        ])
+        assert args.gemini_model == "gemini-2.0-flash"
+
+    def test_gemini_model_from_env(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-pro")
+        args = parse_args([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "KEY",
+        ])
+        assert args.gemini_model == "gemini-2.0-pro"
+
+
+# ---------------------------------------------------------------------------
+# _validate_args – AI mode validation
+# ---------------------------------------------------------------------------
+
+class TestValidateArgsAI:
+    def _base_ai_args(self, **overrides):
+        from argparse import Namespace
+        defaults = dict(
+            sort=True, date=False,
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            gemini_api_key="GEMINI_KEY",
+            query=None, browse=False,
+            dry_run=False,
+            store="",
+            location_id=None,
+            quantity_unit_id=None,
+        )
+        defaults.update(overrides)
+        return Namespace(**defaults)
+
+    def test_valid_sort_passes(self):
+        from main import _validate_args
+        assert _validate_args(self._base_ai_args()) == 0
+
+    def test_missing_gemini_key_fails(self):
+        from main import _validate_args
+        args = self._base_ai_args(gemini_api_key="")
+        assert _validate_args(args) == 1
+
+    def test_missing_grocy_url_fails(self):
+        from main import _validate_args
+        args = self._base_ai_args(grocy_url="")
+        assert _validate_args(args) == 1
+
+    def test_missing_grocy_key_fails(self):
+        from main import _validate_args
+        args = self._base_ai_args(grocy_key="")
+        assert _validate_args(args) == 1
+
+    def test_no_mode_fails(self):
+        from main import _validate_args
+        from argparse import Namespace
+        args = Namespace(
+            sort=False, date=False,
+            query=None, browse=False,
+            dry_run=False,
+            grocy_url="", grocy_key="", gemini_api_key="",
+            store="", location_id=None, quantity_unit_id=None,
+        )
+        assert _validate_args(args) == 1
+
+    def test_dry_run_alone_fails(self):
+        from main import _validate_args
+        from argparse import Namespace
+        args = Namespace(
+            sort=False, date=False,
+            query=None, browse=False,
+            dry_run=True,
+            grocy_url="", grocy_key="", gemini_api_key="",
+            store="N110", location_id=None, quantity_unit_id=None,
+        )
+        assert _validate_args(args) == 1
+
+
+# ---------------------------------------------------------------------------
+# _call_gemini
+# ---------------------------------------------------------------------------
+
+class TestCallGemini:
+    @patch("main.requests.post")
+    def test_returns_text_from_response(self, mock_post):
+        from main import _call_gemini
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": '{"1": 2}'}]}}]
+        }
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+        result = _call_gemini("prompt", "api-key")
+        assert result == '{"1": 2}'
+        _, kwargs = mock_post.call_args
+        assert kwargs["params"]["key"] == "api-key"
+
+    @patch("main.requests.post")
+    def test_uses_specified_model_in_url(self, mock_post):
+        from main import _call_gemini
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "candidates": [{"content": {"parts": [{"text": "{}"}]}}]
+        }
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+        _call_gemini("prompt", "api-key", model="gemini-2.0-flash")
+        url = mock_post.call_args[0][0]
+        assert "gemini-2.0-flash" in url
+
+    @patch("main.requests.post")
+    def test_http_error_raises(self, mock_post):
+        import requests as req
+        from main import _call_gemini
+        mock_resp = MagicMock(status_code=400)
+        mock_post.return_value = mock_resp
+        mock_resp.raise_for_status.side_effect = req.HTTPError(response=mock_resp)
+        with pytest.raises(GrocyAPIError, match="Gemini API error"):
+            _call_gemini("prompt", "bad-key")
+
+    @patch("main.requests.post")
+    def test_unexpected_format_raises(self, mock_post):
+        from main import _call_gemini
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}  # missing 'candidates'
+        mock_resp.raise_for_status.return_value = None
+        mock_post.return_value = mock_resp
+        with pytest.raises(GrocyAPIError, match="Unexpected Gemini"):
+            _call_gemini("prompt", "key")
+
+
+# ---------------------------------------------------------------------------
+# _ai_sort_products
+# ---------------------------------------------------------------------------
+
+class TestAiSortProducts:
+    def _make_grocy(self, products, locations):
+        g = MagicMock(spec=GrocyClient)
+        g.get_all_products.return_value = products
+        g.get_locations.return_value = locations
+        g.update_product.return_value = None
+        return g
+
+    @patch("main._call_gemini")
+    def test_updates_products_with_ai_locations(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}, {"id": 2, "name": "Pesuaine"}]
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 3, "name": "Cleaning Cabinet"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = '{"1": 2, "2": 3}'
+
+        result = _ai_sort_products(grocy, "gemini-key")
+        assert result == 2
+        grocy.update_product.assert_any_call(1, location_id=2)
+        grocy.update_product.assert_any_call(2, location_id=3)
+
+    @patch("main._call_gemini")
+    def test_no_locations_returns_zero(self, mock_gemini):
+        from main import _ai_sort_products
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_locations.return_value = []
+        result = _ai_sort_products(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_no_products_returns_zero(self, mock_gemini):
+        from main import _ai_sort_products
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_locations.return_value = [{"id": 2, "name": "Fridge"}]
+        grocy.get_all_products.return_value = []
+        result = _ai_sort_products(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_invalid_json_skips_batch(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = "not-json"
+
+        result = _ai_sort_products(grocy, "key")
+        assert result == 0
+        grocy.update_product.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_grocy_error_on_locations_returns_zero(self, mock_gemini):
+        from main import _ai_sort_products
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_locations.side_effect = GrocyAPIError("fail")
+        result = _ai_sort_products(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _ai_assign_due_dates
+# ---------------------------------------------------------------------------
+
+class TestAiAssignDueDates:
+    def _make_grocy(self, products):
+        g = MagicMock(spec=GrocyClient)
+        g.get_all_products.return_value = products
+        g.update_product.return_value = None
+        return g
+
+    @patch("main._call_gemini")
+    def test_updates_products_with_ai_dates(self, mock_gemini):
+        from main import _ai_assign_due_dates
+        products = [{"id": 1, "name": "Maito"}, {"id": 5, "name": "Pasta"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = '{"1": 14, "5": 1095}'
+
+        result = _ai_assign_due_dates(grocy, "gemini-key")
+        assert result == 2
+        grocy.update_product.assert_any_call(1, default_best_before_days=14)
+        grocy.update_product.assert_any_call(5, default_best_before_days=1095)
+
+    @patch("main._call_gemini")
+    def test_no_products_returns_zero(self, mock_gemini):
+        from main import _ai_assign_due_dates
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.return_value = []
+        result = _ai_assign_due_dates(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_invalid_json_skips_batch(self, mock_gemini):
+        from main import _ai_assign_due_dates
+        products = [{"id": 1, "name": "Maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = "not-json"
+
+        result = _ai_assign_due_dates(grocy, "key")
+        assert result == 0
+        grocy.update_product.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_grocy_error_returns_zero(self, mock_gemini):
+        from main import _ai_assign_due_dates
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.side_effect = GrocyAPIError("fail")
+        result = _ai_assign_due_dates(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# main – AI mode integration
+# ---------------------------------------------------------------------------
+
+class TestMainAIMode:
+    @patch("main._ai_sort_products")
+    @patch("main.GrocyClient")
+    def test_sort_mode_calls_ai_sort(self, MockGrocy, mock_sort):
+        mock_sort.return_value = 3
+        rc = main([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_sort.assert_called_once()
+
+    @patch("main._ai_assign_due_dates")
+    @patch("main.GrocyClient")
+    def test_date_mode_calls_ai_dates(self, MockGrocy, mock_date):
+        mock_date.return_value = 5
+        rc = main([
+            "--date",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_date.assert_called_once()
+
+    @patch("main._ai_assign_due_dates")
+    @patch("main._ai_sort_products")
+    @patch("main.GrocyClient")
+    def test_sort_and_date_together(self, MockGrocy, mock_sort, mock_date):
+        mock_sort.return_value = 2
+        mock_date.return_value = 2
+        rc = main([
+            "--sort", "--date",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_sort.assert_called_once()
+        mock_date.assert_called_once()
+
+    def test_missing_gemini_key_returns_1(self):
+        rc = main([
+            "--sort",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+        ])
+        assert rc == 1
