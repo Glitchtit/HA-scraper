@@ -6,13 +6,16 @@ A Python command-line tool that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/ka
 
 ## Features
 
-- Searches or browses the k-ruoka.fi product catalogue using the store's internal JSON API
+- Two backends – pick the one that works for you:
+  - **GraphQL** (default) – `mobile.k-ruoka.fi/graphql`, no Cloudflare bypass needed
+  - **kr-api REST** (fallback) – `www.k-ruoka.fi/kr-api`, requires a CF bypass
+- Searches or browses the k-ruoka.fi product catalogue by keyword or full catalogue
+- Handles both `Product` and `AssortmentSearchResult` GraphQL types
+- Full category-based catalogue browsing via 27 hardcoded K-group category slugs
 - Extracts product name and EAN/barcode for each item
 - Creates products in Grocy and attaches their EAN barcodes
 - Skips products whose barcode is already registered in Grocy (configurable)
 - Supports `--dry-run` mode: scrape only, do not write to Grocy
-- Paginated fetching with configurable page size and an optional product limit
-- Cloudflare Bot Management bypass via FlareSolverr or manual cookie injection
 - Configuration via CLI flags *or* environment variables / `.env` file
 
 ---
@@ -22,7 +25,7 @@ A Python command-line tool that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/ka
 - Python 3.10+
 - A running Grocy instance with a valid API key
 - The K-group store ID for the store you want to scrape (see [Finding your store ID](#finding-your-store-id))
-- A Cloudflare bypass (see [Cloudflare bypass](#cloudflare-bypass)) — required because k-ruoka.fi uses Cloudflare Bot Management
+- **No Cloudflare bypass needed** when using the default GraphQL backend
 
 ## Installation
 
@@ -34,39 +37,63 @@ pip install -r requirements.txt
 
 ---
 
-## Cloudflare bypass
+## Backends
 
-k-ruoka.fi is protected by **Cloudflare Bot Management**.  Without a valid
-`cf_clearance` cookie the API returns HTTP 403.  Choose one of these strategies:
+### GraphQL (default, recommended)
 
-### Option A – FlareSolverr (recommended, free)
+The mobile app GraphQL API at `https://mobile.k-ruoka.fi/graphql` — **no Cloudflare bypass required**.  Simply install and run:
 
-[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) is a free Docker
-service that automatically solves Cloudflare challenges:
+```bash
+python main.py --store N110 --browse --dry-run
+```
+
+**Limitations**: The server enforces an `offset ≤ 1000` hard limit, so a single
+query returns at most 1,100 products.  The `browse()` mode works around this by
+iterating all 27 category slugs, fetching up to 1,100 products per category.
+Very large categories (> 1,100 products) will be partially fetched.
+
+### kr-api REST (fallback)
+
+The web SPA REST API at `https://www.k-ruoka.fi/kr-api` — requires a Cloudflare
+bypass.  Use `--no-graphql` to activate it:
+
+```bash
+python main.py --store N110 --browse --no-graphql --dry-run
+```
+
+**Cloudflare bypass** — choose one strategy:
+
+#### Option A – FlareSolverr (recommended, free)
 
 ```bash
 docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
 ```
 
-Then set `FLARESOLVERR_URL` in your `.env` file or environment:
-
+Set in `.env`:
 ```dotenv
 FLARESOLVERR_URL=http://localhost:8191/v1
 ```
 
-### Option B – Manual cookie injection
+#### Option B – Manual cookie injection
 
 1. Open https://www.k-ruoka.fi/kauppa in your browser and pass the challenge.
 2. Open DevTools → Application → Cookies → `www.k-ruoka.fi`.
-3. Copy the value of the `cf_clearance` cookie and the User-Agent your browser used.
-4. Set them in your environment or `.env`:
+3. Copy the value of `cf_clearance` and your browser's User-Agent.
 
 ```dotenv
 CF_CLEARANCE=<value>
 CF_USER_AGENT=<your browser User-Agent>
 ```
 
-> **Note:** `cf_clearance` cookies expire after ~1 hour.  Re-run the above steps when you see 403 errors.
+> **Note:** `cf_clearance` cookies expire after ~1 hour.
+
+#### Option C – curl_cffi TLS impersonation
+
+Install the optional dependency and it is tried automatically if no cookies are provided:
+
+```bash
+pip install curl_cffi
+```
 
 ---
 
@@ -79,23 +106,10 @@ cp .env.example .env
 ```
 
 ```dotenv
-# The store ID from the k-ruoka.fi URL, e.g. https://www.k-ruoka.fi/kauppa?storeId=N110
-# Common stores: N110 = K-Supermarket Helsinki, N137 = K-Citymarket Tammisto
 KRUOKA_STORE_ID=N110
-
-# Base URL of your Grocy instance
 GROCY_BASE_URL=https://grocy.example.com
-
-# API key from Grocy → user settings → Manage API keys
 GROCY_API_KEY=your_api_key_here
-
-# Cloudflare bypass (choose one):
-FLARESOLVERR_URL=http://localhost:8191/v1
-# CF_CLEARANCE=<value>
-# CF_USER_AGENT=<your browser User-Agent>
 ```
-
-All values can also be passed directly as CLI arguments (see [Usage](#usage)).
 
 ---
 
@@ -128,6 +142,13 @@ python main.py --store N110 --browse --max-products 100 \
 python main.py --store N110 --query "juusto" --dry-run
 ```
 
+### Use the kr-api fallback backend
+
+```bash
+python main.py --store N110 --browse --no-graphql \
+    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
+```
+
 ### All options
 
 ```
@@ -136,12 +157,12 @@ usage: main.py [-h] (--query TERM | --browse)
                [--grocy-url URL] [--grocy-key KEY]
                [--location-id ID] [--quantity-unit-id ID]
                [--dry-run] [--skip-existing | --no-skip-existing]
-               [--verbose]
+               [--no-graphql] [--verbose]
 
 options:
   --query TERM          Search for products matching this term.
-  --browse              Browse the full product catalogue (may be very large).
-  --store STORE_ID      K-group store ID (e.g. N110).
+  --browse              Browse the full product catalogue.
+  --store STORE_ID      K-group store ID (e.g. N110, N137).
                         Also read from KRUOKA_STORE_ID env var.
   --max-products N      Stop after scraping N products.
   --grocy-url URL       Base URL of the Grocy instance.
@@ -153,6 +174,8 @@ options:
   --dry-run             Scrape products but do not write to Grocy.
   --skip-existing       Skip products whose EAN is already in Grocy (default).
   --no-skip-existing    Re-add products even if their EAN is already in Grocy.
+  --no-graphql          Use the kr-api REST backend instead of GraphQL.
+                        Requires a Cloudflare bypass (see .env.example).
   -v, --verbose         Enable DEBUG logging.
 ```
 
@@ -174,7 +197,7 @@ Common store IDs: `N110` (K-Supermarket Helsinki), `N137` (K-Citymarket Tammisto
 grocy_scraper/
 ├── grocy_scraper/
 │   ├── __init__.py
-│   ├── scraper.py        # k-ruoka.fi product scraper
+│   ├── scraper.py        # k-ruoka.fi product scraper (GraphQL + kr-api backends)
 │   └── grocy_client.py   # Grocy REST API client
 ├── tests/
 │   ├── test_scraper.py
