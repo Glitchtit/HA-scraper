@@ -43,6 +43,7 @@ except ImportError:
 from grocy_scraper.barcodebuddy_client import BarcodeBuddyClient, BarcodeBuddyError
 from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 from grocy_scraper.scraper import KRuokaScraper, Product
+from grocy_scraper.skaupat_client import SKaupatError, lookup_ean as skaupat_lookup
 
 import requests
 
@@ -803,19 +804,34 @@ def _discover_products(args: argparse.Namespace) -> int:
         logger.info("Looking up EAN %s …", barcode)
 
         # Always search K-Ruoka first; its data takes priority.
-        # Fall back to the BB-resolved name only when K-Ruoka has no match.
+        # Fall back to S-kaupat, then the BB-resolved name.
         product = None
         for p in scraper.search(barcode, max_products=10):
             if p.ean == barcode:
                 product = p
                 break
 
+        # Fallback: try S-kaupat.fi product lookup by EAN.
+        if product is None:
+            try:
+                sk = skaupat_lookup(barcode)
+                if sk is not None:
+                    logger.info("  Found on S-kaupat: '%s'.", sk.name)
+                    product = Product(
+                        name=sk.name,
+                        ean=sk.ean,
+                        description=sk.description,
+                        image_url=sk.image_url,
+                    )
+            except SKaupatError as exc:
+                logger.debug("  S-kaupat lookup failed: %s", exc)
+
         if product is None and bb_name:
-            logger.info("  Not on K-Ruoka; using Barcode Buddy name '%s'.", bb_name)
+            logger.info("  Not on K-Ruoka or S-kaupat; using Barcode Buddy name '%s'.", bb_name)
             product = Product(name=bb_name, ean=barcode)
 
         if product is None:
-            logger.info("  EAN %s not found on K-Ruoka – skipping.", barcode)
+            logger.info("  EAN %s not found on K-Ruoka or S-kaupat – skipping.", barcode)
             skipped += 1
             continue
 

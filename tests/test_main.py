@@ -886,11 +886,12 @@ class TestDiscoverProducts:
         grocy_instance.add_stock.assert_called_once_with(50, amount=2.0)
         bb_instance.delete_barcode.assert_called_once_with("10")
 
+    @patch("main.skaupat_lookup")
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
     @patch("main.BarcodeBuddyClient")
-    def test_new_barcode_falls_back_to_bb_name(self, MockBB, MockGrocy, MockScraper):
-        """When K-Ruoka has no match, fall back to the BB-resolved name."""
+    def test_new_barcode_falls_back_to_bb_name(self, MockBB, MockGrocy, MockScraper, mock_sk):
+        """When K-Ruoka and S-kaupat have no match, fall back to BB name."""
         from grocy_scraper.barcodebuddy_client import PendingBarcode
         from main import _discover_products
         from argparse import Namespace
@@ -911,6 +912,7 @@ class TestDiscoverProducts:
 
         scraper_instance = MockScraper.return_value
         scraper_instance.search.return_value = iter([])  # K-Ruoka finds nothing.
+        mock_sk.return_value = None  # S-kaupat finds nothing either.
 
         args = Namespace(
             bbuddy_url="https://bb.example.com",
@@ -928,13 +930,15 @@ class TestDiscoverProducts:
         rc = _discover_products(args)
         assert rc == 0
         scraper_instance.search.assert_called_once()
+        mock_sk.assert_called_once_with("6410405082657")
         grocy_instance.create_product.assert_called_once()
         bb_instance.delete_barcode.assert_called_once_with("10")
 
+    @patch("main.skaupat_lookup")
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
     @patch("main.BarcodeBuddyClient")
-    def test_not_found_on_kruoka_skips(self, MockBB, MockGrocy, MockScraper):
+    def test_not_found_on_kruoka_or_skaupat_skips(self, MockBB, MockGrocy, MockScraper, mock_sk):
         from grocy_scraper.barcodebuddy_client import PendingBarcode
         from main import _discover_products
         from argparse import Namespace
@@ -949,6 +953,7 @@ class TestDiscoverProducts:
 
         scraper_instance = MockScraper.return_value
         scraper_instance.search.return_value = iter([])
+        mock_sk.return_value = None
 
         args = Namespace(
             bbuddy_url="https://bb.example.com",
@@ -967,6 +972,65 @@ class TestDiscoverProducts:
         assert rc == 0
         grocy_instance.create_product.assert_not_called()
         bb_instance.delete_barcode.assert_not_called()
+        mock_sk.assert_called_once_with("0000000000000")
+
+    @patch("main.skaupat_lookup")
+    @patch("main.KRuokaScraper")
+    @patch("main.GrocyClient")
+    @patch("main.BarcodeBuddyClient")
+    def test_skaupat_fallback_creates_product(self, MockBB, MockGrocy, MockScraper, mock_sk):
+        """When K-Ruoka has no match, S-kaupat result is used."""
+        from grocy_scraper.barcodebuddy_client import PendingBarcode
+        from grocy_scraper.skaupat_client import SKaupatProduct
+        from main import _discover_products
+        from argparse import Namespace
+
+        bb_instance = MockBB.return_value
+        bb_instance.get_pending_barcodes.return_value = [
+            PendingBarcode(id="77", barcode="6414893095588", amount="1"),
+        ]
+
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_barcodes.return_value = []
+        grocy_instance.get_product_by_barcode.side_effect = [
+            None,
+            {"id": 88, "name": "Kotimaista luomukananmunat M6"},
+        ]
+        grocy_instance.create_product.return_value = 88
+
+        scraper_instance = MockScraper.return_value
+        scraper_instance.search.return_value = iter([])  # K-Ruoka empty.
+
+        mock_sk.return_value = SKaupatProduct(
+            name="Kotimaista luomukananmunat M6",
+            ean="6414893095588",
+            description="Luomumunia 6 kpl.",
+            brand="Kotimaista",
+            image_url="https://cdn.s-cloud.fi/v1/w720h720@_q75/product/ean/6414893095588_kuva1.webp",
+        )
+
+        args = Namespace(
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc = _discover_products(args)
+        assert rc == 0
+        mock_sk.assert_called_once_with("6414893095588")
+        grocy_instance.create_product.assert_called_once()
+        # Verify the product was created with S-kaupat data.
+        call_args = grocy_instance.create_product.call_args
+        assert call_args[1]["name"] == "Kotimaista luomukananmunat M6"
+        grocy_instance.add_stock.assert_called_once_with(88, amount=1.0)
+        bb_instance.delete_barcode.assert_called_once_with("77")
 
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
