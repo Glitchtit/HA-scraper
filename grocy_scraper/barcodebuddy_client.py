@@ -1,8 +1,17 @@
-"""Barcode Buddy client for interacting with unknown barcodes.
+"""Barcode Buddy client for interacting with pending barcodes.
 
 Barcode Buddy does not expose REST API endpoints for listing or deleting
-unknown barcodes.  This client scrapes the main web UI HTML to extract them
+pending barcodes.  This client scrapes the main web UI HTML to extract them
 and uses form POSTs to remove individual entries.
+
+Barcode Buddy has two relevant sections on its main page:
+
+* **New Barcodes** (form ``f1``): barcodes that were looked up and have a
+  product name, but have not yet been assigned to a Grocy product.
+* **Unknown Barcodes** (form ``f2``): barcodes that could not be resolved to
+  any product name at all.
+
+Both sections are scraped by this client.
 
 Authentication is done via the ``BBUDDY-API-KEY`` HTTP header (same as the
 official ``/api`` endpoints).
@@ -25,12 +34,17 @@ class BarcodeBuddyError(Exception):
 
 
 @dataclass
-class UnknownBarcode:
-    """An unknown barcode entry from Barcode Buddy."""
+class PendingBarcode:
+    """A pending barcode entry from Barcode Buddy (new or unknown)."""
 
     id: str
     barcode: str
     amount: str
+    name: str = ""
+
+
+# Keep the old name as an alias for backwards compatibility.
+UnknownBarcode = PendingBarcode
 
 
 class BarcodeBuddyClient:
@@ -56,24 +70,27 @@ class BarcodeBuddyClient:
         self._session = session or requests.Session()
         self._session.headers.update({"BBUDDY-API-KEY": api_key})
 
-    def get_unknown_barcodes(self) -> list[UnknownBarcode]:
-        """Fetch the list of unknown barcodes from Barcode Buddy.
+    def get_pending_barcodes(self) -> list[PendingBarcode]:
+        """Fetch all pending barcodes (new + unknown) from Barcode Buddy.
 
-        Scrapes the main web UI page and parses the "Unknown Barcodes" table.
+        Scrapes the main web UI page and parses both the "New Barcodes"
+        (form ``f1``) and "Unknown Barcodes" (form ``f2``) tables.
         """
-        url = f"{self.base_url}/index.php"
-        try:
-            resp = self._session.get(url, timeout=15)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise BarcodeBuddyError(
-                f"Failed to fetch Barcode Buddy page: {exc}"
-            ) from exc
+        html = self._fetch_index()
+        new = self._parse_new_barcodes(html)
+        unknown = self._parse_unknown_barcodes(html)
+        return new + unknown
 
-        return self._parse_unknown_barcodes(resp.text)
+    def get_unknown_barcodes(self) -> list[PendingBarcode]:
+        """Fetch only the unknown barcodes (form ``f2``)."""
+        return self._parse_unknown_barcodes(self._fetch_index())
+
+    def get_new_barcodes(self) -> list[PendingBarcode]:
+        """Fetch only the new/known barcodes (form ``f1``)."""
+        return self._parse_new_barcodes(self._fetch_index())
 
     def delete_barcode(self, barcode_id: str) -> None:
-        """Remove an unknown barcode entry by its internal ID.
+        """Remove a barcode entry by its internal ID.
 
         Sends a form POST to the Barcode Buddy main page, mimicking the
         "Remove" button in the web UI.
@@ -91,37 +108,39 @@ class BarcodeBuddyClient:
                 f"Failed to delete barcode {barcode_id}: {exc}"
             ) from exc
 
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_index(self) -> str:
+        """GET the Barcode Buddy main page and return the HTML."""
+        url = f"{self.base_url}/index.php"
+        try:
+            resp = self._session.get(url, timeout=15)
+            resp.raise_for_status()
+            return resp.text
+        except requests.RequestException as exc:
+            raise BarcodeBuddyError(
+                f"Failed to fetch Barcode Buddy page: {exc}"
+            ) from exc
+
     @staticmethod
-    def _parse_unknown_barcodes(html: str) -> list[UnknownBarcode]:
-        """Extract unknown barcodes from the Barcode Buddy HTML page.
+    def _parse_unknown_barcodes(html: str) -> list[PendingBarcode]:
+        """Extract unknown barcodes from form ``f2``.
 
-        The unknown barcodes table contains rows with:
-        - Column 1: barcode string
-        - Column 3: quantity
-        - A "button_delete" with value=<id>
-
-        We parse the HTML with regex since BB produces simple, predictable markup.
+        Unknown barcodes table columns: Barcode, Look up, Quantity, Product,
+        Action, Create, Remove.
         """
-        results: list[UnknownBarcode] = []
+        results: list[PendingBarcode] = []
 
-        # Find the unknown barcodes card/section.  BB wraps it in a card
-        # with heading "Unknown Barcodes".  The table rows contain the data.
-        # Each row has a button_delete with value=<id>.
-        #
-        # Strategy: find all table rows that contain a button_delete, then
-        # extract the barcode from the first <td> and the id from the button value.
-
-        # Match table rows within the unknown barcodes section.
-        # The section is identified by the "f2" form id used by BB.
-        unknown_section = re.search(
+        section = re.search(
             r'id="f2"(.*?)(?:</form>|$)', html, re.DOTALL
         )
-        if not unknown_section:
+        if not section:
             return results
 
-        section_html = unknown_section.group(1)
+        section_html = section.group(1)
 
-        # Find each row: extract barcode (first <td>), quantity, and delete button id.
         row_pattern = re.compile(
             r'<tr[^>]*>\s*<td[^>]*>([^<]+)</td>'  # barcode
             r'.*?'  # skip lookup link
@@ -136,7 +155,53 @@ class BarcodeBuddyClient:
             amount = match.group(2).strip()
             barcode_id = match.group(3).strip()
             results.append(
-                UnknownBarcode(id=barcode_id, barcode=barcode, amount=amount)
+                PendingBarcode(id=barcode_id, barcode=barcode, amount=amount)
+            )
+
+        return results
+
+    @staticmethod
+    def _parse_new_barcodes(html: str) -> list[PendingBarcode]:
+        """Extract new (known) barcodes from form ``f1``.
+
+        New barcodes table columns: Name, [Federation], Barcode, Quantity,
+        Product, Action, Tags, Create, Remove.  The Name is the first <td>.
+        """
+        results: list[PendingBarcode] = []
+
+        section = re.search(
+            r'id="f1"(.*?)(?:</form>|$)', html, re.DOTALL
+        )
+        if not section:
+            return results
+
+        section_html = section.group(1)
+
+        # Each row starts with the product name, then optionally a federation
+        # cell, then the barcode.  We match name in the first <td>, then scan
+        # forward for a <td> containing a numeric-looking barcode (EAN-8/13),
+        # then quantity, then button_delete.
+        row_pattern = re.compile(
+            r'<tr[^>]*>\s*<td[^>]*>(.*?)</td>'  # name (may contain <span>)
+            r'.*?'  # skip optional federation cell
+            r'<td[^>]*>(\d{8,14})</td>'  # barcode (EAN-8 to EAN-14)
+            r'\s*<td[^>]*>([^<]*)</td>'  # quantity
+            r'.*?'  # skip product select, action, tags, create
+            r'name="button_delete"[^>]*value="(\d+)"',  # id
+            re.DOTALL,
+        )
+
+        for match in row_pattern.finditer(section_html):
+            raw_name = match.group(1).strip()
+            # Strip HTML tags from name (BB wraps long names in <span>).
+            name = re.sub(r'<[^>]+>', '', raw_name).strip()
+            barcode = match.group(2).strip()
+            amount = match.group(3).strip()
+            barcode_id = match.group(4).strip()
+            results.append(
+                PendingBarcode(
+                    id=barcode_id, barcode=barcode, amount=amount, name=name
+                )
             )
 
         return results
