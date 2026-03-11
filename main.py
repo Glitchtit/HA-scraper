@@ -1069,6 +1069,9 @@ def _update_products(args: argparse.Namespace) -> int:
         updated, skipped, errors,
     )
     return 0 if errors == 0 else 1
+
+
+def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
     if args.verbose:
