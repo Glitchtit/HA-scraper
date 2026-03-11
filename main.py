@@ -40,6 +40,7 @@ try:
 except ImportError:
     pass  # python-dotenv is optional; fall back to plain env vars
 
+from grocy_scraper.barcodebuddy_client import BarcodeBuddyClient, BarcodeBuddyError
 from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 from grocy_scraper.scraper import KRuokaScraper, Product
 
@@ -73,6 +74,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Browse the full product catalogue (may be very large).",
+    )
+    scrape_group.add_argument(
+        "--discover",
+        action="store_true",
+        default=False,
+        help=(
+            "Fetch unknown barcodes from Barcode Buddy, search K-Ruoka for "
+            "matching products, add them to Grocy, stock them, and remove "
+            "from the Barcode Buddy unknown list.  "
+            "Requires --bbuddy-url and --bbuddy-key (or env vars)."
+        ),
     )
 
     parser.add_argument(
@@ -130,6 +142,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Grocy quantity unit ID to assign to new products. "
             "Also read from the GROCY_QUANTITY_UNIT_ID environment variable."
+        ),
+    )
+
+    # Barcode Buddy options (for --discover)
+    parser.add_argument(
+        "--bbuddy-url",
+        default=os.environ.get("BARCODEBDY_URL", ""),
+        metavar="URL",
+        help=(
+            "Base URL of the Barcode Buddy instance "
+            "(e.g. https://bbuddy.example.com).  "
+            "Also read from the BARCODEBDY_URL environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--bbuddy-key",
+        default=os.environ.get("BARCODEBDY_API", ""),
+        metavar="KEY",
+        help=(
+            "Barcode Buddy API key.  "
+            "Also read from the BARCODEBDY_API environment variable."
         ),
     )
 
@@ -539,17 +572,18 @@ def _validate_args(args: argparse.Namespace) -> int:
     """Return 0 if arguments are valid, 1 otherwise."""
     ai_mode = args.sort or args.date
     scrape_mode = bool(args.query or args.browse)
+    discover_mode = args.discover
 
     # At least one operational mode must be selected.
-    if not ai_mode and not scrape_mode:
+    if not ai_mode and not scrape_mode and not discover_mode:
         logger.error(
-            "Specify a scraping mode (--query / --browse) or an AI analysis mode "
-            "(--sort / --date)."
+            "Specify a scraping mode (--query / --browse), an AI analysis mode "
+            "(--sort / --date), or --discover."
         )
         return 1
 
-    # Store is required only when actually scraping.
-    if scrape_mode:
+    # Store is required when scraping or discovering.
+    if scrape_mode or discover_mode:
         if not args.store:
             logger.error(
                 "Store ID is required.  Use --store or set the KRUOKA_STORE_ID "
@@ -557,8 +591,8 @@ def _validate_args(args: argparse.Namespace) -> int:
             )
             return 1
 
-    if ai_mode or (scrape_mode and not args.dry_run):
-        # Grocy connection is required for AI mode and non-dry-run scraping.
+    if ai_mode or (scrape_mode and not args.dry_run) or discover_mode:
+        # Grocy connection is required for AI mode, non-dry-run scraping, and discover.
         if not args.grocy_url:
             logger.error(
                 "Grocy URL is required.  Use --grocy-url or set GROCY_BASE_URL."
@@ -578,7 +612,7 @@ def _validate_args(args: argparse.Namespace) -> int:
             )
             return 1
 
-    if scrape_mode and not args.dry_run:
+    if (scrape_mode and not args.dry_run) or discover_mode:
         if args.location_id is None:
             logger.error(
                 "Location ID is required.  Use --location-id or set GROCY_LOCATION_ID."
@@ -589,6 +623,21 @@ def _validate_args(args: argparse.Namespace) -> int:
                 "Quantity unit ID is required.  Use --quantity-unit-id or set GROCY_QUANTITY_UNIT_ID."
             )
             return 1
+
+    if discover_mode:
+        if not args.bbuddy_url:
+            logger.error(
+                "Barcode Buddy URL is required for --discover.  "
+                "Use --bbuddy-url or set the BARCODEBDY_URL environment variable."
+            )
+            return 1
+        if not args.bbuddy_key:
+            logger.error(
+                "Barcode Buddy API key is required for --discover.  "
+                "Use --bbuddy-key or set the BARCODEBDY_API environment variable."
+            )
+            return 1
+
     return 0
 
 
@@ -678,6 +727,127 @@ def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known
     return 0 if errors == 0 else 1
 
 
+def _discover_products(args: argparse.Namespace) -> int:
+    """Discover products via Barcode Buddy unknown barcodes.
+
+    1. Fetch unknown barcodes from Barcode Buddy.
+    2. For each barcode, search K-Ruoka by EAN.
+    3. If found, create the product in Grocy (via ``sync_product``).
+    4. Add 1 unit to Grocy stock.
+    5. Remove the barcode from Barcode Buddy's unknown list.
+
+    Returns 0 on success, 1 if any errors occurred.
+    """
+    bbuddy = BarcodeBuddyClient(
+        base_url=args.bbuddy_url, api_key=args.bbuddy_key
+    )
+    grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+    scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
+
+    # Pre-load known barcodes.
+    known_barcodes: set[str] = set()
+    try:
+        for entry in grocy.get_all_barcodes():
+            bc = entry.get("barcode")
+            if bc:
+                known_barcodes.add(str(bc))
+        logger.info("  %d barcode(s) already registered in Grocy.", len(known_barcodes))
+    except GrocyAPIError as exc:
+        logger.warning("Could not fetch existing barcodes: %s", exc)
+
+    # Fetch unknown barcodes from Barcode Buddy.
+    try:
+        unknowns = bbuddy.get_unknown_barcodes()
+    except BarcodeBuddyError as exc:
+        logger.error("Failed to fetch unknown barcodes from Barcode Buddy: %s", exc)
+        return 1
+
+    if not unknowns:
+        logger.info("No unknown barcodes in Barcode Buddy.")
+        return 0
+
+    logger.info("Found %d unknown barcode(s) in Barcode Buddy.", len(unknowns))
+
+    created = skipped = errors = 0
+
+    for entry in unknowns:
+        barcode = entry.barcode
+        logger.info("Looking up EAN %s on K-Ruoka …", barcode)
+
+        # Search K-Ruoka using the barcode as query (EAN search).
+        product = None
+        for p in scraper.search(barcode, max_products=10):
+            if p.ean == barcode:
+                product = p
+                break
+
+        if product is None:
+            logger.info("  EAN %s not found on K-Ruoka – skipping.", barcode)
+            skipped += 1
+            continue
+
+        logger.info("  Found: '%s' (EAN %s).", product.name, product.ean)
+
+        # Sync product to Grocy.
+        try:
+            added = sync_product(
+                product,
+                grocy,
+                location_id=args.location_id,
+                quantity_unit_id=args.quantity_unit_id,
+                skip_existing=False,
+                known_barcodes=known_barcodes,
+                upload_images=args.upload_images,
+            )
+        except GrocyAPIError as exc:
+            logger.error("Grocy error for '%s': %s", product.name, exc)
+            errors += 1
+            continue
+
+        if not added:
+            # Product already exists — look up its Grocy ID for stocking.
+            existing = grocy.get_product_by_barcode(barcode)
+            if existing:
+                grocy_id = existing.get("id")
+            else:
+                logger.info("  Product already in Grocy – skipping stock/BB removal.")
+                skipped += 1
+                continue
+        else:
+            # Newly created — get the Grocy product ID via barcode lookup.
+            existing = grocy.get_product_by_barcode(barcode)
+            grocy_id = existing.get("id") if existing else None
+
+        # Add to Grocy stock.
+        if grocy_id is not None:
+            try:
+                amount = float(entry.amount) if entry.amount else 1.0
+                grocy.add_stock(int(grocy_id), amount=amount)
+                logger.info(
+                    "  → Added %.0f unit(s) to Grocy stock (product ID %s).",
+                    amount, grocy_id,
+                )
+            except (GrocyAPIError, ValueError) as exc:
+                logger.warning("  Could not add stock for '%s': %s", product.name, exc)
+
+        # Remove from Barcode Buddy unknown list.
+        try:
+            bbuddy.delete_barcode(entry.id)
+            logger.info("  → Removed EAN %s from Barcode Buddy.", barcode)
+        except BarcodeBuddyError as exc:
+            logger.warning(
+                "  Could not remove EAN %s from Barcode Buddy: %s", barcode, exc
+            )
+
+        created += 1
+
+    logger.info(
+        "--discover complete: created/stocked: %d  not found: %d  errors: %d",
+        created, skipped, errors,
+    )
+    return 0 if errors == 0 else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -695,9 +865,13 @@ def main(argv: list[str] | None = None) -> int:
             _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model)
         if args.date:
             _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model)
-        # If no scraping mode was also requested, we are done.
-        if not args.query and not args.browse:
+        # If no scraping or discover mode was also requested, we are done.
+        if not args.query and not args.browse and not args.discover:
             return 0
+
+    # Discover mode: Barcode Buddy → K-Ruoka → Grocy pipeline.
+    if args.discover:
+        return _discover_products(args)
 
     grocy, known_barcodes = _setup_grocy(args)
     return _process_products(args, grocy, known_barcodes)

@@ -323,3 +323,40 @@ class TestUpdateProduct:
         session.put.side_effect = requests.RequestException("connection refused")
         with pytest.raises(GrocyAPIError, match="update product"):
             client.update_product(5, location_id=2)
+
+
+# ---------------------------------------------------------------------------
+# add_stock
+# ---------------------------------------------------------------------------
+
+class TestAddStock:
+    def test_success(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={})
+        client.add_stock(42, amount=2.0)
+        session.post.assert_called_once()
+        url = session.post.call_args[0][0]
+        assert "/api/stock/products/42/add" in url
+        body = session.post.call_args[1]["json"]
+        assert body["amount"] == 2.0
+        assert body["transaction_type"] == "purchase"
+
+    def test_default_amount_is_one(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={})
+        client.add_stock(10)
+        body = session.post.call_args[1]["json"]
+        assert body["amount"] == 1.0
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
+        session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
+        with pytest.raises(GrocyAPIError, match="add stock"):
+            client.add_stock(42)
+
+    def test_request_error_raises(self):
+        client, session = _make_client()
+        session.post.side_effect = requests.RequestException("timeout")
+        with pytest.raises(GrocyAPIError, match="add stock"):
+            client.add_stock(42)
