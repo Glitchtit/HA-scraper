@@ -386,6 +386,39 @@ class TestGraphqlSearch:
 
         assert len(products) == 2
 
+    def test_multi_word_query_sends_first_word_to_api(self):
+        """Multi-word queries send only the first word to the upstream API."""
+        items = [_gql_product("Lotus Soft Embo 8 rll wc-paperi", "1")]
+        session = _make_mock_session([_gql_page(items, total=1)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        list(scraper.search("lotus paperi"))
+
+        sent_query = session.post.call_args[1]["json"]["variables"]["query"]
+        assert sent_query == "lotus"
+
+    def test_single_word_query_sends_full_query_to_api(self):
+        """Single-word queries send the full query string to the API."""
+        items = [_gql_product("Kevytmaito 1l", "1")]
+        session = _make_mock_session([_gql_page(items, total=1)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        list(scraper.search("kevytmaito"))
+
+        sent_query = session.post.call_args[1]["json"]["variables"]["query"]
+        assert sent_query == "kevytmaito"
+
+    def test_multi_word_query_respects_max_products(self):
+        """max_products is enforced client-side for multi-word queries."""
+        items = [
+            _gql_product("Lotus Soft Embo 8 rll wc-paperi", "1"),
+            _gql_product("Lotus Talous wc-paperi 40rll", "2"),
+            _gql_product("Lotus Premium paperi 6rll", "3"),
+        ]
+        session = _make_mock_session([_gql_page(items, total=3)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("lotus paperi", max_products=2))
+
+        assert len(products) == 2
+
 
 # ---------------------------------------------------------------------------
 # GraphQL browse – _browse_graphql
