@@ -543,7 +543,7 @@ _HTML = """\
       </div>
       <div class="form-group">
         <label for="max-products">Max results</label>
-        <input type="number" id="max-products" value="50" min="1" max="500" />
+        <input type="number" id="max-products" value="10" min="1" max="500" />
       </div>
       <button class="btn btn-primary" id="search-btn">Search</button>
     </div>
