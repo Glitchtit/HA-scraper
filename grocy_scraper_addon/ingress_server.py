@@ -8,13 +8,14 @@ Serves a single-page application that lets users:
 
 API endpoints
 -------------
-GET  /             Serve the HTML UI
-GET  /api/config   Return current add-on configuration summary
-POST /api/search   Search products on K-Ruoka
-POST /api/discover Run Barcode Buddy -> K-Ruoka -> Grocy discover pipeline
-POST /api/sort     Run Gemini AI product location sorting
-POST /api/date     Run Gemini AI best-before date assignment
-POST /api/update   Update existing products from K-Ruoka
+GET  /                  Serve the HTML UI
+GET  /api/config        Return current add-on configuration summary
+POST /api/search        Search products on K-Ruoka
+POST /api/discover      Run Barcode Buddy -> K-Ruoka -> Grocy discover pipeline
+POST /api/sort          Run Gemini AI product location sorting
+POST /api/date          Run Gemini AI best-before date assignment
+POST /api/update        Update existing products from K-Ruoka
+POST /api/add_products  Add selected products to the Grocy database
 """
 
 from __future__ import annotations
@@ -287,6 +288,66 @@ def _handle_update() -> dict[str, Any]:
     return {"success": result_code == 0, "logs": logs}
 
 
+def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
+    """Add selected products to the Grocy database."""
+    products = body.get("products")
+    if not products or not isinstance(products, list):
+        return {"success": False, "error": "No products provided."}
+
+    opts = _read_options()
+    grocy_url = opts.get("grocy_url", "")
+    grocy_key = opts.get("grocy_api_key", "")
+    if not grocy_url or not grocy_key:
+        return {"success": False, "error": "Grocy URL and API key must be configured."}
+
+    from grocy_scraper.grocy_client import GrocyClient, GrocyAPIError
+
+    grocy = GrocyClient(base_url=grocy_url, api_key=grocy_key)
+    location_id = int(opts.get("location_id", 0)) or None
+    quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
+
+    added = 0
+    errors: list[str] = []
+    with _capture_logs() as logs:
+        for item in products:
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            ean = str(item.get("ean", "")).strip()
+            description = str(item.get("description", "")).strip()
+            try:
+                # Skip if a product with this barcode already exists.
+                if ean and grocy.get_product_by_barcode(ean):
+                    logger.info("Skipped '%s' – barcode %s already exists.", name, ean)
+                    continue
+
+                product_id = grocy.create_product(
+                    name,
+                    description=description,
+                    location_id=location_id,
+                    quantity_unit_id=quantity_unit_id,
+                )
+                if ean:
+                    grocy.add_barcode(product_id, ean)
+                logger.info("Added '%s' (id=%d, ean=%s).", name, product_id, ean or "–")
+                added += 1
+            except GrocyAPIError as exc:
+                msg = f"Failed to add '{name}': {exc}"
+                logger.error(msg)
+                errors.append(msg)
+            except Exception as exc:
+                msg = f"Unexpected error adding '{name}': {exc}"
+                logger.exception(msg)
+                errors.append(msg)
+
+    return {
+        "success": len(errors) == 0,
+        "added": added,
+        "errors": errors,
+        "logs": logs,
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTML UI
 # ---------------------------------------------------------------------------
@@ -402,6 +463,24 @@ _HTML = """\
       grid-column:1/-1; font-size:0.9rem;
     }
 
+    /* ── Selection toolbar ── */
+    .selection-toolbar {
+      display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+      margin-bottom:12px;
+    }
+    .selection-toolbar.hidden { display:none; }
+    .btn-select  { background:#424242; color:#e0e0e0; border:1px solid #555; }
+    .btn-add     { background:#4caf50; color:#fff; }
+    .selection-count { font-size:0.82rem; color:#9e9e9e; margin-left:auto; }
+
+    /* ── Product checkbox ── */
+    .product-card { position:relative; }
+    .product-check {
+      position:absolute; top:10px; right:10px;
+      width:18px; height:18px; cursor:pointer;
+      accent-color:#03a9f4;
+    }
+
     /* ── Action row ── */
     .action-row { display:flex; gap:10px; flex-wrap:wrap; }
 
@@ -471,7 +550,14 @@ _HTML = """\
     <div class="status" id="search-status"></div>
   </div>
 
-  <!-- Search results -->
+  <!-- Selection toolbar + search results -->
+  <div class="selection-toolbar hidden" id="selection-toolbar">
+    <button class="btn btn-sm btn-select" id="select-all-btn">Select All</button>
+    <button class="btn btn-sm btn-select" id="select-none-btn">Select None</button>
+    <button class="btn btn-sm btn-add" id="add-products-btn">&#10133; Add Products</button>
+    <span class="selection-count" id="selection-count"></span>
+  </div>
+  <div class="status" id="add-status"></div>
   <div class="results" id="results"></div>
 
   <!-- Actions card -->
@@ -520,6 +606,12 @@ _HTML = """\
   var maxInput    = $("#max-products");
   var searchStat  = $("#search-status");
   var resultsDiv  = $("#results");
+  var selToolbar  = $("#selection-toolbar");
+  var selectAllBtn  = $("#select-all-btn");
+  var selectNoneBtn = $("#select-none-btn");
+  var addProductsBtn = $("#add-products-btn");
+  var selectionCount = $("#selection-count");
+  var addStatus   = $("#add-status");
   var discoverBtn = $("#discover-btn");
   var sortBtn     = $("#sort-btn");
   var dateBtn     = $("#date-btn");
@@ -532,6 +624,7 @@ _HTML = """\
   var configInfo  = $("#config-info");
 
   var actionBtns = [discoverBtn, sortBtn, dateBtn, updateBtn];
+  var lastProducts = [];
 
   // ── Utilities ─────────────────────────────────────────────────────────────
   function esc(s) {
@@ -604,23 +697,87 @@ _HTML = """\
   }
 
   function renderResults(products) {
+    lastProducts = products;
     if (!products.length) {
       resultsDiv.innerHTML = '<div class="no-results">No products found. Try a different search term.</div>';
+      selToolbar.classList.add("hidden");
+      addStatus.innerHTML = "";
       return;
     }
-    resultsDiv.innerHTML = products.map(function (p) {
+    selToolbar.classList.remove("hidden");
+    addStatus.innerHTML = "";
+    resultsDiv.innerHTML = products.map(function (p, idx) {
       var img = p.image_url
         ? '<img class="product-img" src="' + esc(p.image_url) + '" alt="' + esc(p.name) + '" loading="lazy" />'
         : '<div class="product-placeholder">&#128230;</div>';
       var desc = p.description
         ? '<div class="product-desc">' + esc(p.description) + "</div>"
         : "";
-      return '<div class="product-card">' + img +
+      return '<div class="product-card">' +
+        '<input type="checkbox" class="product-check" data-idx="' + idx + '" checked />' +
+        img +
         '<div class="product-info">' +
         '<div class="product-name">' + esc(p.name) + "</div>" +
         '<div class="product-ean">' + esc(p.ean || "\\u2014") + "</div>" +
         desc + "</div></div>";
     }).join("");
+    updateSelectionCount();
+  }
+
+  // ── Selection helpers ──────────────────────────────────────────────────────
+  function getCheckboxes() {
+    return resultsDiv.querySelectorAll(".product-check");
+  }
+
+  function updateSelectionCount() {
+    var boxes = getCheckboxes();
+    var checked = 0;
+    for (var i = 0; i < boxes.length; i++) { if (boxes[i].checked) checked++; }
+    selectionCount.textContent = checked + " of " + boxes.length + " selected";
+    addProductsBtn.disabled = checked === 0;
+  }
+
+  function setAllChecked(val) {
+    var boxes = getCheckboxes();
+    for (var i = 0; i < boxes.length; i++) { boxes[i].checked = val; }
+    updateSelectionCount();
+  }
+
+  // ── Add products ───────────────────────────────────────────────────────────
+  function doAddProducts() {
+    if (running) return;
+    var boxes = getCheckboxes();
+    var selected = [];
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].checked) {
+        selected.push(lastProducts[parseInt(boxes[i].getAttribute("data-idx"), 10)]);
+      }
+    }
+    if (!selected.length) return;
+
+    running = true;
+    addProductsBtn.disabled = true;
+    actionBtns.forEach(function (b) { b.disabled = true; });
+    addStatus.innerHTML = '<span class="loader"></span>Adding ' + selected.length + ' product(s) \\u2026';
+
+    api("POST", "api/add_products", { products: selected })
+      .then(function (data) {
+        if (data.logs && data.logs.length) appendLogs("Add Products", data.logs);
+        if (data.success) {
+          addStatus.innerHTML = '<span class="success">\\u2713 Added ' + data.added + ' product(s) to Grocy.</span>';
+        } else {
+          var msg = data.error || (data.errors && data.errors.length ? data.errors.join("; ") : "Unknown error");
+          addStatus.innerHTML = '<span class="error">Error: ' + esc(msg) + "</span>";
+        }
+      })
+      .catch(function (err) {
+        addStatus.innerHTML = '<span class="error">Error: ' + esc(err) + "</span>";
+      })
+      .finally(function () {
+        running = false;
+        addProductsBtn.disabled = false;
+        actionBtns.forEach(function (b) { b.disabled = false; });
+      });
   }
 
   // ── Action runner ─────────────────────────────────────────────────────────
@@ -680,6 +837,12 @@ _HTML = """\
   // ── Bind events ───────────────────────────────────────────────────────────
   searchBtn.addEventListener("click", doSearch);
   queryInput.addEventListener("keydown", function (e) { if (e.key === "Enter") doSearch(); });
+  selectAllBtn.addEventListener("click", function () { setAllChecked(true); });
+  selectNoneBtn.addEventListener("click", function () { setAllChecked(false); });
+  addProductsBtn.addEventListener("click", doAddProducts);
+  resultsDiv.addEventListener("change", function (e) {
+    if (e.target.classList.contains("product-check")) updateSelectionCount();
+  });
   discoverBtn.addEventListener("click", function () { runAction("discover", "Discover"); });
   sortBtn.addEventListener("click",     function () { runAction("sort", "Sort"); });
   dateBtn.addEventListener("click",     function () { runAction("date", "Date"); });
@@ -710,6 +873,7 @@ _POST_HANDLERS: dict[str, Any] = {
     "/api/sort": _handle_sort,
     "/api/date": _handle_date,
     "/api/update": _handle_update,
+    "/api/add_products": _handle_add_products,
 }
 
 
@@ -765,7 +929,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            if handler is _handle_search:
+            if handler is _handle_search or handler is _handle_add_products:
                 result = handler(body)
             else:
                 result = handler()
