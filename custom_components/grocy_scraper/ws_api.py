@@ -64,28 +64,30 @@ class _CapturingHandler(logging.Handler):
         datefmt="%H:%M:%S",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, on_emit=None) -> None:
         super().__init__(level=logging.DEBUG)
         self.setFormatter(self._FORMATTER)
         self.records: list[dict[str, str]] = []
+        self._on_emit = on_emit
 
     def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(
-            {
-                "level": record.levelname,
-                "message": self.format(record),
-            }
-        )
+        entry = {
+            "level": record.levelname,
+            "message": self.format(record),
+        }
+        self.records.append(entry)
+        if self._on_emit:
+            self._on_emit(entry)
 
 
 @contextmanager
-def _capture_logs() -> Generator[list[dict[str, str]], None, None]:
+def _capture_logs(on_emit=None) -> Generator[list[dict[str, str]], None, None]:
     """Attach a capturing handler to each grocy_scraper logger for the duration.
 
     Yields the live list of captured {level, message} dicts so callers can
     read it after the ``with`` block exits.
     """
-    handler = _CapturingHandler()
+    handler = _CapturingHandler(on_emit=on_emit)
     target_loggers = [logging.getLogger(ns) for ns in _CAPTURE_NAMESPACES]
     for lgr in target_loggers:
         lgr.addHandler(handler)
@@ -96,6 +98,16 @@ def _capture_logs() -> Generator[list[dict[str, str]], None, None]:
     finally:
         for lgr in target_loggers:
             lgr.removeHandler(handler)
+
+
+def _make_log_sender(hass, connection, msg_id):
+    """Return a callback that sends each log entry as a live WS event."""
+    def _send(entry):
+        hass.loop.call_soon_threadsafe(
+            connection.send_message,
+            websocket_api.event_message(msg_id, {"log": entry}),
+        )
+    return _send
 
 
 @callback
@@ -250,36 +262,40 @@ async def ws_run_discover(
         return
 
     entry = entries[0]
+    msg_id = msg["id"]
+    connection.send_result(msg_id)
+    send_log = _make_log_sender(hass, connection, msg_id)
+
     try:
         result = await hass.async_add_executor_job(
             _run_discover_sync,
             dict(entry.data),
             dict(entry.options),
+            send_log,
         )
-        connection.send_result(msg["id"], result)
     except Exception as exc:  # noqa: BLE001
         _LOGGER.exception("run_discover failed")
-        connection.send_error(msg["id"], "discover_failed", str(exc))
+        result = {"success": False, "error": str(exc)}
+
+    connection.send_message(
+        websocket_api.event_message(msg_id, {"done": True, **result})
+    )
 
 
-def _run_discover_sync(config: dict, options: dict) -> dict[str, Any]:
+def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
     """Execute the Barcode Buddy -> K-Ruoka -> Grocy discovery pipeline."""
     bbuddy_url = options.get(CONF_BBUDDY_URL, "")
     bbuddy_user = options.get(CONF_BBUDDY_USER, "")
     bbuddy_password = options.get(CONF_BBUDDY_PASSWORD, "")
 
     if not (bbuddy_url and bbuddy_user and bbuddy_password):
-        return {
-            "success": False,
-            "skipped": True,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "Barcode Buddy URL, username, and password are required "
-                    "for Discover. Configure them in the integration options.",
-                }
-            ],
-        }
+        if on_log:
+            on_log({
+                "level": "WARNING",
+                "message": "Barcode Buddy URL, username, and password are required "
+                "for Discover. Configure them in the integration options.",
+            })
+        return {"success": False, "skipped": True}
 
     _ensure_repo_on_path()
 
@@ -299,10 +315,10 @@ def _run_discover_sync(config: dict, options: dict) -> dict[str, Any]:
 
     import main as _main  # noqa: PLC0415
 
-    with _capture_logs() as logs:
+    with _capture_logs(on_emit=on_log):
         result_code: int = _main._discover_products(args)
 
-    return {"success": result_code == 0, "skipped": False, "logs": logs}
+    return {"success": result_code == 0, "skipped": False}
 
 
 # ---------------------------------------------------------------------------
@@ -330,34 +346,37 @@ async def ws_run_sort(
         return
 
     entry = entries[0]
+    msg_id = msg["id"]
+    connection.send_result(msg_id)
+    send_log = _make_log_sender(hass, connection, msg_id)
+
     try:
         result = await hass.async_add_executor_job(
             _run_sort_sync,
             dict(entry.data),
             dict(entry.options),
+            send_log,
         )
-        connection.send_result(msg["id"], result)
     except Exception as exc:  # noqa: BLE001
         _LOGGER.exception("run_sort failed")
-        connection.send_error(msg["id"], "sort_failed", str(exc))
+        result = {"success": False, "error": str(exc)}
+
+    connection.send_message(
+        websocket_api.event_message(msg_id, {"done": True, **result})
+    )
 
 
-def _run_sort_sync(config: dict, options: dict) -> dict[str, Any]:
+def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
     """Run AI location-sorting of all Grocy products."""
     gemini_api_key = options.get(CONF_GEMINI_API_KEY, "")
     if not gemini_api_key:
-        return {
-            "success": False,
-            "skipped": True,
-            "updated": 0,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "A Gemini API key is required for Sort. "
-                    "Add it in the integration options.",
-                }
-            ],
-        }
+        if on_log:
+            on_log({
+                "level": "WARNING",
+                "message": "A Gemini API key is required for Sort. "
+                "Add it in the integration options.",
+            })
+        return {"success": False, "skipped": True, "updated": 0}
 
     _ensure_repo_on_path()
 
@@ -370,10 +389,10 @@ def _run_sort_sync(config: dict, options: dict) -> dict[str, Any]:
     )
     model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
 
-    with _capture_logs() as logs:
+    with _capture_logs(on_emit=on_log):
         updated: int = _main._ai_sort_products(grocy, gemini_api_key, model)
 
-    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
+    return {"success": True, "skipped": False, "updated": updated}
 
 
 # ---------------------------------------------------------------------------
@@ -401,34 +420,37 @@ async def ws_run_date(
         return
 
     entry = entries[0]
+    msg_id = msg["id"]
+    connection.send_result(msg_id)
+    send_log = _make_log_sender(hass, connection, msg_id)
+
     try:
         result = await hass.async_add_executor_job(
             _run_date_sync,
             dict(entry.data),
             dict(entry.options),
+            send_log,
         )
-        connection.send_result(msg["id"], result)
     except Exception as exc:  # noqa: BLE001
         _LOGGER.exception("run_date failed")
-        connection.send_error(msg["id"], "date_failed", str(exc))
+        result = {"success": False, "error": str(exc)}
+
+    connection.send_message(
+        websocket_api.event_message(msg_id, {"done": True, **result})
+    )
 
 
-def _run_date_sync(config: dict, options: dict) -> dict[str, Any]:
+def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
     """Run AI best-before-date assignment for all Grocy products."""
     gemini_api_key = options.get(CONF_GEMINI_API_KEY, "")
     if not gemini_api_key:
-        return {
-            "success": False,
-            "skipped": True,
-            "updated": 0,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "A Gemini API key is required for Date. "
-                    "Add it in the integration options.",
-                }
-            ],
-        }
+        if on_log:
+            on_log({
+                "level": "WARNING",
+                "message": "A Gemini API key is required for Date. "
+                "Add it in the integration options.",
+            })
+        return {"success": False, "skipped": True, "updated": 0}
 
     _ensure_repo_on_path()
 
@@ -441,7 +463,7 @@ def _run_date_sync(config: dict, options: dict) -> dict[str, Any]:
     )
     model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
 
-    with _capture_logs() as logs:
+    with _capture_logs(on_emit=on_log):
         updated: int = _main._ai_assign_due_dates(grocy, gemini_api_key, model)
 
-    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
+    return {"success": True, "skipped": False, "updated": updated}
