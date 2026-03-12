@@ -1,5 +1,5 @@
 name: "Grocy Scraper"
-version: "1.2.0"
+version: "1.2.1"
 slug: "grocy_scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates a Grocy database. Integrates with Barcode Buddy for automated discovery."
 url: "https://github.com/Glitchtit/grocy_scraper"

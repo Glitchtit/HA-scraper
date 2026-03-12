@@ -304,29 +304,29 @@ _HTML = """\
     body {
       font-family: Roboto, 'Segoe UI', sans-serif;
       margin: 0; padding: 16px;
-      background: #fafafa; color: #333;
+      background: #121212; color: #e0e0e0;
       min-height: 100vh;
     }
 
     /* ── Header ── */
     .header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
-    .header h1 { font-size:1.5rem; font-weight:400; margin:0; color:#212121; }
+    .header h1 { font-size:1.5rem; font-weight:400; margin:0; color:#e0e0e0; }
 
     /* ── Cards ── */
     .card {
-      background:#fff; border-radius:12px; padding:20px;
-      box-shadow:0 2px 4px rgba(0,0,0,.1); margin-bottom:16px;
+      background:#1e1e1e; border-radius:12px; padding:20px;
+      box-shadow:0 2px 4px rgba(0,0,0,.4); margin-bottom:16px;
     }
-    .card h2 { font-size:0.95rem; font-weight:500; margin:0 0 14px; color:#212121; }
+    .card h2 { font-size:0.95rem; font-weight:500; margin:0 0 14px; color:#e0e0e0; }
 
     /* ── Forms ── */
     .form-row { display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; }
     .form-group { display:flex; flex-direction:column; gap:5px; }
     .form-group.grow { flex:1; min-width:200px; }
-    label { font-size:0.8rem; color:#757575; font-weight:500; letter-spacing:0.02em; }
+    label { font-size:0.8rem; color:#9e9e9e; font-weight:500; letter-spacing:0.02em; }
     input[type="text"], input[type="number"] {
-      padding:10px 14px; border:1px solid #e0e0e0; border-radius:8px;
-      background:#fafafa; color:#212121; font-size:0.95rem;
+      padding:10px 14px; border:1px solid #444; border-radius:8px;
+      background:#2a2a2a; color:#e0e0e0; font-size:0.95rem;
       outline:none; transition:border-color 0.2s;
     }
     input[type="text"]:focus, input[type="number"]:focus { border-color:#03a9f4; }
@@ -347,18 +347,18 @@ _HTML = """\
     .btn-update   { background:#1565c0; color:#fff; }
     .btn-sm {
       padding:5px 12px; font-size:0.78rem; border-radius:6px;
-      background:#f5f5f5; color:#757575; border:1px solid #e0e0e0;
+      background:#333; color:#bbb; border:1px solid #555;
     }
 
     /* ── Status ── */
-    .status { margin-top:10px; min-height:20px; font-size:0.85rem; color:#757575; }
-    .error   { color:#db4437; }
+    .status { margin-top:10px; min-height:20px; font-size:0.85rem; color:#9e9e9e; }
+    .error   { color:#f44747; }
     .success { color:#4caf50; }
 
     /* ── Spinner ── */
     .loader {
       display:inline-block; width:14px; height:14px;
-      border:2px solid #e0e0e0; border-top-color:#03a9f4;
+      border:2px solid #444; border-top-color:#03a9f4;
       border-radius:50%; animation:spin 0.7s linear infinite;
       vertical-align:middle; margin-right:6px;
     }
@@ -370,35 +370,35 @@ _HTML = """\
       gap:12px; margin-bottom:16px;
     }
     .product-card {
-      background:#fff; border-radius:12px; padding:14px;
-      box-shadow:0 2px 4px rgba(0,0,0,.08);
+      background:#1e1e1e; border-radius:12px; padding:14px;
+      box-shadow:0 2px 4px rgba(0,0,0,.4);
       display:flex; gap:12px; align-items:flex-start;
     }
     .product-img {
       width:60px; height:60px; object-fit:contain; border-radius:8px;
-      background:#f5f5f5; flex-shrink:0;
+      background:#2a2a2a; flex-shrink:0;
     }
     .product-placeholder {
-      width:60px; height:60px; background:#f5f5f5; border-radius:8px;
+      width:60px; height:60px; background:#2a2a2a; border-radius:8px;
       display:flex; align-items:center; justify-content:center;
       font-size:1.6rem; flex-shrink:0;
     }
     .product-info { flex:1; min-width:0; }
     .product-name {
-      font-weight:500; color:#212121; margin-bottom:4px;
+      font-weight:500; color:#e0e0e0; margin-bottom:4px;
       word-break:break-word; line-height:1.3;
     }
     .product-ean {
-      font-size:0.72rem; color:#757575;
+      font-size:0.72rem; color:#9e9e9e;
       font-family:monospace; letter-spacing:0.05em;
     }
     .product-desc {
-      font-size:0.78rem; color:#757575; margin-top:4px;
+      font-size:0.78rem; color:#9e9e9e; margin-top:4px;
       display:-webkit-box; -webkit-line-clamp:2;
       -webkit-box-orient:vertical; overflow:hidden;
     }
     .no-results {
-      text-align:center; color:#757575; padding:32px 16px;
+      text-align:center; color:#9e9e9e; padding:32px 16px;
       grid-column:1/-1; font-size:0.9rem;
     }
 
@@ -413,15 +413,15 @@ _HTML = """\
     .terminal-header h2 { margin:0; flex:1; min-width:120px; }
     .verbose-label {
       display:inline-flex; align-items:center; gap:6px;
-      font-size:0.82rem; color:#757575; cursor:pointer; user-select:none;
+      font-size:0.82rem; color:#9e9e9e; cursor:pointer; user-select:none;
     }
     .verbose-label input[type="checkbox"] { cursor:pointer; }
     .terminal {
-      background:#1e1e1e; color:#d4d4d4; border-radius:8px; padding:14px;
+      background:#0d0d0d; color:#d4d4d4; border-radius:8px; padding:14px;
       font-family:'Courier New',Courier,monospace; font-size:0.78rem;
       line-height:1.55; overflow-y:auto; max-height:400px;
       white-space:pre-wrap; word-break:break-all;
-      scrollbar-width:thin; scrollbar-color:#555 #1e1e1e;
+      scrollbar-width:thin; scrollbar-color:#555 #0d0d0d;
     }
     .terminal:empty::before {
       content:"No output yet. Run an action above.";
@@ -439,7 +439,7 @@ _HTML = """\
     .terminal:not(.verbose) .log-debug { display:none; }
 
     /* ── Config badges ── */
-    .config-info { font-size:0.85rem; color:#757575; display:flex; flex-wrap:wrap; gap:8px; }
+    .config-info { font-size:0.85rem; color:#9e9e9e; display:flex; flex-wrap:wrap; gap:8px; }
     .badge {
       display:inline-flex; align-items:center; padding:3px 10px;
       border-radius:12px; background:#03a9f4; color:#fff;
