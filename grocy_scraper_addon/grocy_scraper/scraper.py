@@ -368,7 +368,13 @@ class KRuokaScraper:
         The upstream API performs broad full-text matching that can return
         unrelated products (e.g. searching "kevytmaito" also returns
         "maitosuklaa").  Results are therefore filtered client-side so that
-        only products whose name contains the query string are yielded.
+        only products whose name contains every word of the query are yielded.
+        Words can appear in any order and need not be contiguous, so
+        ``"lotus paperi"`` matches ``"Lotus Soft Embo 8 rll wc-paperi"``.
+
+        For multi-word queries the *first* word is sent to the upstream API
+        (the API may not match non-contiguous words) and the remaining words
+        are matched client-side.
 
         Uses the GraphQL backend by default (``use_graphql=True``).  Each page
         returns up to 100 results; the server stops serving results at
@@ -381,21 +387,41 @@ class KRuokaScraper:
         max_products:
             Stop after this many products.  ``None`` means no limit.
         """
-        if self._use_graphql:
-            results = self._paginate_graphql(query=query, max_products=max_products)
-        else:
-            results = self._paginate_search(query, max_products)
-
         # When the query looks like a barcode (digits only), skip the name
         # filter — the API will return matching products by EAN which won't
         # contain the numeric string in their name.
         if query.isdigit():
-            yield from results
+            if self._use_graphql:
+                yield from self._paginate_graphql(query=query, max_products=max_products)
+            else:
+                yield from self._paginate_search(query, max_products)
+            return
+
+        words = query.lower().split()
+
+        # For multi-word queries, send only the first word to the upstream API
+        # so that the result set is broad enough for client-side filtering to
+        # match products where the query words appear non-contiguously
+        # (e.g. "lotus paperi" → API query "lotus", then filter for "paperi").
+        is_multi = len(words) > 1
+        api_query = words[0] if is_multi else query
+        # Don't cap API results for multi-word queries — the client-side
+        # filter will discard many rows, so we need a larger pool.
+        api_limit = None if is_multi else max_products
+
+        if self._use_graphql:
+            results = self._paginate_graphql(query=api_query, max_products=api_limit)
         else:
-            query_lower = query.lower()
-            for product in results:
-                if query_lower in product.name.lower():
-                    yield product
+            results = self._paginate_search(api_query, api_limit)
+
+        yielded = 0
+        for product in results:
+            name_lower = product.name.lower()
+            if all(w in name_lower for w in words):
+                yield product
+                yielded += 1
+                if max_products is not None and yielded >= max_products:
+                    return
 
     def browse(self, max_products: Optional[int] = None) -> Iterator[Product]:
         """Yield all available products in the store catalogue.
