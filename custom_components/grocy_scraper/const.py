@@ -22,8 +22,11 @@ CONF_BBUDDY_PASSWORD = "bbuddy_password"
 CONF_DISCOVER_INTERVAL = "discover_interval"
 CONF_UPLOAD_IMAGES = "upload_images"
 CONF_USE_GRAPHQL = "use_graphql"
+CONF_GEMINI_API_KEY = "gemini_api_key"
+CONF_GEMINI_MODEL = "gemini_model"
 
 # Defaults
 DEFAULT_DISCOVER_INTERVAL = 60  # minutes
 DEFAULT_UPLOAD_IMAGES = True
 DEFAULT_USE_GRAPHQL = True
+DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
