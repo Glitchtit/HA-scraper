@@ -243,7 +243,7 @@ class GrocyScraperPanel extends HTMLElement {
           </div>
           <div class="form-group">
             <label for="max-products">Max results</label>
-            <input type="number" id="max-products" value="50" min="1" max="500" />
+            <input type="number" id="max-products" value="10" min="1" max="500" />
           </div>
           <button class="btn btn-primary" id="search-btn">Search</button>
         </div>
@@ -410,35 +410,63 @@ class GrocyScraperPanel extends HTMLElement {
     discoverBtn.disabled = sortBtn.disabled = dateBtn.disabled = true;
     statusEl.innerHTML = `<span class="loader"></span>Running ${this._escape(label)} …`;
 
-    try {
-      const result = await this._hass.callWS({ type: wsType });
+    const terminal = this.shadowRoot.querySelector("#terminal");
 
-      // Append logs to the terminal pane
-      if (result.logs && result.logs.length) {
-        this._appendLogs(label, result.logs);
-      }
+    // Create session heading immediately
+    const now = new Date().toLocaleTimeString();
+    const heading = document.createElement("div");
+    heading.className = "log-session-head";
+    heading.textContent = `▶ ${label}  [${now}]`;
+    terminal.appendChild(heading);
+    terminal.classList.toggle("verbose", this._verbose);
 
-      // Show summary status
-      if (result.skipped) {
-        statusEl.innerHTML =
-          `<span class="error">${this._escape(label)}: not configured — see terminal output.</span>`;
-      } else if (result.success !== true) {
-        statusEl.innerHTML =
-          `<span class="error">${this._escape(label)} finished with errors — see terminal output.</span>`;
-      } else {
-        const extra = result.updated != null ? ` (${result.updated} updated)` : "";
-        statusEl.innerHTML =
-          `<span class="success">✓ ${this._escape(label)} complete${this._escape(extra)}.</span>`;
-      }
-    } catch (err) {
-      const msg = (err && err.message) || String(err);
-      // Show as an error log line in terminal too
-      this._appendLogs(label, [{ level: "ERROR", message: msg }]);
-      statusEl.innerHTML =
-        `<span class="error">Error running ${this._escape(label)}: ${this._escape(msg)}</span>`;
-    } finally {
+    const _finish = () => {
       this._running = false;
       discoverBtn.disabled = sortBtn.disabled = dateBtn.disabled = false;
+    };
+
+    let unsub;
+    try {
+      unsub = await this._hass.connection.subscribeMessage(
+        (event) => {
+          if (event.log) {
+            const line = document.createElement("div");
+            const lvl = (event.log.level || "INFO").toUpperCase();
+            line.className = `log-${lvl.toLowerCase()}`;
+            line.setAttribute("data-level", lvl);
+            line.textContent = event.log.message;
+            terminal.appendChild(line);
+            terminal.scrollTop = terminal.scrollHeight;
+          }
+          if (event.done) {
+            if (event.skipped) {
+              statusEl.innerHTML =
+                `<span class="error">${this._escape(label)}: not configured — see terminal output.</span>`;
+            } else if (event.success !== true) {
+              statusEl.innerHTML =
+                `<span class="error">${this._escape(label)} finished with errors — see terminal output.</span>`;
+            } else {
+              const extra = event.updated != null ? ` (${event.updated} updated)` : "";
+              statusEl.innerHTML =
+                `<span class="success">✓ ${this._escape(label)} complete${this._escape(extra)}.</span>`;
+            }
+            _finish();
+            if (unsub) unsub();
+          }
+        },
+        { type: wsType }
+      );
+    } catch (err) {
+      const msg = (err && err.message) || String(err);
+      const line = document.createElement("div");
+      line.className = "log-error";
+      line.setAttribute("data-level", "ERROR");
+      line.textContent = msg;
+      terminal.appendChild(line);
+      terminal.scrollTop = terminal.scrollHeight;
+      statusEl.innerHTML =
+        `<span class="error">Error running ${this._escape(label)}: ${this._escape(msg)}</span>`;
+      _finish();
     }
   }
 
