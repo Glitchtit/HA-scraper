@@ -42,7 +42,7 @@ class GrocyScraperPanel extends HTMLElement {
         :host {
           display: block;
           padding: 16px;
-          background: var(--primary-background-color, #fafafa);
+          background: var(--primary-background-color, #121212);
           min-height: 100vh;
           box-sizing: border-box;
           font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
@@ -52,19 +52,19 @@ class GrocyScraperPanel extends HTMLElement {
         .header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
         .header h1 {
           font-size:1.5rem; font-weight:400; margin:0;
-          color:var(--primary-text-color,#212121);
+          color:var(--primary-text-color,#e0e0e0);
         }
 
         /* ── Cards ── */
         .card {
-          background:var(--card-background-color,#fff);
+          background:var(--card-background-color,#1e1e1e);
           border-radius:12px; padding:20px;
-          box-shadow:var(--ha-card-box-shadow,0 2px 4px rgba(0,0,0,.1));
+          box-shadow:var(--ha-card-box-shadow,0 2px 4px rgba(0,0,0,.4));
           margin-bottom:16px;
         }
         .card h2 {
           font-size:0.95rem; font-weight:500; margin:0 0 14px;
-          color:var(--primary-text-color,#212121);
+          color:var(--primary-text-color,#e0e0e0);
         }
 
         /* ── Forms ── */
@@ -72,15 +72,15 @@ class GrocyScraperPanel extends HTMLElement {
         .form-group { display:flex; flex-direction:column; gap:5px; }
         .form-group.grow { flex:1; min-width:200px; }
         label {
-          font-size:0.8rem; color:var(--secondary-text-color,#757575);
+          font-size:0.8rem; color:var(--secondary-text-color,#9e9e9e);
           font-weight:500; letter-spacing:0.02em;
         }
         input[type="text"], input[type="number"] {
           padding:10px 14px;
-          border:1px solid var(--divider-color,#e0e0e0);
+          border:1px solid var(--divider-color,#444);
           border-radius:8px;
-          background:var(--primary-background-color,#fafafa);
-          color:var(--primary-text-color,#212121);
+          background:var(--primary-background-color,#2a2a2a);
+          color:var(--primary-text-color,#e0e0e0);
           font-size:0.95rem; outline:none; transition:border-color 0.2s;
         }
         input[type="text"]:focus, input[type="number"]:focus {
@@ -105,23 +105,23 @@ class GrocyScraperPanel extends HTMLElement {
         .btn-date     { background:#e65100; color:#fff; }
         .btn-sm {
           padding:5px 12px; font-size:0.78rem; border-radius:6px;
-          background:var(--secondary-background-color,#f5f5f5);
-          color:var(--secondary-text-color,#757575);
-          border:1px solid var(--divider-color,#e0e0e0);
+          background:var(--secondary-background-color,#333);
+          color:var(--secondary-text-color,#bbb);
+          border:1px solid var(--divider-color,#555);
         }
 
         /* ── Status lines ── */
         .status {
           margin-top:10px; min-height:20px;
-          font-size:0.85rem; color:var(--secondary-text-color,#757575);
+          font-size:0.85rem; color:var(--secondary-text-color,#9e9e9e);
         }
-        .error   { color:var(--error-color,#db4437); }
+        .error   { color:var(--error-color,#f44747); }
         .success { color:var(--success-color,#4caf50); }
 
         /* ── Spinner ── */
         .loader {
           display:inline-block; width:14px; height:14px;
-          border:2px solid var(--divider-color,#e0e0e0);
+          border:2px solid var(--divider-color,#444);
           border-top-color:var(--primary-color,#03a9f4);
           border-radius:50%;
           animation:spin 0.7s linear infinite;
@@ -136,38 +136,38 @@ class GrocyScraperPanel extends HTMLElement {
           gap:12px;
         }
         .product-card {
-          background:var(--card-background-color,#fff);
+          background:var(--card-background-color,#1e1e1e);
           border-radius:12px; padding:14px;
-          box-shadow:var(--ha-card-box-shadow,0 2px 4px rgba(0,0,0,.08));
+          box-shadow:var(--ha-card-box-shadow,0 2px 4px rgba(0,0,0,.4));
           display:flex; gap:12px; align-items:flex-start;
         }
         .product-img {
           width:60px; height:60px; object-fit:contain; border-radius:8px;
-          background:var(--secondary-background-color,#f5f5f5); flex-shrink:0;
+          background:var(--secondary-background-color,#2a2a2a); flex-shrink:0;
         }
         .product-placeholder {
           width:60px; height:60px;
-          background:var(--secondary-background-color,#f5f5f5);
+          background:var(--secondary-background-color,#2a2a2a);
           border-radius:8px; display:flex; align-items:center;
           justify-content:center; font-size:1.6rem; flex-shrink:0;
         }
         .product-info { flex:1; min-width:0; }
         .product-name {
-          font-weight:500; color:var(--primary-text-color,#212121);
+          font-weight:500; color:var(--primary-text-color,#e0e0e0);
           margin-bottom:4px; word-break:break-word; line-height:1.3;
         }
         .product-ean {
-          font-size:0.72rem; color:var(--secondary-text-color,#757575);
+          font-size:0.72rem; color:var(--secondary-text-color,#9e9e9e);
           font-family:monospace; letter-spacing:0.05em;
         }
         .product-desc {
-          font-size:0.78rem; color:var(--secondary-text-color,#757575);
+          font-size:0.78rem; color:var(--secondary-text-color,#9e9e9e);
           margin-top:4px;
           display:-webkit-box; -webkit-line-clamp:2;
           -webkit-box-orient:vertical; overflow:hidden;
         }
         .no-results {
-          text-align:center; color:var(--secondary-text-color,#757575);
+          text-align:center; color:var(--secondary-text-color,#9e9e9e);
           padding:32px 16px; grid-column:1/-1; font-size:0.9rem;
         }
 
@@ -182,17 +182,17 @@ class GrocyScraperPanel extends HTMLElement {
         .terminal-header h2 { margin:0; flex:1; min-width:120px; }
         .verbose-label {
           display:inline-flex; align-items:center; gap:6px;
-          font-size:0.82rem; color:var(--secondary-text-color,#757575);
+          font-size:0.82rem; color:var(--secondary-text-color,#9e9e9e);
           cursor:pointer; user-select:none;
         }
         .verbose-label input[type="checkbox"] { cursor:pointer; }
         .terminal {
-          background:#1e1e1e; color:#d4d4d4;
+          background:#0d0d0d; color:#d4d4d4;
           border-radius:8px; padding:14px;
           font-family:'Courier New',Courier,monospace; font-size:0.78rem;
           line-height:1.55; overflow-y:auto; max-height:400px;
           white-space:pre-wrap; word-break:break-all;
-          scrollbar-width:thin; scrollbar-color:#555 #1e1e1e;
+          scrollbar-width:thin; scrollbar-color:#555 #0d0d0d;
         }
         .terminal:empty::before {
           content:"No output yet. Run an action above.";
@@ -214,7 +214,7 @@ class GrocyScraperPanel extends HTMLElement {
 
         /* ── Config info badges ── */
         .config-info {
-          font-size:0.85rem; color:var(--secondary-text-color,#757575);
+          font-size:0.85rem; color:var(--secondary-text-color,#9e9e9e);
           display:flex; flex-wrap:wrap; gap:8px;
         }
         .badge {
