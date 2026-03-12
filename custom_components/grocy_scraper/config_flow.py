@@ -21,9 +21,12 @@ from .const import (
     CONF_DISCOVER_INTERVAL,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
+    CONF_GEMINI_API_KEY,
+    CONF_GEMINI_MODEL,
     DEFAULT_DISCOVER_INTERVAL,
     DEFAULT_UPLOAD_IMAGES,
     DEFAULT_USE_GRAPHQL,
+    DEFAULT_GEMINI_MODEL,
 )
 
 _USER_SCHEMA = vol.Schema(
@@ -124,6 +127,14 @@ class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
                     CONF_USE_GRAPHQL,
                     default=opts.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
                 ): bool,
+                vol.Optional(
+                    CONF_GEMINI_API_KEY,
+                    default=opts.get(CONF_GEMINI_API_KEY, ""),
+                ): str,
+                vol.Optional(
+                    CONF_GEMINI_MODEL,
+                    default=opts.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL),
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)
