@@ -55,6 +55,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _env_int(name: str) -> int | None:
+    """Return an env-var value as *int*, or ``None`` if unset/empty."""
+    val = os.environ.get(name)
+    if val is None or val == "":
+        return None
+    return int(val)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -147,7 +155,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--location-id",
         type=int,
-        default=os.environ.get("GROCY_LOCATION_ID"),
+        default=_env_int("GROCY_LOCATION_ID"),
         metavar="ID",
         help=(
             "Grocy location ID to assign to new products (required). "
@@ -157,7 +165,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--quantity-unit-id",
         type=int,
-        default=os.environ.get("GROCY_QUANTITY_UNIT_ID"),
+        default=_env_int("GROCY_QUANTITY_UNIT_ID"),
         metavar="ID",
         help=(
             "Grocy quantity unit ID to assign to new products. "
