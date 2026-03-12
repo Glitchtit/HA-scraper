@@ -1,0 +1,12 @@
+{
+  "domain": "grocy_scraper",
+  "name": "Grocy Scraper",
+  "version": "1.0.0",
+  "documentation": "https://github.com/Glitchtit/grocy_scraper",
+  "issue_tracker": "https://github.com/Glitchtit/grocy_scraper/issues",
+  "requirements": ["requests>=2.31.0"],
+  "dependencies": ["frontend", "http"],
+  "codeowners": [],
+  "iot_class": "cloud_polling",
+  "config_flow": true
+}
