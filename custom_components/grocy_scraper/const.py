@@ -1,0 +1,29 @@
+"""Constants for the Grocy Scraper Home Assistant integration."""
+
+DOMAIN = "grocy_scraper"
+
+# Sidebar panel
+PANEL_TITLE = "Grocy Scraper"
+PANEL_ICON = "mdi:barcode-scan"
+PANEL_URL = "grocy-scraper"
+
+# Config-entry data keys (required, set during initial config flow)
+CONF_GROCY_URL = "grocy_url"
+CONF_GROCY_KEY = "grocy_key"
+CONF_STORE_ID = "store_id"
+CONF_LOCATION_ID = "location_id"
+CONF_QUANTITY_UNIT_ID = "quantity_unit_id"
+
+# Options-flow keys (optional, can be changed after setup)
+CONF_BBUDDY_URL = "bbuddy_url"
+CONF_BBUDDY_KEY = "bbuddy_key"
+CONF_BBUDDY_USER = "bbuddy_user"
+CONF_BBUDDY_PASSWORD = "bbuddy_password"
+CONF_DISCOVER_INTERVAL = "discover_interval"
+CONF_UPLOAD_IMAGES = "upload_images"
+CONF_USE_GRAPHQL = "use_graphql"
+
+# Defaults
+DEFAULT_DISCOVER_INTERVAL = 60  # minutes
+DEFAULT_UPLOAD_IMAGES = True
+DEFAULT_USE_GRAPHQL = True
