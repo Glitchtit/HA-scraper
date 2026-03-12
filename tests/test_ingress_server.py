@@ -409,6 +409,30 @@ class TestHandleAddProducts:
         assert result["added"] == 0
         mock_grocy.create_product.assert_not_called()
 
+    def test_empty_product_list(self, ingress_mod: ModuleType) -> None:
+        result = ingress_mod._handle_add_products({"products": []})
+        assert result["success"] is False
+        assert "No products" in result["error"]
+
+    def test_unexpected_exception(self, ingress_mod: ModuleType) -> None:
+        opts = {"grocy_url": "http://grocy", "grocy_api_key": "key"}
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.side_effect = RuntimeError("unexpected")
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch(
+                "grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy
+            ):
+                result = ingress_mod._handle_add_products(
+                    {"products": [{"name": "Fail", "ean": "444"}]}
+                )
+
+        assert result["success"] is False
+        assert result["added"] == 0
+        assert len(result["errors"]) == 1
+        assert "unexpected" in result["errors"][0]
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler (do_GET / do_POST)
