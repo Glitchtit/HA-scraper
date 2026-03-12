@@ -6,9 +6,13 @@ bashio::log.info "Starting Grocy Scraper add-on..."
 export GROCY_BASE_URL
 export GROCY_API_KEY
 export KRUOKA_STORE_ID
+export GROCY_LOCATION_ID
+export GROCY_QUANTITY_UNIT_ID
 GROCY_BASE_URL=$(bashio::config 'grocy_url')
 GROCY_API_KEY=$(bashio::config 'grocy_api_key')
 KRUOKA_STORE_ID=$(bashio::config 'store_id')
+GROCY_LOCATION_ID=$(bashio::config 'location_id')
+GROCY_QUANTITY_UNIT_ID=$(bashio::config 'quantity_unit_id')
 
 if bashio::var.is_empty "${GROCY_BASE_URL}"; then
     bashio::log.fatal "grocy_url is required. Please configure the add-on."
