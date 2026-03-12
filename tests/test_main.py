@@ -54,6 +54,51 @@ class TestParseArgs:
         args = parse_args(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
         assert args.use_graphql is False
 
+    def test_location_id_from_env(self):
+        """--location-id default should be read from GROCY_LOCATION_ID as int."""
+        with patch.dict("os.environ", {"GROCY_LOCATION_ID": "42"}):
+            args = parse_args(["--store", "N110", "--browse", "--dry-run"])
+        assert args.location_id == 42
+        assert isinstance(args.location_id, int)
+
+    def test_quantity_unit_id_from_env(self):
+        """--quantity-unit-id default should be read from GROCY_QUANTITY_UNIT_ID as int."""
+        with patch.dict("os.environ", {"GROCY_QUANTITY_UNIT_ID": "7"}):
+            args = parse_args(["--store", "N110", "--browse", "--dry-run"])
+        assert args.quantity_unit_id == 7
+        assert isinstance(args.quantity_unit_id, int)
+
+    def test_location_id_none_when_unset(self):
+        """--location-id default should be None when env var is unset."""
+        with patch.dict("os.environ", {}, clear=True):
+            args = parse_args(["--store", "N110", "--browse", "--dry-run"])
+        assert args.location_id is None
+
+
+class TestEnvInt:
+    """Unit tests for the _env_int helper."""
+
+    def test_returns_int(self):
+        from main import _env_int
+        with patch.dict("os.environ", {"MY_VAR": "5"}):
+            assert _env_int("MY_VAR") == 5
+
+    def test_returns_none_when_unset(self):
+        from main import _env_int
+        with patch.dict("os.environ", {}, clear=True):
+            assert _env_int("MY_VAR") is None
+
+    def test_returns_none_for_empty_string(self):
+        from main import _env_int
+        with patch.dict("os.environ", {"MY_VAR": ""}):
+            assert _env_int("MY_VAR") is None
+
+    def test_raises_on_non_numeric(self):
+        from main import _env_int
+        with patch.dict("os.environ", {"MY_VAR": "abc"}):
+            with pytest.raises(ValueError):
+                _env_int("MY_VAR")
+
 
 # ---------------------------------------------------------------------------
 # sync_product
