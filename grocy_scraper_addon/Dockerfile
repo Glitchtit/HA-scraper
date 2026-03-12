@@ -13,7 +13,7 @@ COPY main.py /app/
 COPY grocy_scraper/ /app/grocy_scraper/
 COPY ingress_server.py /app/
 
-# Copy s6-overlay service definitions
+# Copy s6-overlay v3 service definitions
 COPY rootfs /
 
 WORKDIR /app
