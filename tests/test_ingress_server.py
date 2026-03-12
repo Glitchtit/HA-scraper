@@ -9,6 +9,7 @@ import logging
 import sys
 import threading
 from io import BytesIO
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 from unittest import mock
@@ -42,13 +43,13 @@ class TestReadOptions:
         with mock.patch("builtins.open", side_effect=FileNotFoundError):
             assert ingress_mod._read_options() == {}
 
-    def test_returns_empty_dict_on_invalid_json(self, ingress_mod: ModuleType, tmp_path) -> None:
+    def test_returns_empty_dict_on_invalid_json(self, ingress_mod: ModuleType, tmp_path: Path) -> None:
         bad = tmp_path / "options.json"
         bad.write_text("not json")
         with mock.patch.object(ingress_mod, "_OPTIONS_PATH", str(bad)):
             assert ingress_mod._read_options() == {}
 
-    def test_returns_parsed_options(self, ingress_mod: ModuleType, tmp_path) -> None:
+    def test_returns_parsed_options(self, ingress_mod: ModuleType, tmp_path: Path) -> None:
         opts_file = tmp_path / "options.json"
         opts_file.write_text(json.dumps({"grocy_url": "http://grocy", "store_id": "N110"}))
         with mock.patch.object(ingress_mod, "_OPTIONS_PATH", str(opts_file)):
