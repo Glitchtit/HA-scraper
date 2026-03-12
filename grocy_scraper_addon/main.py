@@ -477,6 +477,7 @@ def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEM
         logger.info("No products found in Grocy – nothing to sort.")
         return 0
 
+    location_names = {loc["id"]: loc.get("name", str(loc["id"])) for loc in locations}
     location_lines = "\n".join(
         f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
     )
@@ -520,8 +521,8 @@ def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEM
             try:
                 grocy.update_product(int(product["id"]), location_id=int(location_id))
                 logger.info(
-                    "  → Set location %s for '%s' (ID %s).",
-                    location_id, product.get("name"), pid,
+                    "  → Set location '%s' for '%s' (ID %s).",
+                    location_names.get(int(location_id), location_id), product.get("name"), pid,
                 )
                 updated += 1
             except (GrocyAPIError, ValueError) as exc:
