@@ -3,7 +3,7 @@
 Serves a single-page application that lets users:
 
 * Search for K-Ruoka products by keyword
-* Run Discover, Sort, Date, and Update operations via action buttons
+* Run Discover, Sort, Date, Group, and Update operations via action buttons
 * View console/log output in a terminal pane with verbose toggle
 
 API endpoints
@@ -14,6 +14,7 @@ POST /api/search        Search products on K-Ruoka
 POST /api/discover      Run Barcode Buddy -> K-Ruoka -> Grocy discover pipeline
 POST /api/sort          Run Gemini AI product location sorting
 POST /api/date          Run Gemini AI best-before date assignment
+POST /api/group         Run Gemini AI product grouping (parent-product assignment)
 POST /api/update        Update existing products from K-Ruoka
 POST /api/add_products  Add selected products to the Grocy database
 """
@@ -276,6 +277,45 @@ def _handle_date() -> dict[str, Any]:
     return {"success": True, "skipped": False, "updated": updated, "logs": logs}
 
 
+def _handle_group() -> dict[str, Any]:
+    """Run Gemini AI product grouping (parent-product assignment)."""
+    opts = _read_options()
+    gemini_key = opts.get("gemini_api_key", "")
+    if not gemini_key:
+        return {
+            "success": False,
+            "skipped": True,
+            "updated": 0,
+            "logs": [
+                {
+                    "level": "WARNING",
+                    "message": "A Gemini API key is required for Group. "
+                    "Add it in the add-on configuration.",
+                }
+            ],
+        }
+
+    from grocy_scraper.grocy_client import GrocyClient
+    import main as _main
+
+    grocy = GrocyClient(
+        base_url=opts.get("grocy_url", ""),
+        api_key=opts.get("grocy_api_key", ""),
+    )
+    model = opts.get("gemini_model", "gemini-1.5-flash")
+    location_id = int(opts.get("location_id", 0)) or None
+    quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
+    with _capture_logs() as logs:
+        updated: int = _main._ai_group_products(
+            grocy,
+            gemini_key,
+            model,
+            location_id=location_id,
+            quantity_unit_id=quantity_unit_id,
+        )
+    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
+
+
 def _handle_update() -> dict[str, Any]:
     """Update existing Grocy products from K-Ruoka / S-kaupat."""
     opts = _read_options()
@@ -406,6 +446,7 @@ _HTML = """\
     .btn-sort     { background:#00796b; color:#fff; }
     .btn-date     { background:#e65100; color:#fff; }
     .btn-update   { background:#1565c0; color:#fff; }
+    .btn-group    { background:#6a1b9a; color:#fff; }
     .btn-sm {
       padding:5px 12px; font-size:0.78rem; border-radius:6px;
       background:#333; color:#bbb; border:1px solid #555;
@@ -567,6 +608,7 @@ _HTML = """\
       <button class="btn btn-discover" id="discover-btn">&#128269; Discover</button>
       <button class="btn btn-sort"     id="sort-btn">&#128230; Sort</button>
       <button class="btn btn-date"     id="date-btn">&#128197; Date</button>
+      <button class="btn btn-group"    id="group-btn">&#128279; Group</button>
       <button class="btn btn-update"   id="update-btn">&#128260; Update</button>
     </div>
     <div class="status" id="action-status"></div>
@@ -615,6 +657,7 @@ _HTML = """\
   var discoverBtn = $("#discover-btn");
   var sortBtn     = $("#sort-btn");
   var dateBtn     = $("#date-btn");
+  var groupBtn    = $("#group-btn");
   var updateBtn   = $("#update-btn");
   var actionStat  = $("#action-status");
   var terminal    = $("#terminal");
@@ -623,7 +666,7 @@ _HTML = """\
   var configCard  = $("#config-card");
   var configInfo  = $("#config-info");
 
-  var actionBtns = [discoverBtn, sortBtn, dateBtn, updateBtn];
+  var actionBtns = [discoverBtn, sortBtn, dateBtn, groupBtn, updateBtn];
   var lastProducts = [];
 
   // ── Utilities ─────────────────────────────────────────────────────────────
@@ -846,6 +889,7 @@ _HTML = """\
   discoverBtn.addEventListener("click", function () { runAction("discover", "Discover"); });
   sortBtn.addEventListener("click",     function () { runAction("sort", "Sort"); });
   dateBtn.addEventListener("click",     function () { runAction("date", "Date"); });
+  groupBtn.addEventListener("click",    function () { runAction("group", "Group"); });
   updateBtn.addEventListener("click",   function () { runAction("update", "Update"); });
   verboseChk.addEventListener("change", function () {
     verbose = verboseChk.checked;
@@ -872,6 +916,7 @@ _POST_HANDLERS: dict[str, Any] = {
     "/api/discover": _handle_discover,
     "/api/sort": _handle_sort,
     "/api/date": _handle_date,
+    "/api/group": _handle_group,
     "/api/update": _handle_update,
     "/api/add_products": _handle_add_products,
 }

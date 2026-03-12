@@ -382,11 +382,12 @@ class TestValidateArgsAI:
     def _base_ai_args(self, **overrides):
         from argparse import Namespace
         defaults = dict(
-            sort=True, date=False,
+            sort=True, date=False, group=False,
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             gemini_api_key="GEMINI_KEY",
             query=None, browse=False,
+            discover=False, delete_all=False, update=False,
             dry_run=False,
             store="",
             location_id=None,
@@ -418,8 +419,9 @@ class TestValidateArgsAI:
         from main import _validate_args
         from argparse import Namespace
         args = Namespace(
-            sort=False, date=False,
+            sort=False, date=False, group=False,
             query=None, browse=False,
+            discover=False, delete_all=False, update=False,
             dry_run=False,
             grocy_url="", grocy_key="", gemini_api_key="",
             store="", location_id=None, quantity_unit_id=None,
@@ -430,8 +432,9 @@ class TestValidateArgsAI:
         from main import _validate_args
         from argparse import Namespace
         args = Namespace(
-            sort=False, date=False,
+            sort=False, date=False, group=False,
             query=None, browse=False,
+            discover=False, delete_all=False, update=False,
             dry_run=True,
             grocy_url="", grocy_key="", gemini_api_key="",
             store="N110", location_id=None, quantity_unit_id=None,
@@ -705,7 +708,8 @@ class TestValidateArgsDeleteAll:
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             query=None, browse=False, discover=False,
-            sort=False, date=False,
+            sort=False, date=False, group=False,
+            update=False,
             dry_run=False,
             store="",
             location_id=None,
@@ -867,7 +871,8 @@ class TestValidateArgsDiscover:
         from argparse import Namespace
         defaults = dict(
             discover=True, query=None, browse=False,
-            sort=False, date=False,
+            sort=False, date=False, group=False,
+            delete_all=False, update=False,
             store="N110",
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
