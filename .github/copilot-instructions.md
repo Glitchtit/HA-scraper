@@ -36,6 +36,33 @@ This is a CLI tool that scrapes Finnish grocery products from **k-ruoka.fi** and
 
 `Product` is a `@dataclass` in `scraper.py` with fields `name`, `ean`, and `description`. Both backends normalize results into this type.
 
+## Versioning and changelog
+
+When making functional changes (bug fixes, new features, refactors that affect behaviour), **always**:
+
+1. **Bump the version number** in **both** of the following files — they must stay in sync:
+   - `grocy_scraper_addon/config.yaml` → `version` field
+   - `custom_components/grocy_scraper/manifest.json` → `"version"` field
+2. **Add a changelog entry** at the top of `CHANGELOG.md` under a new `## [<version>]` heading (or extend an `## [Unreleased]` section if one exists).
+
+### Which version component to bump
+
+Follow [Semantic Versioning](https://semver.org/):
+
+| Change type | Bump | Example |
+|---|---|---|
+| Breaking / incompatible change | **major** | `1.0.0` → `2.0.0` |
+| New feature, backward-compatible | **minor** | `1.0.0` → `1.1.0` |
+| Bug fix, docs, minor tweak | **patch** | `1.0.0` → `1.0.1` |
+
+### Changelog format
+
+Use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) sections: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
+
+### When to skip
+
+Do **not** bump the version or update the changelog for changes that only touch tests, CI configuration, or developer tooling (e.g. `.github/`, `tests/`).
+
 ## Conventions
 
 - All CLI options have corresponding env vars (e.g. `--store` / `KRUOKA_STORE_ID`). Env vars are loaded via `python-dotenv` from `.env`.
