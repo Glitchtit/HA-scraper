@@ -360,6 +360,32 @@ class TestGraphqlSearch:
         assert len(products) == 1
         assert products[0].name == "KEVYTMAITO 1L"
 
+    def test_multi_word_query_matches_non_contiguous_words(self):
+        """Multi-word queries match when all words appear in the name."""
+        items = [
+            _gql_product("Lotus Soft Embo 8 rll wc-paperi", "1"),
+            _gql_product("Serla WC-paperi 24rll", "2"),
+            _gql_product("Lotus käsipyyhe", "3"),
+            _gql_product("Kahvi 500g", "4"),
+        ]
+        session = _make_mock_session([_gql_page(items, total=4)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("lotus paperi"))
+
+        assert [p.name for p in products] == ["Lotus Soft Embo 8 rll wc-paperi"]
+
+    def test_single_word_query_still_works(self):
+        """Single-word queries continue to work as substring matches."""
+        items = [
+            _gql_product("Lotus Soft Embo 8 rll wc-paperi", "1"),
+            _gql_product("Serla WC-paperi 24rll", "2"),
+        ]
+        session = _make_mock_session([_gql_page(items, total=2)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("paperi"))
+
+        assert len(products) == 2
+
 
 # ---------------------------------------------------------------------------
 # GraphQL browse – _browse_graphql
