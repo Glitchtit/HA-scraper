@@ -234,11 +234,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--group",
+        action="store_true",
+        default=False,
+        help=(
+            "Use Gemini AI to analyse the Grocy products database and group "
+            "similar products (e.g. different brands of milk) under a shared "
+            "parent product.  Creates parent products when needed and enables "
+            "'Accumulate sub products min. stock amount' on each parent.  "
+            "Requires --grocy-url, --grocy-key, and the GEMINI_API environment variable."
+        ),
+    )
+    parser.add_argument(
         "--gemini-api-key",
         default=os.environ.get("GEMINI_API", ""),
         metavar="KEY",
         help=(
-            "Gemini API key used for AI-powered --sort and --date analysis.  "
+            "Gemini API key used for AI-powered --sort, --date, and --group analysis.  "
             "Also read from the GEMINI_API environment variable."
         ),
     )
@@ -247,7 +259,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("GEMINI_MODEL", _GEMINI_DEFAULT_MODEL),
         metavar="MODEL",
         help=(
-            "Gemini model name to use for --sort and --date analysis "
+            "Gemini model name to use for --sort, --date, and --group analysis "
             f"(default: {_GEMINI_DEFAULT_MODEL}).  "
             "Also read from the GEMINI_MODEL environment variable."
         ),
@@ -616,9 +628,171 @@ def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _
     return updated
 
 
+def _ai_group_products(
+    grocy: GrocyClient,
+    gemini_api_key: str,
+    model: str = _GEMINI_DEFAULT_MODEL,
+    *,
+    location_id: int | None = None,
+    quantity_unit_id: int | None = None,
+) -> int:
+    """Use Gemini AI to group similar products under shared parent products.
+
+    Fetches all products from Grocy, asks Gemini to identify groups of
+    similar items (e.g. different brands of milk), creates parent products
+    where needed, and assigns each child product to its parent.
+    Parent products are created with
+    ``cumulate_min_stock_amount_of_sub_products`` enabled.
+
+    Returns the number of products updated.
+    """
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch products from Grocy: %s", exc)
+        return 0
+
+    if not products:
+        logger.info("No products found in Grocy – nothing to group.")
+        return 0
+
+    # Only consider products that do not already have a parent.
+    ungrouped = [p for p in products if not p.get("parent_product_id")]
+    if not ungrouped:
+        logger.info("All products already have parent products – nothing to group.")
+        return 0
+
+    # Build a name→id index of existing products so we can reuse parents.
+    name_to_product: dict[str, dict] = {}
+    for p in products:
+        name_to_product[p.get("name", "")] = p
+
+    logger.info(
+        "Asking Gemini to group %d product(s) …", len(ungrouped)
+    )
+
+    updated = 0
+    for i in range(0, len(ungrouped), _GEMINI_BATCH_SIZE):
+        batch = ungrouped[i : i + _GEMINI_BATCH_SIZE]
+        product_lines = "\n".join(
+            f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
+        )
+        prompt = (
+            "You are a grocery database expert helping to organise a product "
+            "catalogue.\n\n"
+            "For each product below, decide whether it belongs to a common "
+            "generic product group.  Focus on general grocery categories like "
+            "dairy, eggs, bread, flour, butter, rice, pasta, cooking oil, "
+            "canned goods, frozen vegetables, meat, etc.\n"
+            "Do NOT group snacks, candy, soft drinks, energy drinks, or "
+            "alcoholic beverages.\n\n"
+            "If a product should be grouped, return the generic parent product "
+            "name in Finnish (e.g. \"Maito\" for all kinds of milk, "
+            "\"Kananmuna\" for eggs, \"Leipä\" for bread).\n"
+            "If a product should NOT be grouped, map it to null.\n\n"
+            "Return ONLY a JSON object mapping product IDs (as strings) to "
+            "parent product names (as strings) or null, e.g.\n"
+            '{\"1\": \"Maito\", \"2\": \"Maito\", \"5\": \"Kananmuna\", '
+            '\"7\": null}.\n\n'
+            "Products:\n"
+            f"{product_lines}"
+        )
+        try:
+            raw = _call_gemini(prompt, gemini_api_key, model)
+            mapping: dict = json.loads(raw)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.error(
+                "Gemini group batch %d failed: %s",
+                i // _GEMINI_BATCH_SIZE + 1, exc,
+            )
+            continue
+
+        # Collect unique parent names needed for this batch.
+        parent_names: set[str] = set()
+        for product in batch:
+            pid = str(product["id"])
+            parent_name = mapping.get(pid)
+            if parent_name:
+                parent_names.add(str(parent_name))
+
+        # Ensure each parent product exists.
+        parent_name_to_id: dict[str, int] = {}
+        for parent_name in parent_names:
+            existing = name_to_product.get(parent_name)
+            if existing:
+                parent_id = int(existing["id"])
+                parent_name_to_id[parent_name] = parent_id
+            else:
+                # Create the parent product.
+                try:
+                    parent_id = grocy.create_product(
+                        parent_name,
+                        location_id=location_id,
+                        quantity_unit_id=quantity_unit_id,
+                    )
+                    logger.info(
+                        "  → Created parent product '%s' (ID %d).",
+                        parent_name, parent_id,
+                    )
+                    parent_name_to_id[parent_name] = parent_id
+                    # Track so we don't create duplicates in later batches.
+                    name_to_product[parent_name] = {"id": parent_id, "name": parent_name}
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Could not create parent product '%s': %s",
+                        parent_name, exc,
+                    )
+                    continue
+
+            # Enable "Accumulate sub products min. stock amount" on the parent.
+            try:
+                grocy.update_product(
+                    parent_name_to_id[parent_name],
+                    cumulate_min_stock_amount_of_sub_products=1,
+                )
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Could not enable stock accumulation on '%s': %s",
+                    parent_name, exc,
+                )
+
+        # Assign child products to their parents.
+        for product in batch:
+            pid = str(product["id"])
+            parent_name = mapping.get(pid)
+            if not parent_name:
+                logger.debug(
+                    "No group assigned for product %s ('%s').",
+                    pid, product.get("name"),
+                )
+                continue
+            parent_id = parent_name_to_id.get(str(parent_name))
+            if parent_id is None:
+                continue
+            # Don't set a product as its own parent.
+            if int(product["id"]) == parent_id:
+                continue
+            try:
+                grocy.update_product(
+                    int(product["id"]), parent_product_id=parent_id
+                )
+                logger.info(
+                    "  → Grouped '%s' (ID %s) under '%s'.",
+                    product.get("name"), pid, parent_name,
+                )
+                updated += 1
+            except (GrocyAPIError, ValueError) as exc:
+                logger.warning(
+                    "Could not group '%s': %s", product.get("name"), exc
+                )
+
+    logger.info("--group complete: %d product(s) grouped.", updated)
+    return updated
+
+
 def _validate_args(args: argparse.Namespace) -> int:
     """Return 0 if arguments are valid, 1 otherwise."""
-    ai_mode = args.sort or args.date
+    ai_mode = args.sort or args.date or args.group
     scrape_mode = bool(args.query or args.browse)
     discover_mode = args.discover
     delete_all_mode = args.delete_all
@@ -657,7 +831,7 @@ def _validate_args(args: argparse.Namespace) -> int:
     if ai_mode:
         if not args.gemini_api_key:
             logger.error(
-                "Gemini API key is required for --sort / --date.  "
+                "Gemini API key is required for --sort / --date / --group.  "
                 "Use --gemini-api-key or set the GEMINI_API environment variable."
             )
             return 1
@@ -1102,12 +1276,20 @@ def main(argv: list[str] | None = None) -> int:
 
     # AI analysis modes operate on the existing Grocy database independently
     # of the scraping pipeline.
-    if args.sort or args.date:
+    if args.sort or args.date or args.group:
         grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
         if args.sort:
             _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model)
         if args.date:
             _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model)
+        if args.group:
+            _ai_group_products(
+                grocy,
+                args.gemini_api_key,
+                args.gemini_model,
+                location_id=getattr(args, "location_id", None),
+                quantity_unit_id=getattr(args, "quantity_unit_id", None),
+            )
         # If no scraping or discover mode was also requested, we are done.
         if not args.query and not args.browse and not args.discover:
             return 0

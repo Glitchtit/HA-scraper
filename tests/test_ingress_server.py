@@ -287,6 +287,38 @@ class TestHandleDate:
 
 
 # ---------------------------------------------------------------------------
+# _handle_group
+# ---------------------------------------------------------------------------
+
+
+class TestHandleGroup:
+    def test_missing_gemini_key(self, ingress_mod: ModuleType) -> None:
+        with mock.patch.object(ingress_mod, "_read_options", return_value={}):
+            result = ingress_mod._handle_group()
+        assert result["success"] is False
+        assert result["skipped"] is True
+        assert result["updated"] == 0
+
+    def test_calls_ai_group(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "gemini_api_key": "gem-key",
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "location_id": 2,
+            "quantity_unit_id": 3,
+        }
+        mock_grocy_cls = mock.MagicMock()
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
+                with mock.patch("grocy_scraper.grocy_client.GrocyClient", mock_grocy_cls):
+                    sys.modules["main"]._ai_group_products.return_value = 7
+                    result = ingress_mod._handle_group()
+
+        assert result["success"] is True
+        assert result["updated"] == 7
+
+
+# ---------------------------------------------------------------------------
 # _handle_update
 # ---------------------------------------------------------------------------
 
@@ -568,6 +600,9 @@ class TestHTMLContent:
 
     def test_has_update_button(self, ingress_mod: ModuleType) -> None:
         assert 'id="update-btn"' in ingress_mod._HTML
+
+    def test_has_group_button(self, ingress_mod: ModuleType) -> None:
+        assert 'id="group-btn"' in ingress_mod._HTML
 
     def test_has_terminal_pane(self, ingress_mod: ModuleType) -> None:
         assert 'id="terminal"' in ingress_mod._HTML
