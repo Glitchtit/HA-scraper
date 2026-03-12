@@ -1,10 +1,54 @@
 # grocy_scraper
 
-A Python command-line tool that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes and populates a **[Grocy](https://grocy.info/)** product database through its REST API.
+A Python command-line tool **and [Home Assistant](https://www.home-assistant.io/) custom integration** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes and populates a **[Grocy](https://grocy.info/)** product database through its REST API.
 
 ---
 
-## Features
+## Home Assistant integration
+
+The `custom_components/grocy_scraper/` directory contains a full Home Assistant integration that adds a **sidebar panel** to the HA UI, letting you search for products and discover barcodes from Barcode Buddy on a schedule — without ever touching the command line.
+
+### Features
+
+- **Sidebar panel** — type a search term and choose the number of results; see product names, EAN barcodes, and images in a responsive card grid
+- **Config flow** — set up Grocy URL, API key, K-Ruoka store ID, and location / quantity-unit defaults through the HA UI
+- **Options flow** — configure Barcode Buddy credentials and the **auto-discover interval** (periodic `--discover` run) directly from the HA settings page
+- **WebSocket API** — the panel communicates with the backend via HA's native WebSocket interface; no extra ports or services needed
+
+### Installation
+
+1. Copy (or symlink) the `custom_components/grocy_scraper/` folder into your HA `config/custom_components/` directory.
+2. Copy the `grocy_scraper/` Python package folder into the **same** `config/` directory so HA can import it:
+   ```
+   config/
+   ├── custom_components/
+   │   └── grocy_scraper/   ← HA integration
+   └── grocy_scraper/       ← Python package (scraper + Grocy client)
+   ```
+3. Restart Home Assistant.
+4. Navigate to **Settings → Devices & Services → Add Integration** and search for **Grocy Scraper**.
+5. Follow the config flow to enter your credentials.
+6. The **Grocy Scraper** entry appears in the HA sidebar.
+
+### Settings (options flow)
+
+Open the integration's **Configure** button to set:
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Barcode Buddy URL | Base URL of your Barcode Buddy instance | *(empty)* |
+| Barcode Buddy API Key | API key for `/api` endpoints | *(empty)* |
+| Barcode Buddy Username | Web UI login | *(empty)* |
+| Barcode Buddy Password | Web UI password | *(empty)* |
+| Auto-discover interval | Minutes between automatic `--discover` runs | `60` |
+| Upload product images | Download and upload images when creating products | `true` |
+| Use GraphQL backend | Use the faster GraphQL backend (recommended) | `true` |
+
+> **Note:** Automatic discovery only runs when Barcode Buddy URL, username, and password are all configured.
+
+---
+
+## Features (CLI)
 
 - Two backends – pick the one that works for you:
   - **GraphQL** (default) – `mobile.k-ruoka.fi/graphql`, no Cloudflare bypass needed
@@ -277,6 +321,17 @@ grocy_scraper/
 │   ├── scraper.py              # k-ruoka.fi product scraper (GraphQL + kr-api backends)
 │   ├── grocy_client.py         # Grocy REST API client
 │   └── barcodebuddy_client.py  # Barcode Buddy client (for --discover)
+├── custom_components/
+│   └── grocy_scraper/    # Home Assistant integration
+│       ├── __init__.py   # Setup, panel registration, periodic discover
+│       ├── config_flow.py
+│       ├── const.py
+│       ├── manifest.json
+│       ├── strings.json
+│       ├── translations/en.json
+│       ├── ws_api.py     # WebSocket search + config handlers
+│       └── www/
+│           └── panel.js  # Sidebar panel web component
 ├── tests/
 │   ├── test_scraper.py
 │   ├── test_grocy_client.py
