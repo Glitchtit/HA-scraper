@@ -303,6 +303,138 @@ class TestHandleUpdate:
 
 
 # ---------------------------------------------------------------------------
+# _handle_add_products
+# ---------------------------------------------------------------------------
+
+
+class TestHandleAddProducts:
+    def test_empty_products(self, ingress_mod: ModuleType) -> None:
+        result = ingress_mod._handle_add_products({})
+        assert result["success"] is False
+        assert "No products" in result["error"]
+
+    def test_products_not_a_list(self, ingress_mod: ModuleType) -> None:
+        result = ingress_mod._handle_add_products({"products": "bad"})
+        assert result["success"] is False
+
+    def test_missing_grocy_config(self, ingress_mod: ModuleType) -> None:
+        with mock.patch.object(ingress_mod, "_read_options", return_value={}):
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "Test"}]}
+            )
+        assert result["success"] is False
+        assert "Grocy URL" in result["error"]
+
+    def test_adds_product_successfully(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "location_id": 2,
+            "quantity_unit_id": 3,
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.return_value = 42
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch(
+                "grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy
+            ):
+                result = ingress_mod._handle_add_products(
+                    {
+                        "products": [
+                            {"name": "Maito 1L", "ean": "6411234000001", "description": "Kevytmaito"},
+                        ]
+                    }
+                )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        assert result["errors"] == []
+        mock_grocy.create_product.assert_called_once_with(
+            "Maito 1L", description="Kevytmaito", location_id=2, quantity_unit_id=3
+        )
+        mock_grocy.add_barcode.assert_called_once_with(42, "6411234000001")
+
+    def test_skips_existing_barcode(self, ingress_mod: ModuleType) -> None:
+        opts = {"grocy_url": "http://grocy", "grocy_api_key": "key"}
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch(
+                "grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy
+            ):
+                result = ingress_mod._handle_add_products(
+                    {"products": [{"name": "Existing", "ean": "111"}]}
+                )
+
+        assert result["success"] is True
+        assert result["added"] == 0
+        mock_grocy.create_product.assert_not_called()
+
+    def test_handles_grocy_error(self, ingress_mod: ModuleType) -> None:
+        from grocy_scraper.grocy_client import GrocyAPIError
+
+        opts = {"grocy_url": "http://grocy", "grocy_api_key": "key"}
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.side_effect = GrocyAPIError("conflict")
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch(
+                "grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy
+            ):
+                result = ingress_mod._handle_add_products(
+                    {"products": [{"name": "Bad", "ean": "222"}]}
+                )
+
+        assert result["success"] is False
+        assert result["added"] == 0
+        assert len(result["errors"]) == 1
+        assert "conflict" in result["errors"][0]
+
+    def test_skips_empty_name(self, ingress_mod: ModuleType) -> None:
+        opts = {"grocy_url": "http://grocy", "grocy_api_key": "key"}
+        mock_grocy = mock.MagicMock()
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch(
+                "grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy
+            ):
+                result = ingress_mod._handle_add_products(
+                    {"products": [{"name": "", "ean": "333"}]}
+                )
+
+        assert result["added"] == 0
+        mock_grocy.create_product.assert_not_called()
+
+    def test_empty_product_list(self, ingress_mod: ModuleType) -> None:
+        result = ingress_mod._handle_add_products({"products": []})
+        assert result["success"] is False
+        assert "No products" in result["error"]
+
+    def test_unexpected_exception(self, ingress_mod: ModuleType) -> None:
+        opts = {"grocy_url": "http://grocy", "grocy_api_key": "key"}
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.side_effect = RuntimeError("unexpected")
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch(
+                "grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy
+            ):
+                result = ingress_mod._handle_add_products(
+                    {"products": [{"name": "Fail", "ean": "444"}]}
+                )
+
+        assert result["success"] is False
+        assert result["added"] == 0
+        assert len(result["errors"]) == 1
+        assert "unexpected" in result["errors"][0]
+
+
+# ---------------------------------------------------------------------------
 # HTTP handler (do_GET / do_POST)
 # ---------------------------------------------------------------------------
 
@@ -404,6 +536,12 @@ class TestHTTPHandler:
         assert status == 200
         assert body["skipped"] is True
 
+    def test_post_add_products_no_body(self, ingress_mod: ModuleType) -> None:
+        status, body = self._make_handler(ingress_mod, "POST", "/api/add_products", body={})
+        assert status == 200
+        assert body["success"] is False
+        assert "No products" in body["error"]
+
 
 # ---------------------------------------------------------------------------
 # HTML content checks
@@ -445,3 +583,21 @@ class TestHTMLContent:
 
     def test_has_config_card(self, ingress_mod: ModuleType) -> None:
         assert 'id="config-card"' in ingress_mod._HTML
+
+    def test_has_select_all_button(self, ingress_mod: ModuleType) -> None:
+        assert 'id="select-all-btn"' in ingress_mod._HTML
+
+    def test_has_select_none_button(self, ingress_mod: ModuleType) -> None:
+        assert 'id="select-none-btn"' in ingress_mod._HTML
+
+    def test_has_add_products_button(self, ingress_mod: ModuleType) -> None:
+        assert 'id="add-products-btn"' in ingress_mod._HTML
+
+    def test_has_selection_toolbar(self, ingress_mod: ModuleType) -> None:
+        assert 'id="selection-toolbar"' in ingress_mod._HTML
+
+    def test_has_selection_count(self, ingress_mod: ModuleType) -> None:
+        assert 'id="selection-count"' in ingress_mod._HTML
+
+    def test_has_add_status(self, ingress_mod: ModuleType) -> None:
+        assert 'id="add-status"' in ingress_mod._HTML
