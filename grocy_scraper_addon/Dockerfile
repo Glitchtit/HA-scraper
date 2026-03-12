@@ -11,8 +11,9 @@ RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt
 # Copy application
 COPY main.py /app/
 COPY grocy_scraper/ /app/grocy_scraper/
-COPY run.sh /run.sh
-RUN chmod a+x /run.sh
+COPY ingress_server.py /app/
+
+# Copy s6-overlay service definitions
+COPY rootfs /
 
 WORKDIR /app
-CMD ["/run.sh"]
