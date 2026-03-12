@@ -334,6 +334,21 @@ class TestParseArgsAIFlags:
         assert args.sort is True
         assert args.date is True
 
+    def test_group_flag(self):
+        args = parse_args([
+            "--group",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI_KEY",
+        ])
+        assert args.group is True
+        assert args.sort is False
+        assert args.date is False
+
+    def test_group_default_false(self):
+        args = parse_args(["--store", "N110", "--browse", "--dry-run"])
+        assert args.group is False
+
     def test_gemini_key_from_env(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API", "env-key-123")
         args = parse_args([
@@ -615,6 +630,135 @@ class TestAiAssignDueDates:
 
 
 # ---------------------------------------------------------------------------
+# _ai_group_products
+# ---------------------------------------------------------------------------
+
+class TestAiGroupProducts:
+    def _make_grocy(self, products):
+        g = MagicMock(spec=GrocyClient)
+        g.get_all_products.return_value = products
+        g.update_product.return_value = None
+        g.create_product.return_value = 100
+        return g
+
+    @patch("main._call_gemini")
+    def test_groups_products_under_new_parent(self, mock_gemini):
+        from main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Pirkka kevytmaito 1l"},
+            {"id": 2, "name": "Valio kevytmaito 1l"},
+            {"id": 3, "name": "Fazer ruisleipä"},
+        ]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = '{"1": "Maito", "2": "Maito", "3": null}'
+
+        result = _ai_group_products(grocy, "gemini-key")
+        assert result == 2
+        # Parent product "Maito" should be created (not in existing products).
+        grocy.create_product.assert_called_once_with(
+            "Maito", location_id=None, quantity_unit_id=None,
+        )
+        # Accumulate stock should be enabled on the parent.
+        grocy.update_product.assert_any_call(
+            100, cumulate_min_stock_amount_of_sub_products=1,
+        )
+        # Child products should be updated with parent_product_id.
+        grocy.update_product.assert_any_call(1, parent_product_id=100)
+        grocy.update_product.assert_any_call(2, parent_product_id=100)
+
+    @patch("main._call_gemini")
+    def test_reuses_existing_parent_product(self, mock_gemini):
+        from main import _ai_group_products
+        products = [
+            {"id": 10, "name": "Maito"},  # Already exists as potential parent.
+            {"id": 11, "name": "Pirkka kevytmaito 1l"},
+        ]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = '{"10": null, "11": "Maito"}'
+
+        result = _ai_group_products(grocy, "gemini-key")
+        assert result == 1
+        # Should NOT create a new product — reuse existing "Maito".
+        grocy.create_product.assert_not_called()
+        grocy.update_product.assert_any_call(11, parent_product_id=10)
+
+    @patch("main._call_gemini")
+    def test_skips_already_grouped_products(self, mock_gemini):
+        from main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Pirkka maito", "parent_product_id": 99},
+            {"id": 2, "name": "Valio maito"},
+        ]
+        grocy = self._make_grocy(products)
+        # Only product 2 should be sent to Gemini (product 1 already has parent).
+        mock_gemini.return_value = '{"2": "Maito"}'
+
+        result = _ai_group_products(grocy, "gemini-key")
+        assert result == 1
+        # Verify the prompt only included product 2.
+        prompt_text = mock_gemini.call_args[0][0]
+        assert "Valio maito" in prompt_text
+        assert "Pirkka maito" not in prompt_text
+
+    @patch("main._call_gemini")
+    def test_no_products_returns_zero(self, mock_gemini):
+        from main import _ai_group_products
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.return_value = []
+        result = _ai_group_products(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_invalid_json_skips_batch(self, mock_gemini):
+        from main import _ai_group_products
+        products = [{"id": 1, "name": "Maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = "not-json"
+
+        result = _ai_group_products(grocy, "key")
+        assert result == 0
+        grocy.update_product.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_grocy_error_returns_zero(self, mock_gemini):
+        from main import _ai_group_products
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.side_effect = GrocyAPIError("fail")
+        result = _ai_group_products(grocy, "key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_does_not_set_product_as_own_parent(self, mock_gemini):
+        """If Gemini maps a product to a parent with the same name, skip it."""
+        from main import _ai_group_products
+        products = [{"id": 5, "name": "Maito"}]
+        grocy = self._make_grocy(products)
+        # Gemini says product 5 should be under "Maito", but that IS product 5.
+        mock_gemini.return_value = '{"5": "Maito"}'
+
+        result = _ai_group_products(grocy, "key")
+        assert result == 0
+        # update_product should be called for cumulate flag but not for parent assignment.
+        calls = [c for c in grocy.update_product.call_args_list
+                 if "parent_product_id" in (c.kwargs or {})]
+        assert len(calls) == 0
+
+    @patch("main._call_gemini")
+    def test_passes_location_and_quantity_unit(self, mock_gemini):
+        from main import _ai_group_products
+        products = [{"id": 1, "name": "Pirkka maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = '{"1": "Maito"}'
+
+        _ai_group_products(grocy, "key", location_id=5, quantity_unit_id=3)
+        grocy.create_product.assert_called_once_with(
+            "Maito", location_id=5, quantity_unit_id=3,
+        )
+
+
+# ---------------------------------------------------------------------------
 # main – AI mode integration
 # ---------------------------------------------------------------------------
 
@@ -668,6 +812,19 @@ class TestMainAIMode:
             "--grocy-key", "KEY",
         ])
         assert rc == 1
+
+    @patch("main._ai_group_products")
+    @patch("main.GrocyClient")
+    def test_group_mode_calls_ai_group(self, MockGrocy, mock_group):
+        mock_group.return_value = 4
+        rc = main([
+            "--group",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_group.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
