@@ -1,6 +1,41 @@
 # grocy_scraper
 
-A Python command-line tool **and [Home Assistant](https://www.home-assistant.io/) custom integration** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes and populates a **[Grocy](https://grocy.info/)** product database through its REST API.
+A Python command-line tool, **[Home Assistant](https://www.home-assistant.io/) custom integration**, and **Home Assistant Supervisor add-on** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes and populates a **[Grocy](https://grocy.info/)** product database through its REST API.
+
+---
+
+## Home Assistant Supervisor add-on
+
+The `grocy_scraper_addon/` directory contains a full Home Assistant Supervisor add-on that runs the scraper in a dedicated Docker container managed by HA Supervisor.
+
+### Add-on installation
+
+1. In Home Assistant, navigate to **Settings → Add-ons → Add-on Store**.
+2. Click the **⋮** (three-dot) menu in the top-right and choose **Repositories**.
+3. Add `https://github.com/Glitchtit/grocy_scraper` and click **Add**.
+4. The **Grocy Scraper** add-on will appear in the store — click **Install**.
+5. Open the add-on's **Configuration** tab and fill in at minimum:
+   - `grocy_url` — base URL of your Grocy instance
+   - `grocy_api_key` — Grocy API key
+   - `store_id` — K-group store ID (see [Finding your store ID](#finding-your-store-id))
+6. Click **Save** and then **Start**.
+
+### Add-on options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `grocy_url` | Base URL of your Grocy instance (no trailing slash) | *(required)* |
+| `grocy_api_key` | Grocy API key | *(required)* |
+| `store_id` | K-group store ID (e.g. `N110`) | `N110` |
+| `discover_interval` | Minutes between automatic `--discover` runs | `60` |
+| `upload_images` | Download and upload product images | `true` |
+| `use_graphql` | Use the faster GraphQL backend (recommended) | `true` |
+| `bbuddy_url` | Base URL of your Barcode Buddy instance | *(optional)* |
+| `bbuddy_api_key` | Barcode Buddy API key | *(optional)* |
+| `bbuddy_user` | Barcode Buddy web UI username | *(optional)* |
+| `bbuddy_password` | Barcode Buddy web UI password | *(optional)* |
+
+> **Note:** Automatic discovery only runs when `bbuddy_url` and `bbuddy_user` are both set.
 
 ---
 
