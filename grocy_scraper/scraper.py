@@ -368,7 +368,9 @@ class KRuokaScraper:
         The upstream API performs broad full-text matching that can return
         unrelated products (e.g. searching "kevytmaito" also returns
         "maitosuklaa").  Results are therefore filtered client-side so that
-        only products whose name contains the query string are yielded.
+        only products whose name contains every word of the query are yielded.
+        Words can appear in any order and need not be contiguous, so
+        ``"lotus paperi"`` matches ``"Lotus Soft Embo 8 rll wc-paperi"``.
 
         Uses the GraphQL backend by default (``use_graphql=True``).  Each page
         returns up to 100 results; the server stops serving results at
@@ -392,9 +394,10 @@ class KRuokaScraper:
         if query.isdigit():
             yield from results
         else:
-            query_lower = query.lower()
+            words = query.lower().split()
             for product in results:
-                if query_lower in product.name.lower():
+                name_lower = product.name.lower()
+                if all(w in name_lower for w in words):
                     yield product
 
     def browse(self, max_products: Optional[int] = None) -> Iterator[Product]:
