@@ -805,7 +805,7 @@ def _ai_group_products(
             if int(product["id"]) == parent_id:
                 continue
             child_update: dict = {"parent_product_id": parent_id}
-            child_group_id = parent_name_to_group_id.get(str(parent_name))
+            child_group_id = parent_name_to_group_id.get(parent_name)
             if child_group_id is not None:
                 child_update["product_group_id"] = child_group_id
             try:
