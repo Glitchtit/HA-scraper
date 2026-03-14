@@ -634,12 +634,20 @@ class TestAiAssignDueDates:
 # ---------------------------------------------------------------------------
 
 class TestAiGroupProducts:
+    _GROUP_MASTER_ID = 50
+    _PARENT_GROUP_ID = 60
+
     def _make_grocy(self, products):
         g = MagicMock(spec=GrocyClient)
         g.get_all_products.return_value = products
         g.update_product.return_value = None
         g.create_product.return_value = 100
-        g.ensure_product_group.return_value = 50
+        # First call → "Group master"; subsequent calls → per-parent groups.
+        g.ensure_product_group.side_effect = (
+            lambda name: self._GROUP_MASTER_ID
+            if name == "Group master"
+            else self._PARENT_GROUP_ID
+        )
         return g
 
     @patch("main._call_gemini")
@@ -655,23 +663,29 @@ class TestAiGroupProducts:
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 2
-        # "Group master" product group should be ensured.
-        grocy.ensure_product_group.assert_called_once_with("Group master")
+        # "Group master" and per-parent product groups should be ensured.
+        grocy.ensure_product_group.assert_any_call("Group master")
+        grocy.ensure_product_group.assert_any_call("Maito")
         # Parent product "Maito" should be created (not in existing products).
         grocy.create_product.assert_called_once_with(
             "Maito", location_id=None, quantity_unit_id=None,
         )
-        # Parent should be configured with stock accumulation, product group,
-        # and hidden from the stock overview.
+        # Parent should be configured with stock accumulation, "Group master"
+        # product group, and hidden from the stock overview.
         grocy.update_product.assert_any_call(
             100,
             cumulate_min_stock_amount_of_sub_products=1,
             hide_on_stock_overview=1,
-            product_group_id=50,
+            product_group_id=self._GROUP_MASTER_ID,
         )
-        # Child products should be updated with parent_product_id.
-        grocy.update_product.assert_any_call(1, parent_product_id=100)
-        grocy.update_product.assert_any_call(2, parent_product_id=100)
+        # Child products should be updated with parent_product_id and the
+        # per-parent product group.
+        grocy.update_product.assert_any_call(
+            1, parent_product_id=100, product_group_id=self._PARENT_GROUP_ID,
+        )
+        grocy.update_product.assert_any_call(
+            2, parent_product_id=100, product_group_id=self._PARENT_GROUP_ID,
+        )
 
     @patch("main._call_gemini")
     def test_reuses_existing_parent_product(self, mock_gemini):
@@ -687,13 +701,16 @@ class TestAiGroupProducts:
         assert result == 1
         # Should NOT create a new product — reuse existing "Maito".
         grocy.create_product.assert_not_called()
-        grocy.update_product.assert_any_call(11, parent_product_id=10)
+        # Child should be assigned parent and per-parent product group.
+        grocy.update_product.assert_any_call(
+            11, parent_product_id=10, product_group_id=self._PARENT_GROUP_ID,
+        )
         # Existing parent should still be updated with group / hide flags.
         grocy.update_product.assert_any_call(
             10,
             cumulate_min_stock_amount_of_sub_products=1,
             hide_on_stock_overview=1,
-            product_group_id=50,
+            product_group_id=self._GROUP_MASTER_ID,
         )
 
     @patch("main._call_gemini")
@@ -773,7 +790,7 @@ class TestAiGroupProducts:
 
     @patch("main._call_gemini")
     def test_group_without_product_group_on_ensure_failure(self, mock_gemini):
-        """If ensure_product_group fails, grouping still works without group ID."""
+        """If ensure_product_group fails, grouping still works without group IDs."""
         from main import _ai_group_products
         products = [
             {"id": 1, "name": "Pirkka maito"},
@@ -791,6 +808,9 @@ class TestAiGroupProducts:
             cumulate_min_stock_amount_of_sub_products=1,
             hide_on_stock_overview=1,
         )
+        # Children should be updated without product_group_id.
+        grocy.update_product.assert_any_call(1, parent_product_id=100)
+        grocy.update_product.assert_any_call(2, parent_product_id=100)
 
 
 # ---------------------------------------------------------------------------
