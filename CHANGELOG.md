@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-03-14
+
+### Fixed
+
+- Group: prevent "Unsupported product nesting level" errors by skipping products that already have sub-products (are parents) and by not reusing existing products that are already children as parent products.
+
 ## [1.5.2] - 2026-03-14
 
 ### Changed

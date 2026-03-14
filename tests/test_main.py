@@ -812,6 +812,52 @@ class TestAiGroupProducts:
         grocy.update_product.assert_any_call(1, parent_product_id=100)
         grocy.update_product.assert_any_call(2, parent_product_id=100)
 
+    @patch("main._call_gemini")
+    def test_skips_products_that_are_already_parents(self, mock_gemini):
+        """Products that already have sub-products must not be assigned a
+        parent – that would create unsupported 2-level nesting in Grocy."""
+        from main import _ai_group_products
+        products = [
+            {"id": 10, "name": "Sipuli"},           # already a parent
+            {"id": 11, "name": "Punasipuli", "parent_product_id": 10},
+            {"id": 12, "name": "Keltasipuli", "parent_product_id": 10},
+            {"id": 20, "name": "Juusto"},            # truly ungrouped
+        ]
+        grocy = self._make_grocy(products)
+        # Gemini only sees product 20 (the only truly ungrouped candidate).
+        mock_gemini.return_value = '{"20": "Juustot"}'
+
+        result = _ai_group_products(grocy, "gemini-key")
+        assert result == 1
+        # The prompt should NOT contain "Sipuli" (already a parent).
+        prompt_text = mock_gemini.call_args[0][0]
+        assert "Sipuli" not in prompt_text
+        assert "Juusto" in prompt_text
+
+    @patch("main._call_gemini")
+    def test_skips_existing_parent_that_is_already_a_child(self, mock_gemini):
+        """If an existing product matching the parent name is already a child
+        of another product, it must not be reused as a parent."""
+        from main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Sipuli", "parent_product_id": 99},
+            {"id": 2, "name": "Valkosipuli"},
+        ]
+        grocy = self._make_grocy(products)
+        # Gemini says product 2 should be grouped under "Sipuli", but the
+        # existing "Sipuli" (id 1) is already a child → must not reuse it.
+        mock_gemini.return_value = '{"2": "Sipuli"}'
+
+        result = _ai_group_products(grocy, "gemini-key")
+        assert result == 0
+        # Because the only candidate parent was skipped, no child assignment
+        # should happen.
+        parent_calls = [
+            c for c in grocy.update_product.call_args_list
+            if "parent_product_id" in (c.kwargs or {})
+        ]
+        assert len(parent_calls) == 0
+
 
 # ---------------------------------------------------------------------------
 # main – AI mode integration
