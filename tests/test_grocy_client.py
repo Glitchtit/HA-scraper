@@ -325,6 +325,47 @@ class TestGetLocations:
 
 
 # ---------------------------------------------------------------------------
+# ensure_product_group
+# ---------------------------------------------------------------------------
+
+class TestEnsureProductGroup:
+    def test_returns_existing_group_id(self):
+        client, session = _make_client()
+        session.get.return_value = _mock_response(
+            json_data=[{"id": 7, "name": "Group master"}]
+        )
+        result = client.ensure_product_group("Group master")
+        assert result == 7
+        # Should only GET, no POST.
+        session.post.assert_not_called()
+
+    def test_creates_group_when_missing(self):
+        client, session = _make_client()
+        session.get.return_value = _mock_response(json_data=[])
+        session.post.return_value = _mock_response(
+            json_data={"created_object_id": 15}
+        )
+        result = client.ensure_product_group("Group master")
+        assert result == 15
+        _, kwargs = session.post.call_args
+        assert kwargs["json"]["name"] == "Group master"
+
+    def test_get_error_raises(self):
+        client, session = _make_client()
+        session.get.side_effect = requests.RequestException("timeout")
+        with pytest.raises(GrocyAPIError, match="product groups"):
+            client.ensure_product_group("Group master")
+
+    def test_create_http_error_raises(self):
+        client, session = _make_client()
+        session.get.return_value = _mock_response(json_data=[])
+        http_err = requests.HTTPError(response=MagicMock(status_code=422, text=""))
+        session.post.return_value = _mock_response(raise_for=http_err, status_code=422)
+        with pytest.raises(GrocyAPIError, match="create product group"):
+            client.ensure_product_group("Group master")
+
+
+# ---------------------------------------------------------------------------
 # update_product
 # ---------------------------------------------------------------------------
 

@@ -642,7 +642,11 @@ def _ai_group_products(
     similar items (e.g. different brands of milk), creates parent products
     where needed, and assigns each child product to its parent.
     Parent products are created with
-    ``cumulate_min_stock_amount_of_sub_products`` enabled.
+    ``cumulate_min_stock_amount_of_sub_products`` enabled.  Each parent is
+    also assigned to the ``"Group master"`` product group and marked with
+    ``hide_on_stock_overview`` so it does not clutter the stock overview.
+    A product group matching the parent name (e.g. ``"Maito"``) is created
+    for each group and assigned to every child product in that group.
 
     Returns the number of products updated.
     """
@@ -655,6 +659,15 @@ def _ai_group_products(
     if not products:
         logger.info("No products found in Grocy – nothing to group.")
         return 0
+
+    # Ensure the "Group master" product group exists so we can assign parents.
+    group_master_id: int | None = None
+    try:
+        group_master_id = grocy.ensure_product_group("Group master")
+    except GrocyAPIError as exc:
+        logger.warning(
+            "Could not ensure 'Group master' product group: %s", exc,
+        )
 
     # Only consider products that do not already have a parent.
     ungrouped = [p for p in products if not p.get("parent_product_id")]
@@ -681,14 +694,14 @@ def _ai_group_products(
             "You are a grocery database expert helping to organise a product "
             "catalogue.\n\n"
             "For each product below, decide whether it belongs to a common "
-            "generic product group.  Focus on general grocery categories like "
+            "generic product group.  Group ALL grocery categories including "
             "dairy, eggs, bread, flour, butter, rice, pasta, cooking oil, "
-            "canned goods, frozen vegetables, meat, etc.\n"
-            "Do NOT group snacks, candy, soft drinks, energy drinks, or "
-            "alcoholic beverages.\n\n"
+            "canned goods, frozen vegetables, meat, snacks, candy, "
+            "soft drinks, energy drinks, alcoholic beverages, etc.\n\n"
             "If a product should be grouped, return the generic parent product "
             "name in Finnish (e.g. \"Maito\" for all kinds of milk, "
-            "\"Kananmuna\" for eggs, \"Leipä\" for bread).\n"
+            "\"Kananmuna\" for eggs, \"Leipä\" for bread, "
+            "\"Energiajuoma\" for energy drinks, \"Sipsi\" for potato chips).\n"
             "If a product should NOT be grouped, map it to null.\n\n"
             "Return ONLY a JSON object mapping product IDs (as strings) to "
             "parent product names (as strings) or null, e.g.\n"
@@ -717,6 +730,7 @@ def _ai_group_products(
 
         # Ensure each parent product exists.
         parent_name_to_id: dict[str, int] = {}
+        parent_name_to_group_id: dict[str, int] = {}
         for parent_name in parent_names:
             existing = name_to_product.get(parent_name)
             if existing:
@@ -744,15 +758,33 @@ def _ai_group_products(
                     )
                     continue
 
-            # Enable "Accumulate sub products min. stock amount" on the parent.
+            # Ensure a product group with the same name as the parent exists
+            # so child products can be assigned to it.
             try:
-                grocy.update_product(
-                    parent_name_to_id[parent_name],
-                    cumulate_min_stock_amount_of_sub_products=1,
+                parent_name_to_group_id[parent_name] = (
+                    grocy.ensure_product_group(parent_name)
                 )
             except GrocyAPIError as exc:
                 logger.warning(
-                    "Could not enable stock accumulation on '%s': %s",
+                    "Could not ensure product group '%s': %s",
+                    parent_name, exc,
+                )
+
+            # Configure the parent: accumulate sub-product stock, assign to
+            # "Group master" product group, and hide from the stock overview.
+            parent_update: dict = {
+                "cumulate_min_stock_amount_of_sub_products": 1,
+                "hide_on_stock_overview": 1,
+            }
+            if group_master_id is not None:
+                parent_update["product_group_id"] = group_master_id
+            try:
+                grocy.update_product(
+                    parent_name_to_id[parent_name], **parent_update,
+                )
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Could not update parent product '%s': %s",
                     parent_name, exc,
                 )
 
@@ -772,10 +804,12 @@ def _ai_group_products(
             # Don't set a product as its own parent.
             if int(product["id"]) == parent_id:
                 continue
+            child_update: dict = {"parent_product_id": parent_id}
+            child_group_id = parent_name_to_group_id.get(parent_name)
+            if child_group_id is not None:
+                child_update["product_group_id"] = child_group_id
             try:
-                grocy.update_product(
-                    int(product["id"]), parent_product_id=parent_id
-                )
+                grocy.update_product(int(product["id"]), **child_update)
                 logger.info(
                     "  → Grouped '%s' (ID %s) under '%s'.",
                     product.get("name"), pid, parent_name,

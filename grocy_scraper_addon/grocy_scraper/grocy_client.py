@@ -286,6 +286,47 @@ class GrocyClient:
         except requests.RequestException as exc:
             raise GrocyAPIError(f"Failed to fetch locations: {exc}") from exc
 
+    def ensure_product_group(self, name: str) -> int:
+        """Return the ID of the product group *name*, creating it if needed.
+
+        Queries ``/api/objects/product_groups`` for an existing group with the
+        given name.  If none is found a new group is created and its ID is
+        returned.
+
+        Parameters
+        ----------
+        name:
+            The product group name (e.g. ``"Group master"``).
+        """
+        url = self._url("/api/objects/product_groups")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            groups = resp.json() or []
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to fetch product groups: {exc}"
+            ) from exc
+
+        for group in groups:
+            if group.get("name") == name:
+                return int(group["id"])
+
+        # Group does not exist yet – create it.
+        try:
+            resp = self._session.post(url, json={"name": name}, timeout=10)
+            resp.raise_for_status()
+            return int(resp.json()["created_object_id"])
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to create product group '{name}': {exc}{body}"
+            ) from exc
+        except (requests.RequestException, KeyError, ValueError) as exc:
+            raise GrocyAPIError(
+                f"Failed to create product group '{name}': {exc}"
+            ) from exc
+
     def update_product(self, product_id: int, **fields) -> None:
         """Update fields on an existing product.
 
