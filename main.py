@@ -642,7 +642,9 @@ def _ai_group_products(
     similar items (e.g. different brands of milk), creates parent products
     where needed, and assigns each child product to its parent.
     Parent products are created with
-    ``cumulate_min_stock_amount_of_sub_products`` enabled.
+    ``cumulate_min_stock_amount_of_sub_products`` enabled.  Each parent is
+    also assigned to the ``"Group master"`` product group and marked with
+    ``hide_on_stock_overview`` so it does not clutter the stock overview.
 
     Returns the number of products updated.
     """
@@ -655,6 +657,15 @@ def _ai_group_products(
     if not products:
         logger.info("No products found in Grocy – nothing to group.")
         return 0
+
+    # Ensure the "Group master" product group exists so we can assign parents.
+    group_master_id: int | None = None
+    try:
+        group_master_id = grocy.ensure_product_group("Group master")
+    except GrocyAPIError as exc:
+        logger.warning(
+            "Could not ensure 'Group master' product group: %s", exc,
+        )
 
     # Only consider products that do not already have a parent.
     ungrouped = [p for p in products if not p.get("parent_product_id")]
@@ -744,15 +755,21 @@ def _ai_group_products(
                     )
                     continue
 
-            # Enable "Accumulate sub products min. stock amount" on the parent.
+            # Configure the parent: accumulate sub-product stock, assign to
+            # "Group master" product group, and hide from the stock overview.
+            parent_update: dict = {
+                "cumulate_min_stock_amount_of_sub_products": 1,
+                "hide_on_stock_overview": 1,
+            }
+            if group_master_id is not None:
+                parent_update["product_group_id"] = group_master_id
             try:
                 grocy.update_product(
-                    parent_name_to_id[parent_name],
-                    cumulate_min_stock_amount_of_sub_products=1,
+                    parent_name_to_id[parent_name], **parent_update,
                 )
             except GrocyAPIError as exc:
                 logger.warning(
-                    "Could not enable stock accumulation on '%s': %s",
+                    "Could not update parent product '%s': %s",
                     parent_name, exc,
                 )
 

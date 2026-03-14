@@ -639,6 +639,7 @@ class TestAiGroupProducts:
         g.get_all_products.return_value = products
         g.update_product.return_value = None
         g.create_product.return_value = 100
+        g.ensure_product_group.return_value = 50
         return g
 
     @patch("main._call_gemini")
@@ -654,13 +655,19 @@ class TestAiGroupProducts:
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 2
+        # "Group master" product group should be ensured.
+        grocy.ensure_product_group.assert_called_once_with("Group master")
         # Parent product "Maito" should be created (not in existing products).
         grocy.create_product.assert_called_once_with(
             "Maito", location_id=None, quantity_unit_id=None,
         )
-        # Accumulate stock should be enabled on the parent.
+        # Parent should be configured with stock accumulation, product group,
+        # and hidden from the stock overview.
         grocy.update_product.assert_any_call(
-            100, cumulate_min_stock_amount_of_sub_products=1,
+            100,
+            cumulate_min_stock_amount_of_sub_products=1,
+            hide_on_stock_overview=1,
+            product_group_id=50,
         )
         # Child products should be updated with parent_product_id.
         grocy.update_product.assert_any_call(1, parent_product_id=100)
@@ -681,6 +688,13 @@ class TestAiGroupProducts:
         # Should NOT create a new product — reuse existing "Maito".
         grocy.create_product.assert_not_called()
         grocy.update_product.assert_any_call(11, parent_product_id=10)
+        # Existing parent should still be updated with group / hide flags.
+        grocy.update_product.assert_any_call(
+            10,
+            cumulate_min_stock_amount_of_sub_products=1,
+            hide_on_stock_overview=1,
+            product_group_id=50,
+        )
 
     @patch("main._call_gemini")
     def test_skips_already_grouped_products(self, mock_gemini):
@@ -755,6 +769,27 @@ class TestAiGroupProducts:
         _ai_group_products(grocy, "key", location_id=5, quantity_unit_id=3)
         grocy.create_product.assert_called_once_with(
             "Maito", location_id=5, quantity_unit_id=3,
+        )
+
+    @patch("main._call_gemini")
+    def test_group_without_product_group_on_ensure_failure(self, mock_gemini):
+        """If ensure_product_group fails, grouping still works without group ID."""
+        from main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Pirkka maito"},
+            {"id": 2, "name": "Valio maito"},
+        ]
+        grocy = self._make_grocy(products)
+        grocy.ensure_product_group.side_effect = GrocyAPIError("fail")
+        mock_gemini.return_value = '{"1": "Maito", "2": "Maito"}'
+
+        result = _ai_group_products(grocy, "key")
+        assert result == 2
+        # Parent should be updated without product_group_id.
+        grocy.update_product.assert_any_call(
+            100,
+            cumulate_min_stock_amount_of_sub_products=1,
+            hide_on_stock_overview=1,
         )
 
 
