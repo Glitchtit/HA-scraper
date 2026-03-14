@@ -669,8 +669,22 @@ def _ai_group_products(
             "Could not ensure 'Group master' product group: %s", exc,
         )
 
-    # Only consider products that do not already have a parent.
-    ungrouped = [p for p in products if not p.get("parent_product_id")]
+    # Build a set of product IDs that already act as parents (have
+    # sub-products).  Grocy only supports one nesting level, so these
+    # products must not be assigned a parent themselves.
+    has_children: set[int] = set()
+    for p in products:
+        ppid = p.get("parent_product_id")
+        if ppid:
+            has_children.add(int(ppid))
+
+    # Only consider products that do not already have a parent and are not
+    # already parents of sub-products (assigning a parent to a product that
+    # already has children would violate Grocy's single-level nesting limit).
+    ungrouped = [
+        p for p in products
+        if not p.get("parent_product_id") and int(p["id"]) not in has_children
+    ]
     if not ungrouped:
         logger.info("All products already have parent products – nothing to group.")
         return 0
@@ -733,9 +747,17 @@ def _ai_group_products(
         parent_name_to_group_id: dict[str, int] = {}
         for parent_name in parent_names:
             existing = name_to_product.get(parent_name)
-            if existing:
+            if existing and not existing.get("parent_product_id"):
                 parent_id = int(existing["id"])
                 parent_name_to_id[parent_name] = parent_id
+            elif existing:
+                # The existing product is already a child of another product;
+                # reusing it as a parent would create unsupported nesting.
+                logger.debug(
+                    "Skipping '%s' as parent – already a child product.",
+                    parent_name,
+                )
+                continue
             else:
                 # Create the parent product.
                 try:
