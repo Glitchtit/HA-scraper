@@ -341,10 +341,14 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "Grocy URL and API key must be configured."}
 
     from grocy_scraper.grocy_client import GrocyClient, GrocyAPIError
+    from grocy_scraper.scraper import Product
+
+    import main as _main
 
     grocy = GrocyClient(base_url=grocy_url, api_key=grocy_key)
     location_id = int(opts.get("location_id", 0)) or None
     quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
+    upload_images = opts.get("upload_images", True)
 
     added = 0
     errors: list[str] = []
@@ -355,6 +359,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 continue
             ean = str(item.get("ean", "")).strip()
             description = str(item.get("description", "")).strip()
+            image_url = str(item.get("image_url", "")).strip()
             try:
                 # Skip if a product with this barcode already exists.
                 if ean and grocy.get_product_by_barcode(ean):
@@ -369,6 +374,12 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 )
                 if ean:
                     grocy.add_barcode(product_id, ean)
+                if upload_images and image_url:
+                    product = Product(
+                        name=name, ean=ean, description=description,
+                        image_url=image_url,
+                    )
+                    _main._upload_product_image(product, grocy, product_id)
                 logger.info("Added '%s' (id=%d, ean=%s).", name, product_id, ean or "–")
                 added += 1
             except GrocyAPIError as exc:

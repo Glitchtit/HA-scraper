@@ -465,6 +465,96 @@ class TestHandleAddProducts:
         assert len(result["errors"]) == 1
         assert "unexpected" in result["errors"][0]
 
+    def test_uploads_image_when_image_url_present(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "upload_images": True,
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.return_value = 10
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
+             mock.patch("main._upload_product_image") as mock_upload:
+            result = ingress_mod._handle_add_products(
+                {
+                    "products": [
+                        {
+                            "name": "Juice",
+                            "ean": "555",
+                            "description": "Orange",
+                            "image_url": "https://example.com/juice.jpg",
+                        }
+                    ]
+                }
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        mock_upload.assert_called_once()
+        product_arg = mock_upload.call_args[0][0]
+        assert product_arg.name == "Juice"
+        assert product_arg.ean == "555"
+        assert product_arg.image_url == "https://example.com/juice.jpg"
+        assert mock_upload.call_args[0][1] is mock_grocy
+        assert mock_upload.call_args[0][2] == 10
+
+    def test_skips_image_upload_when_disabled(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "upload_images": False,
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.return_value = 10
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
+             mock.patch("main._upload_product_image") as mock_upload:
+            result = ingress_mod._handle_add_products(
+                {
+                    "products": [
+                        {
+                            "name": "Juice",
+                            "ean": "555",
+                            "image_url": "https://example.com/juice.jpg",
+                        }
+                    ]
+                }
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        mock_upload.assert_not_called()
+
+    def test_skips_image_upload_when_no_image_url(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "upload_images": True,
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.return_value = 10
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
+             mock.patch("main._upload_product_image") as mock_upload:
+            result = ingress_mod._handle_add_products(
+                {
+                    "products": [
+                        {"name": "Juice", "ean": "555"},
+                    ]
+                }
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        mock_upload.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler (do_GET / do_POST)
