@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-03-15
+
+### Fixed
+
+- Ingress UI: product images are now uploaded to Grocy when adding products via the search → add flow (`/api/add_products`). Respects the `upload_images` add-on option (default: true).
+
 ## [1.5.3] - 2026-03-14
 
 ### Fixed
