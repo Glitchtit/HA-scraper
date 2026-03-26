@@ -160,7 +160,11 @@ def _handle_config() -> dict[str, Any]:
 
 
 def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
-    """Search products on K-Ruoka."""
+    """Search products on K-Ruoka.
+
+    When multiple store IDs are configured (comma-separated), each store is
+    tried in order until one succeeds.
+    """
     query = str(body.get("query", "")).strip()
     if not query:
         return {"success": False, "error": "Search query is required."}
@@ -171,21 +175,37 @@ def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
     try:
         from grocy_scraper.scraper import KRuokaScraper
 
-        scraper = KRuokaScraper(
-            store_id=opts.get("store_id", ""),
-            use_graphql=opts.get("use_graphql", True),
-        )
-        products: list[dict[str, str]] = []
-        for product in scraper.search(query, max_products=max_products):
-            products.append(
-                {
-                    "name": product.name,
-                    "ean": product.ean or "",
-                    "description": product.description or "",
-                    "image_url": getattr(product, "image_url", "") or "",
-                }
-            )
-        return {"success": True, "products": products}
+        raw_store = opts.get("store_id", "")
+        store_ids = [s.strip() for s in raw_store.split(",") if s.strip()] or [""]
+        use_graphql = opts.get("use_graphql", True)
+
+        last_exc: Exception | None = None
+        for idx, store_id in enumerate(store_ids):
+            try:
+                scraper = KRuokaScraper(
+                    store_id=store_id,
+                    use_graphql=use_graphql,
+                )
+                products: list[dict[str, str]] = []
+                for product in scraper.search(query, max_products=max_products):
+                    products.append(
+                        {
+                            "name": product.name,
+                            "ean": product.ean or "",
+                            "description": product.description or "",
+                            "image_url": getattr(product, "image_url", "") or "",
+                        }
+                    )
+                return {"success": True, "products": products}
+            except Exception as exc:
+                last_exc = exc
+                if idx < len(store_ids) - 1:
+                    logger.warning(
+                        "Store %s failed (%s); trying next store …", store_id, exc,
+                    )
+
+        # All stores failed — report the last error.
+        raise last_exc  # type: ignore[misc]
     except Exception as exc:
         logger.exception("Product search failed")
         return {"success": False, "error": str(exc)}

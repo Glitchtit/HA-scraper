@@ -12,6 +12,10 @@ Browse the full catalogue (GraphQL backend, no setup needed)::
     python main.py --store N110 --browse \\
         --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
 
+Multiple stores with automatic fallback::
+
+    python main.py --store N110,N137 --query "maito" --dry-run
+
 Dry-run (scrape only, do not write to Grocy)::
 
     python main.py --store N110 --query "maito" --dry-run
@@ -61,6 +65,11 @@ def _env_int(name: str) -> int | None:
     if val is None or val == "":
         return None
     return int(val)
+
+
+def _parse_store_ids(raw: str) -> list[str]:
+    """Split a comma-separated store-ID string into a list of non-empty IDs."""
+    return [s.strip() for s in raw.split(",") if s.strip()]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -118,10 +127,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--store",
         default=os.environ.get("KRUOKA_STORE_ID", ""),
-        metavar="STORE_ID",
+        metavar="STORE_IDS",
         help=(
-            "K-group store ID (e.g. N110 = K-Supermarket Helsinki, "
-            "N137 = K-Citymarket Tammisto).  "
+            "Comma-separated K-group store IDs (e.g. N110,N137).  "
+            "If a scrape fails for the first store, the next store is tried "
+            "automatically.  "
             "Also read from the KRUOKA_STORE_ID environment variable."
         ),
     )
@@ -864,10 +874,10 @@ def _validate_args(args: argparse.Namespace) -> int:
 
     # Store is required when scraping, discovering, or updating.
     if scrape_mode or discover_mode or update_mode:
-        if not args.store:
+        if not _parse_store_ids(args.store):
             logger.error(
                 "Store ID is required.  Use --store or set the KRUOKA_STORE_ID "
-                "environment variable."
+                "environment variable.  Multiple stores can be comma-separated."
             )
             return 1
 
@@ -948,21 +958,40 @@ def _setup_grocy(args: argparse.Namespace) -> tuple[GrocyClient | None, set[str]
 
 
 def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
-    """Return an iterator of products from the k-ruoka.fi scraper."""
-    scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
-    if args.query:
-        backend = "GraphQL" if args.use_graphql else "kr-api"
-        logger.info(
-            "Searching k-ruoka.fi (store=%s, backend=%s) for '%s' …",
-            args.store, backend, args.query,
-        )
-        return scraper.search(args.query, max_products=args.max_products)
+    """Return an iterator of products from the k-ruoka.fi scraper.
+
+    When multiple store IDs are configured (comma-separated ``--store``),
+    the first store is tried; if it raises an exception the next store is
+    attempted, and so on.
+    """
+    store_ids = _parse_store_ids(args.store)
     backend = "GraphQL" if args.use_graphql else "kr-api"
-    logger.info(
-        "Browsing k-ruoka.fi catalogue (store=%s, backend=%s) …",
-        args.store, backend,
-    )
-    return scraper.browse(max_products=args.max_products)
+
+    for idx, store_id in enumerate(store_ids):
+        scraper = KRuokaScraper(store_id=store_id, use_graphql=args.use_graphql)
+        try:
+            if args.query:
+                logger.info(
+                    "Searching k-ruoka.fi (store=%s, backend=%s) for '%s' …",
+                    store_id, backend, args.query,
+                )
+                products = list(scraper.search(args.query, max_products=args.max_products))
+            else:
+                logger.info(
+                    "Browsing k-ruoka.fi catalogue (store=%s, backend=%s) …",
+                    store_id, backend,
+                )
+                products = list(scraper.browse(max_products=args.max_products))
+            return iter(products)
+        except Exception as exc:
+            if idx < len(store_ids) - 1:
+                logger.warning(
+                    "Store %s failed (%s); trying next store …", store_id, exc,
+                )
+            else:
+                raise
+    # Should never reach here (last store re-raises), but satisfy type checker.
+    return iter([])
 
 
 def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known_barcodes: set[str]) -> int:
@@ -1031,7 +1060,11 @@ def _discover_products(args: argparse.Namespace) -> int:
         password=args.bbuddy_password,
     )
     grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
-    scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
+    store_ids = _parse_store_ids(args.store)
+    scrapers = [
+        KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
+        for sid in store_ids
+    ]
 
     # Pre-load known barcodes.
     known_barcodes: set[str] = set()
@@ -1066,10 +1099,20 @@ def _discover_products(args: argparse.Namespace) -> int:
 
         # Always search K-Ruoka first; its data takes priority.
         # Fall back to S-kaupat, then the BB-resolved name.
+        # Try each configured store until a match is found.
         product = None
-        for p in scraper.search(barcode, max_products=10):
-            if p.ean == barcode:
-                product = p
+        for scraper in scrapers:
+            try:
+                for p in scraper.search(barcode, max_products=10):
+                    if p.ean == barcode:
+                        product = p
+                        break
+            except Exception as exc:
+                logger.warning(
+                    "  Store %s failed for EAN %s (%s); trying next store …",
+                    scraper.store_id, barcode, exc,
+                )
+            if product is not None:
                 break
 
         # Fallback: try S-kaupat.fi product lookup by EAN.
@@ -1210,7 +1253,11 @@ def _update_products(args: argparse.Namespace) -> int:
     Returns 0 on success, 1 if any errors occurred.
     """
     grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
-    scraper = KRuokaScraper(store_id=args.store, use_graphql=args.use_graphql)
+    store_ids = _parse_store_ids(args.store)
+    scrapers = [
+        KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
+        for sid in store_ids
+    ]
 
     try:
         products = grocy.get_all_products()
@@ -1254,15 +1301,24 @@ def _update_products(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
-        # Try each EAN until we find a match.
+        # Try each EAN until we find a match, trying all configured stores.
         found: Product | None = None
         matched_ean = ""
         for ean in eans:
-            # K-Ruoka first.
-            for p in scraper.search(ean, max_products=10):
-                if p.ean == ean:
-                    found = p
-                    matched_ean = ean
+            # K-Ruoka first — try each store.
+            for scraper in scrapers:
+                try:
+                    for p in scraper.search(ean, max_products=10):
+                        if p.ean == ean:
+                            found = p
+                            matched_ean = ean
+                            break
+                except Exception as exc:
+                    logger.warning(
+                        "  Store %s failed for EAN %s (%s); trying next store …",
+                        scraper.store_id, ean, exc,
+                    )
+                if found:
                     break
             if found:
                 break

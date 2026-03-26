@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-03-26
+
+### Added
+
+- CLI / Add-on: support multiple K-group store IDs (comma-separated) via `--store` / `KRUOKA_STORE_ID`. If a scrape fails for the first store, the next store is tried automatically. Applies to search, browse, discover, and update modes.
+
 ## [1.5.5] - 2026-03-21
 
 ### Fixed
