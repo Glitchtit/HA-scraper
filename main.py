@@ -1409,16 +1409,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.discover:
         rc = _discover_products(args)
         # After discover, run AI sort/date/group when a Gemini key is available.
-        gemini_key = getattr(args, "gemini_api_key", "")
-        if rc == 0 and gemini_key:
+        if rc == 0 and args.gemini_api_key:
             grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
-            model = getattr(args, "gemini_model", "gemini-1.5-flash")
-            _ai_sort_products(grocy, gemini_key, model)
-            _ai_assign_due_dates(grocy, gemini_key, model)
+            _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model)
+            _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model)
             _ai_group_products(
                 grocy,
-                gemini_key,
-                model,
+                args.gemini_api_key,
+                args.gemini_model,
                 location_id=getattr(args, "location_id", None),
                 quantity_unit_id=getattr(args, "quantity_unit_id", None),
             )
