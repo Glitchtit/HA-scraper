@@ -929,6 +929,88 @@ class TestMainAIMode:
         mock_group.assert_called_once()
 
 
+class TestDiscoverChainsAI:
+    """Discover mode should run sort/date/group when a Gemini key is set."""
+
+    @patch("main._ai_group_products")
+    @patch("main._ai_assign_due_dates")
+    @patch("main._ai_sort_products")
+    @patch("main._discover_products", return_value=0)
+    @patch("main.GrocyClient")
+    def test_discover_chains_sort_date_group(
+        self, MockGrocy, mock_discover, mock_sort, mock_date, mock_group,
+    ):
+        mock_sort.return_value = 1
+        mock_date.return_value = 1
+        mock_group.return_value = 1
+        rc = main([
+            "--discover",
+            "--store", "N110",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-user", "admin",
+            "--bbuddy-password", "secret",
+            "--location-id", "2",
+            "--quantity-unit-id", "2",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_discover.assert_called_once()
+        mock_sort.assert_called_once()
+        mock_date.assert_called_once()
+        mock_group.assert_called_once()
+
+    @patch("main._ai_group_products")
+    @patch("main._ai_assign_due_dates")
+    @patch("main._ai_sort_products")
+    @patch("main._discover_products", return_value=0)
+    def test_discover_no_gemini_key_skips_ai(
+        self, mock_discover, mock_sort, mock_date, mock_group,
+    ):
+        rc = main([
+            "--discover",
+            "--store", "N110",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-user", "admin",
+            "--bbuddy-password", "secret",
+            "--location-id", "2",
+            "--quantity-unit-id", "2",
+        ])
+        assert rc == 0
+        mock_discover.assert_called_once()
+        mock_sort.assert_not_called()
+        mock_date.assert_not_called()
+        mock_group.assert_not_called()
+
+    @patch("main._ai_group_products")
+    @patch("main._ai_assign_due_dates")
+    @patch("main._ai_sort_products")
+    @patch("main._discover_products", return_value=1)
+    def test_discover_failure_skips_ai(
+        self, mock_discover, mock_sort, mock_date, mock_group,
+    ):
+        rc = main([
+            "--discover",
+            "--store", "N110",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-user", "admin",
+            "--bbuddy-password", "secret",
+            "--location-id", "2",
+            "--quantity-unit-id", "2",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 1
+        mock_discover.assert_called_once()
+        mock_sort.assert_not_called()
+        mock_date.assert_not_called()
+        mock_group.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # parse_args – --delete-all flag
 # ---------------------------------------------------------------------------

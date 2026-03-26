@@ -212,7 +212,11 @@ def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_discover() -> dict[str, Any]:
-    """Run the Barcode Buddy -> K-Ruoka -> Grocy discover pipeline."""
+    """Run the Barcode Buddy -> K-Ruoka -> Grocy discover pipeline.
+
+    After discover succeeds, automatically runs AI sort, date and group
+    when a Gemini API key is configured.
+    """
     opts = _read_options()
     if not (opts.get("bbuddy_url") and opts.get("bbuddy_user") and opts.get("bbuddy_password")):
         return {
@@ -227,11 +231,31 @@ def _handle_discover() -> dict[str, Any]:
             ],
         }
 
+    from grocy_scraper.grocy_client import GrocyClient
     import main as _main
 
     args = _build_args(opts)
     with _capture_logs() as logs:
         result_code: int = _main._discover_products(args)
+        # Chain AI sort/date/group when Gemini key is available.
+        gemini_key = opts.get("gemini_api_key", "")
+        if result_code == 0 and gemini_key:
+            grocy = GrocyClient(
+                base_url=opts.get("grocy_url", ""),
+                api_key=opts.get("grocy_api_key", ""),
+            )
+            model = opts.get("gemini_model", "gemini-1.5-flash")
+            _main._ai_sort_products(grocy, gemini_key, model)
+            _main._ai_assign_due_dates(grocy, gemini_key, model)
+            location_id = int(opts.get("location_id", 0)) or None
+            quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
+            _main._ai_group_products(
+                grocy,
+                gemini_key,
+                model,
+                location_id=location_id,
+                quantity_unit_id=quantity_unit_id,
+            )
     return {"success": result_code == 0, "skipped": False, "logs": logs}
 
 
