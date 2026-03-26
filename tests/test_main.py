@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import main, parse_args, sync_product
+from main import main, parse_args, sync_product, _parse_store_ids
 from grocy_scraper.scraper import Product
 from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 
@@ -1481,3 +1482,220 @@ class TestDiscoverProducts:
         )
         rc = _discover_products(args)
         assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_store_ids
+# ---------------------------------------------------------------------------
+
+class TestParseStoreIds:
+    def test_single_store(self):
+        assert _parse_store_ids("N110") == ["N110"]
+
+    def test_multiple_stores(self):
+        assert _parse_store_ids("N110,N137") == ["N110", "N137"]
+
+    def test_strips_whitespace(self):
+        assert _parse_store_ids(" N110 , N137 ") == ["N110", "N137"]
+
+    def test_empty_string(self):
+        assert _parse_store_ids("") == []
+
+    def test_trailing_comma(self):
+        assert _parse_store_ids("N110,") == ["N110"]
+
+    def test_only_commas(self):
+        assert _parse_store_ids(",,,") == []
+
+
+# ---------------------------------------------------------------------------
+# Multi-store fallback – _run_scraper
+# ---------------------------------------------------------------------------
+
+class TestMultiStoreFallbackRunScraper:
+    """Test that _run_scraper tries the next store when one fails."""
+
+    def test_first_store_succeeds(self, capsys):
+        """When the first store works, only one scraper is created."""
+        products = [Product(name="Maito", ean="111")]
+        with patch("main.KRuokaScraper") as MockScraper:
+            instance = MockScraper.return_value
+            instance.browse.return_value = iter(products)
+            rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
+
+        assert rc == 0
+        # Only one scraper should be instantiated (first store succeeded).
+        assert MockScraper.call_count == 1
+        _, kwargs = MockScraper.call_args
+        assert kwargs["store_id"] == "N110"
+
+    def test_fallback_to_second_store_on_error(self, capsys):
+        """When the first store raises, the second store is tried."""
+        products = [Product(name="Maito", ean="111")]
+        call_count = {"n": 0}
+
+        def make_scraper(**kwargs):
+            call_count["n"] += 1
+            instance = MagicMock()
+            if call_count["n"] == 1:
+                # First store fails.
+                instance.browse.return_value = iter([])
+                instance.browse.side_effect = RuntimeError("store down")
+            else:
+                # Second store succeeds.
+                instance.browse.return_value = iter(products)
+            return instance
+
+        with patch("main.KRuokaScraper", side_effect=make_scraper):
+            rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Maito" in out
+
+    def test_all_stores_fail_raises(self, capsys):
+        """When all stores fail, the last error is raised."""
+        with patch("main.KRuokaScraper") as MockScraper:
+            instance = MockScraper.return_value
+            instance.browse.side_effect = RuntimeError("all fail")
+            with pytest.raises(RuntimeError, match="all fail"):
+                main(["--store", "N110,N137", "--browse", "--dry-run"])
+
+    def test_single_store_still_works(self, capsys):
+        """Single store (no comma) still works as before."""
+        products = [Product(name="Kerma", ean="222")]
+        with patch("main.KRuokaScraper") as MockScraper:
+            instance = MockScraper.return_value
+            instance.search.return_value = iter(products)
+            rc = main(["--store", "N110", "--query", "kerma", "--dry-run"])
+
+        assert rc == 0
+        _, kwargs = MockScraper.call_args
+        assert kwargs["store_id"] == "N110"
+
+
+# ---------------------------------------------------------------------------
+# Multi-store fallback – _discover_products
+# ---------------------------------------------------------------------------
+
+class TestMultiStoreDiscoverFallback:
+    """Test that discover tries multiple stores for each barcode."""
+
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.BarcodeBuddyClient")
+    @patch("main.GrocyClient")
+    @patch("main.KRuokaScraper")
+    def test_discover_tries_second_store(
+        self, MockScraper, MockGrocy, MockBBuddy, mock_skaupat,
+    ):
+        from main import _discover_products
+
+        # Set up Barcode Buddy to return one pending barcode.
+        bb_instance = MockBBuddy.return_value
+        entry = MagicMock()
+        entry.barcode = "123"
+        entry.name = ""
+        entry.amount = "1"
+        entry.id = 10
+        bb_instance.get_pending_barcodes.return_value = [entry]
+
+        # Set up Grocy.
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_barcodes.return_value = []
+        grocy_instance.get_product_by_barcode.return_value = {"id": 1}
+
+        # First scraper (store N110) raises; second scraper (N137) succeeds.
+        scrapers = []
+        call_idx = {"n": 0}
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            call_idx["n"] += 1
+            if call_idx["n"] == 1:
+                s.search.side_effect = RuntimeError("store N110 down")
+            else:
+                s.search.return_value = iter([
+                    Product(name="Milk", ean="123"),
+                ])
+            scrapers.append(s)
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        args = Namespace(
+            discover=True, query=None, browse=False,
+            sort=False, date=False, group=False,
+            delete_all=False, update=False,
+            bbuddy_url="https://bb.example.com",
+            bbuddy_key="KEY",
+            bbuddy_user="admin",
+            bbuddy_password="secret",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            store="N110,N137",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+            skip_existing=False,
+        )
+        rc = _discover_products(args)
+        # Two scrapers created for the two stores.
+        assert MockScraper.call_count == 2
+        # The product was found via the second store and synced.
+        assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Multi-store fallback – _update_products
+# ---------------------------------------------------------------------------
+
+class TestMultiStoreUpdateFallback:
+    """Test that update tries multiple stores for each barcode."""
+
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.GrocyClient")
+    @patch("main.KRuokaScraper")
+    def test_update_tries_second_store(
+        self, MockScraper, MockGrocy, mock_skaupat,
+    ):
+        from main import _update_products
+
+        grocy_instance = MockGrocy.return_value
+        grocy_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Old Milk"},
+        ]
+        grocy_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "123"},
+        ]
+
+        # First scraper (store N110) raises; second (N137) succeeds.
+        call_idx = {"n": 0}
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            call_idx["n"] += 1
+            if call_idx["n"] == 1:
+                s.search.side_effect = RuntimeError("store N110 down")
+            else:
+                s.search.return_value = iter([
+                    Product(name="New Milk", ean="123"),
+                ])
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        args = Namespace(
+            store="N110,N137",
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+        )
+        rc = _update_products(args)
+        assert MockScraper.call_count == 2
+        assert rc == 0
+        grocy_instance.update_product.assert_called_once()
