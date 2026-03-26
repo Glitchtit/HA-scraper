@@ -958,11 +958,12 @@ def _setup_grocy(args: argparse.Namespace) -> tuple[GrocyClient | None, set[str]
 
 
 def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
-    """Return an iterator of products from the k-ruoka.fi scraper.
+    """Yield products from the k-ruoka.fi scraper.
 
     When multiple store IDs are configured (comma-separated ``--store``),
     the first store is tried; if it raises an exception the next store is
-    attempted, and so on.
+    attempted, and so on.  Results are streamed lazily (not materialised in
+    memory).
     """
     store_ids = _parse_store_ids(args.store)
     backend = "GraphQL" if args.use_graphql else "kr-api"
@@ -975,14 +976,14 @@ def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
                     "Searching k-ruoka.fi (store=%s, backend=%s) for '%s' …",
                     store_id, backend, args.query,
                 )
-                products = list(scraper.search(args.query, max_products=args.max_products))
+                yield from scraper.search(args.query, max_products=args.max_products)
             else:
                 logger.info(
                     "Browsing k-ruoka.fi catalogue (store=%s, backend=%s) …",
                     store_id, backend,
                 )
-                products = list(scraper.browse(max_products=args.max_products))
-            return iter(products)
+                yield from scraper.browse(max_products=args.max_products)
+            return  # Store succeeded – stop trying.
         except Exception as exc:
             if idx < len(store_ids) - 1:
                 logger.warning(
@@ -990,8 +991,6 @@ def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
                 )
             else:
                 raise
-    # Should never reach here (last store re-raises), but satisfy type checker.
-    return iter([])
 
 
 def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known_barcodes: set[str]) -> int:
