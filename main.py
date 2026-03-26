@@ -1407,7 +1407,22 @@ def main(argv: list[str] | None = None) -> int:
 
     # Discover mode: Barcode Buddy → K-Ruoka → Grocy pipeline.
     if args.discover:
-        return _discover_products(args)
+        rc = _discover_products(args)
+        # After discover, run AI sort/date/group when a Gemini key is available.
+        gemini_key = getattr(args, "gemini_api_key", "")
+        if rc == 0 and gemini_key:
+            grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+            model = getattr(args, "gemini_model", "gemini-1.5-flash")
+            _ai_sort_products(grocy, gemini_key, model)
+            _ai_assign_due_dates(grocy, gemini_key, model)
+            _ai_group_products(
+                grocy,
+                gemini_key,
+                model,
+                location_id=getattr(args, "location_id", None),
+                quantity_unit_id=getattr(args, "quantity_unit_id", None),
+            )
+        return rc
 
     # Delete-all mode: wipe all products from Grocy.
     if args.delete_all:

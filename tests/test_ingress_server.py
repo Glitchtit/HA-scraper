@@ -231,6 +231,78 @@ class TestHandleDiscover:
         assert result["success"] is True
         assert result["skipped"] is False
 
+    def test_discover_chains_sort_date_group(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "bbuddy_url": "http://bb",
+            "bbuddy_user": "admin",
+            "bbuddy_password": "pass",
+            "store_id": "N110",
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "gemini_api_key": "gem-key",
+            "gemini_model": "gemini-1.5-flash",
+            "location_id": 2,
+            "quantity_unit_id": 3,
+        }
+        mock_grocy_cls = mock.MagicMock()
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
+                with mock.patch("grocy_scraper.grocy_client.GrocyClient", mock_grocy_cls):
+                    main_mod = sys.modules["main"]
+                    main_mod._discover_products.return_value = 0
+                    main_mod._ai_sort_products.return_value = 2
+                    main_mod._ai_assign_due_dates.return_value = 3
+                    main_mod._ai_group_products.return_value = 4
+                    result = ingress_mod._handle_discover()
+
+        assert result["success"] is True
+        assert result["skipped"] is False
+        main_mod._discover_products.assert_called_once()
+        main_mod._ai_sort_products.assert_called_once()
+        main_mod._ai_assign_due_dates.assert_called_once()
+        main_mod._ai_group_products.assert_called_once()
+
+    def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "bbuddy_url": "http://bb",
+            "bbuddy_user": "admin",
+            "bbuddy_password": "pass",
+            "store_id": "N110",
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+        }
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
+                main_mod = sys.modules["main"]
+                main_mod._discover_products.return_value = 0
+                result = ingress_mod._handle_discover()
+
+        assert result["success"] is True
+        main_mod._ai_sort_products.assert_not_called()
+        main_mod._ai_assign_due_dates.assert_not_called()
+        main_mod._ai_group_products.assert_not_called()
+
+    def test_discover_failure_skips_ai(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "bbuddy_url": "http://bb",
+            "bbuddy_user": "admin",
+            "bbuddy_password": "pass",
+            "store_id": "N110",
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "gemini_api_key": "gem-key",
+        }
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
+                main_mod = sys.modules["main"]
+                main_mod._discover_products.return_value = 1
+                result = ingress_mod._handle_discover()
+
+        assert result["success"] is False
+        main_mod._ai_sort_products.assert_not_called()
+        main_mod._ai_assign_due_dates.assert_not_called()
+        main_mod._ai_group_products.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _handle_sort / _handle_date
