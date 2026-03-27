@@ -495,6 +495,7 @@ def _call_gemini_json(
     response contains invalid control characters, is HTML instead of JSON,
     or any other transient error occurs.
     """
+    max_retries = max(max_retries, 1)
     last_exc: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
