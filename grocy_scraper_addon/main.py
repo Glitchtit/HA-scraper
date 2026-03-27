@@ -35,7 +35,9 @@ import json
 import logging
 import os
 import posixpath
+import re
 import sys
+import time
 
 try:
     from dotenv import load_dotenv
@@ -442,6 +444,7 @@ _GEMINI_BASE_URL = (
 )
 _GEMINI_DEFAULT_MODEL = "gemini-1.5-flash"
 _GEMINI_BATCH_SIZE = 100
+_GEMINI_MAX_RETRIES = 3
 
 
 def _call_gemini(prompt: str, api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> str:
@@ -477,6 +480,42 @@ def _call_gemini(prompt: str, api_key: str, model: str = _GEMINI_DEFAULT_MODEL) 
         raise GrocyAPIError(f"Gemini request failed: {exc}") from exc
     except (KeyError, IndexError, ValueError) as exc:
         raise GrocyAPIError(f"Unexpected Gemini response format: {exc}") from exc
+
+
+def _call_gemini_json(
+    prompt: str,
+    api_key: str,
+    model: str = _GEMINI_DEFAULT_MODEL,
+    *,
+    max_retries: int = _GEMINI_MAX_RETRIES,
+) -> dict:
+    """Call Gemini, sanitize the response, and parse it as JSON.
+
+    Retries up to *max_retries* times with exponential back-off when the
+    response contains invalid control characters, is HTML instead of JSON,
+    or any other transient error occurs.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            raw = _call_gemini(prompt, api_key, model)
+            # Strip control characters (except common whitespace) that
+            # Gemini occasionally embeds in its output.
+            sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw)
+            return json.loads(sanitized)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                delay = 2 ** attempt
+                logger.warning(
+                    "Gemini attempt %d/%d failed (%s), retrying in %ds …",
+                    attempt,
+                    max_retries,
+                    exc,
+                    delay,
+                )
+                time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
 
 
 def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> int:
@@ -536,8 +575,7 @@ def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEM
             f"{product_lines}"
         )
         try:
-            raw = _call_gemini(prompt, gemini_api_key, model)
-            mapping: dict = json.loads(raw)
+            mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
         except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error("Gemini sort batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
@@ -642,8 +680,7 @@ def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _
             f"{product_lines}"
         )
         try:
-            raw = _call_gemini(prompt, gemini_api_key, model)
-            mapping: dict = json.loads(raw)
+            mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
         except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error("Gemini date batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
@@ -769,8 +806,7 @@ def _ai_group_products(
             f"{product_lines}"
         )
         try:
-            raw = _call_gemini(prompt, gemini_api_key, model)
-            mapping: dict = json.loads(raw)
+            mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
         except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error(
                 "Gemini group batch %d failed: %s",
