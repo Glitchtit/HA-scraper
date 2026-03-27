@@ -428,3 +428,70 @@ class TestAddStock:
         session.post.side_effect = requests.RequestException("timeout")
         with pytest.raises(GrocyAPIError, match="add stock"):
             client.add_stock(42)
+
+
+# ---------------------------------------------------------------------------
+# get_product_stock_locations
+# ---------------------------------------------------------------------------
+
+class TestGetProductStockLocations:
+    def test_returns_list(self):
+        client, session = _make_client()
+        data = [
+            {"location_id": 2, "amount": 3.0},
+            {"location_id": 5, "amount": 1.0},
+        ]
+        session.get.return_value = _mock_response(json_data=data)
+        result = client.get_product_stock_locations(42)
+        assert result == data
+        url = session.get.call_args[0][0]
+        assert "/api/stock/products/42/locations" in url
+
+    def test_returns_empty_list_on_null(self):
+        client, session = _make_client()
+        session.get.return_value = _mock_response(json_data=None)
+        assert client.get_product_stock_locations(1) == []
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500))
+        session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="stock locations"):
+            client.get_product_stock_locations(42)
+
+    def test_request_error_raises(self):
+        client, session = _make_client()
+        session.get.side_effect = requests.RequestException("timeout")
+        with pytest.raises(GrocyAPIError, match="stock locations"):
+            client.get_product_stock_locations(42)
+
+
+# ---------------------------------------------------------------------------
+# transfer_stock
+# ---------------------------------------------------------------------------
+
+class TestTransferStock:
+    def test_success(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={})
+        client.transfer_stock(42, amount=3.0, location_id_from=2, location_id_to=5)
+        session.post.assert_called_once()
+        url = session.post.call_args[0][0]
+        assert "/api/stock/products/42/transfer" in url
+        body = session.post.call_args[1]["json"]
+        assert body["amount"] == 3.0
+        assert body["location_id_from"] == 2
+        assert body["location_id_to"] == 5
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
+        session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
+        with pytest.raises(GrocyAPIError, match="transfer stock"):
+            client.transfer_stock(42, 1.0, 2, 5)
+
+    def test_request_error_raises(self):
+        client, session = _make_client()
+        session.post.side_effect = requests.RequestException("timeout")
+        with pytest.raises(GrocyAPIError, match="transfer stock"):
+            client.transfer_stock(42, 1.0, 2, 5)
