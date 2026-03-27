@@ -409,6 +409,69 @@ class GrocyClient:
                 f"Failed to delete product {product_id}: {exc}"
             ) from exc
 
+    def get_product_stock_locations(self, product_id: int) -> list[dict]:
+        """Return stock amounts per location for *product_id*.
+
+        Uses the ``/api/stock/products/{id}/locations`` endpoint.
+        Each entry contains at least ``location_id`` and ``amount``.
+        Returns an empty list if the product has no stock.
+        """
+        url = self._url(f"/api/stock/products/{product_id}/locations")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json() or []
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to fetch stock locations for product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to fetch stock locations for product {product_id}: {exc}"
+            ) from exc
+
+    def transfer_stock(
+        self,
+        product_id: int,
+        amount: float,
+        location_id_from: int,
+        location_id_to: int,
+    ) -> None:
+        """Transfer *amount* units of *product_id* between locations.
+
+        Uses the ``/api/stock/products/{id}/transfer`` endpoint.
+
+        Parameters
+        ----------
+        product_id:
+            The Grocy internal product ID.
+        amount:
+            Number of units to transfer.
+        location_id_from:
+            Source location ID.
+        location_id_to:
+            Destination location ID.
+        """
+        url = self._url(f"/api/stock/products/{product_id}/transfer")
+        payload = {
+            "amount": amount,
+            "location_id_from": location_id_from,
+            "location_id_to": location_id_to,
+        }
+        try:
+            resp = self._session.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to transfer stock for product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to transfer stock for product {product_id}: {exc}"
+            ) from exc
+
     def delete_product_image(self, filename: str) -> None:
         """Delete a product picture file from Grocy.
 
