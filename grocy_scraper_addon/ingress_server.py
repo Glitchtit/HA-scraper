@@ -396,6 +396,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
     upload_images = opts.get("upload_images", True)
 
     added = 0
+    added_ids: list[int] = []
     errors: list[str] = []
     with _capture_logs() as logs:
         for item in products:
@@ -427,6 +428,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                     _main._upload_product_image(product, grocy, product_id)
                 logger.info("Added '%s' (id=%d, ean=%s).", name, product_id, ean or "–")
                 added += 1
+                added_ids.append(product_id)
             except GrocyAPIError as exc:
                 msg = f"Failed to add '{name}': {exc}"
                 logger.error(msg)
@@ -435,6 +437,22 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 msg = f"Unexpected error adding '{name}': {exc}"
                 logger.exception(msg)
                 errors.append(msg)
+
+        # Chain AI sort/date/group for newly added products when Gemini key
+        # is available – mirrors the behaviour of _handle_discover.
+        gemini_key = opts.get("gemini_api_key", "")
+        if gemini_key and added_ids:
+            model = opts.get("gemini_model", "gemini-1.5-flash")
+            _main._ai_sort_products(grocy, gemini_key, model, product_ids=added_ids)
+            _main._ai_assign_due_dates(grocy, gemini_key, model, product_ids=added_ids)
+            _main._ai_group_products(
+                grocy,
+                gemini_key,
+                model,
+                location_id=location_id,
+                quantity_unit_id=quantity_unit_id,
+                product_ids=added_ids,
+            )
 
     return {
         "success": len(errors) == 0,

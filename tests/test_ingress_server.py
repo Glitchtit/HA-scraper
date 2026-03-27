@@ -658,6 +658,99 @@ class TestHandleAddProducts:
         assert result["added"] == 1
         mock_upload.assert_not_called()
 
+    def test_chains_ai_sort_date_group_when_gemini_key_set(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "gemini_api_key": "gem-key",
+            "gemini_model": "gemini-2.0-flash",
+            "location_id": 2,
+            "quantity_unit_id": 3,
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.side_effect = [10, 20]
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
+             mock.patch("main._ai_sort_products") as mock_sort, \
+             mock.patch("main._ai_assign_due_dates") as mock_date, \
+             mock.patch("main._ai_group_products") as mock_group:
+            result = ingress_mod._handle_add_products(
+                {
+                    "products": [
+                        {"name": "A", "ean": "111"},
+                        {"name": "B", "ean": "222"},
+                    ]
+                }
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 2
+
+        mock_sort.assert_called_once_with(
+            mock_grocy, "gem-key", "gemini-2.0-flash", product_ids=[10, 20],
+        )
+        mock_date.assert_called_once_with(
+            mock_grocy, "gem-key", "gemini-2.0-flash", product_ids=[10, 20],
+        )
+        mock_group.assert_called_once_with(
+            mock_grocy,
+            "gem-key",
+            "gemini-2.0-flash",
+            location_id=2,
+            quantity_unit_id=3,
+            product_ids=[10, 20],
+        )
+
+    def test_skips_ai_when_no_gemini_key(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = None
+        mock_grocy.create_product.return_value = 10
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
+             mock.patch("main._ai_sort_products") as mock_sort, \
+             mock.patch("main._ai_assign_due_dates") as mock_date, \
+             mock.patch("main._ai_group_products") as mock_group:
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "A", "ean": "111"}]}
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        mock_sort.assert_not_called()
+        mock_date.assert_not_called()
+        mock_group.assert_not_called()
+
+    def test_skips_ai_when_no_products_added(self, ingress_mod: ModuleType) -> None:
+        opts = {
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "gemini_api_key": "gem-key",
+        }
+        mock_grocy = mock.MagicMock()
+        mock_grocy.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
+             mock.patch("main._ai_sort_products") as mock_sort, \
+             mock.patch("main._ai_assign_due_dates") as mock_date, \
+             mock.patch("main._ai_group_products") as mock_group:
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "Existing", "ean": "111"}]}
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 0
+        mock_sort.assert_not_called()
+        mock_date.assert_not_called()
+        mock_group.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler (do_GET / do_POST)
