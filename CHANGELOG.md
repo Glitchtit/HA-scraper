@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] - 2026-03-27
+
+### Fixed
+
+- Gemini AI sort/date/group: retry up to 3 times with exponential back-off when the API returns invalid JSON (e.g. control characters, HTML error pages). Responses are sanitized by stripping stray control characters before parsing.
+
 ## [1.8.0] - 2026-03-27
 
 ### Added
