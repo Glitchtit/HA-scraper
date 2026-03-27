@@ -225,7 +225,7 @@ class TestHandleDiscover:
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                sys.modules["main"]._discover_products.return_value = 0
+                sys.modules["main"]._discover_products.return_value = (0, [10])
                 result = ingress_mod._handle_discover()
 
         assert result["success"] is True
@@ -249,7 +249,7 @@ class TestHandleDiscover:
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
                 with mock.patch("grocy_scraper.grocy_client.GrocyClient", mock_grocy_cls):
                     main_mod = sys.modules["main"]
-                    main_mod._discover_products.return_value = 0
+                    main_mod._discover_products.return_value = (0, [42, 99])
                     main_mod._ai_sort_products.return_value = 2
                     main_mod._ai_assign_due_dates.return_value = 3
                     main_mod._ai_group_products.return_value = 4
@@ -259,8 +259,14 @@ class TestHandleDiscover:
         assert result["skipped"] is False
         main_mod._discover_products.assert_called_once()
         main_mod._ai_sort_products.assert_called_once()
+        _, sort_kwargs = main_mod._ai_sort_products.call_args
+        assert sort_kwargs["product_ids"] == [42, 99]
         main_mod._ai_assign_due_dates.assert_called_once()
+        _, date_kwargs = main_mod._ai_assign_due_dates.call_args
+        assert date_kwargs["product_ids"] == [42, 99]
         main_mod._ai_group_products.assert_called_once()
+        _, group_kwargs = main_mod._ai_group_products.call_args
+        assert group_kwargs["product_ids"] == [42, 99]
 
     def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
@@ -274,7 +280,7 @@ class TestHandleDiscover:
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
                 main_mod = sys.modules["main"]
-                main_mod._discover_products.return_value = 0
+                main_mod._discover_products.return_value = (0, [42])
                 result = ingress_mod._handle_discover()
 
         assert result["success"] is True
@@ -295,10 +301,35 @@ class TestHandleDiscover:
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
                 main_mod = sys.modules["main"]
-                main_mod._discover_products.return_value = 1
+                main_mod._discover_products.return_value = (1, [])
                 result = ingress_mod._handle_discover()
 
         assert result["success"] is False
+        main_mod._ai_sort_products.assert_not_called()
+        main_mod._ai_assign_due_dates.assert_not_called()
+        main_mod._ai_group_products.assert_not_called()
+
+    def test_discover_no_new_products_skips_ai(self, ingress_mod: ModuleType) -> None:
+        """When discover succeeds but finds no new products, AI is skipped."""
+        opts = {
+            "bbuddy_url": "http://bb",
+            "bbuddy_user": "admin",
+            "bbuddy_password": "pass",
+            "store_id": "N110",
+            "grocy_url": "http://grocy",
+            "grocy_api_key": "key",
+            "gemini_api_key": "gem-key",
+            "gemini_model": "gemini-1.5-flash",
+            "location_id": 2,
+            "quantity_unit_id": 3,
+        }
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
+                main_mod = sys.modules["main"]
+                main_mod._discover_products.return_value = (0, [])
+                result = ingress_mod._handle_discover()
+
+        assert result["success"] is True
         main_mod._ai_sort_products.assert_not_called()
         main_mod._ai_assign_due_dates.assert_not_called()
         main_mod._ai_group_products.assert_not_called()
