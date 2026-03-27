@@ -521,6 +521,8 @@ class TestAiSortProducts:
         g.get_all_products.return_value = products
         g.get_locations.return_value = locations
         g.update_product.return_value = None
+        g.get_product_stock_locations.return_value = []
+        g.transfer_stock.return_value = None
         return g
 
     @patch("main._call_gemini")
@@ -535,6 +537,86 @@ class TestAiSortProducts:
         assert result == 2
         grocy.update_product.assert_any_call(1, location_id=2)
         grocy.update_product.assert_any_call(2, location_id=3)
+
+    @patch("main._call_gemini")
+    def test_transfers_stock_to_new_location(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = '{"1": 2}'
+        grocy.get_product_stock_locations.return_value = [
+            {"location_id": 5, "amount": 3.0},
+        ]
+
+        result = _ai_sort_products(grocy, "gemini-key")
+        assert result == 1
+        grocy.transfer_stock.assert_called_once_with(1, 3.0, 5, 2)
+
+    @patch("main._call_gemini")
+    def test_skips_transfer_when_stock_already_at_target(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = '{"1": 2}'
+        grocy.get_product_stock_locations.return_value = [
+            {"location_id": 2, "amount": 4.0},
+        ]
+
+        _ai_sort_products(grocy, "gemini-key")
+        grocy.transfer_stock.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_transfers_from_multiple_locations(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}, {"id": 6, "name": "Counter"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = '{"1": 2}'
+        grocy.get_product_stock_locations.return_value = [
+            {"location_id": 5, "amount": 2.0},
+            {"location_id": 6, "amount": 1.0},
+            {"location_id": 2, "amount": 3.0},
+        ]
+
+        _ai_sort_products(grocy, "gemini-key")
+        assert grocy.transfer_stock.call_count == 2
+        grocy.transfer_stock.assert_any_call(1, 2.0, 5, 2)
+        grocy.transfer_stock.assert_any_call(1, 1.0, 6, 2)
+
+    @patch("main._call_gemini")
+    def test_transfer_error_does_not_abort(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}, {"id": 2, "name": "Pasta"}]
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = '{"1": 2, "2": 5}'
+        grocy.get_product_stock_locations.side_effect = [
+            [{"location_id": 5, "amount": 1.0}],
+            [{"location_id": 2, "amount": 1.0}],
+        ]
+        grocy.transfer_stock.side_effect = [GrocyAPIError("fail"), None]
+
+        result = _ai_sort_products(grocy, "gemini-key")
+        assert result == 2
+        assert grocy.transfer_stock.call_count == 2
+
+    @patch("main._call_gemini")
+    def test_stock_locations_error_continues(self, mock_gemini):
+        from main import _ai_sort_products
+        products = [{"id": 1, "name": "Maito"}, {"id": 2, "name": "Pasta"}]
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = '{"1": 2, "2": 5}'
+        grocy.get_product_stock_locations.side_effect = [
+            GrocyAPIError("fail"),
+            [],
+        ]
+
+        result = _ai_sort_products(grocy, "gemini-key")
+        assert result == 2
+        grocy.transfer_stock.assert_not_called()
 
     @patch("main._call_gemini")
     def test_no_locations_returns_zero(self, mock_gemini):

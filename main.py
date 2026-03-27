@@ -559,6 +559,40 @@ def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEM
                 logger.warning(
                     "Could not update location for '%s': %s", product.get("name"), exc
                 )
+                continue
+
+            # Move any existing stock to the newly assigned location.
+            try:
+                stock_locs = grocy.get_product_stock_locations(int(product["id"]))
+            except GrocyAPIError as exc:
+                logger.debug(
+                    "Could not fetch stock locations for '%s': %s",
+                    product.get("name"), exc,
+                )
+                continue
+
+            target = int(location_id)
+            for entry in stock_locs:
+                entry_loc = int(entry.get("location_id", 0))
+                entry_amount = float(entry.get("amount", 0))
+                if entry_loc == target or entry_amount <= 0:
+                    continue
+                try:
+                    grocy.transfer_stock(
+                        int(product["id"]), entry_amount, entry_loc, target,
+                    )
+                    logger.info(
+                        "    ↳ Moved %.4g unit(s) from '%s' → '%s' for '%s'.",
+                        entry_amount,
+                        location_names.get(entry_loc, entry_loc),
+                        location_names.get(target, target),
+                        product.get("name"),
+                    )
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Could not transfer stock for '%s': %s",
+                        product.get("name"), exc,
+                    )
 
     logger.info("--sort complete: %d product(s) updated.", updated)
     return updated
