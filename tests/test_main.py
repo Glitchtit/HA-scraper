@@ -511,6 +511,68 @@ class TestCallGemini:
             _call_gemini("prompt", "key")
 
 
+class TestCallGeminiJson:
+    @patch("main.time.sleep")
+    @patch("main._call_gemini")
+    def test_returns_parsed_json(self, mock_gemini, _mock_sleep):
+        from main import _call_gemini_json
+        mock_gemini.return_value = '{"1": 2}'
+        result = _call_gemini_json("prompt", "key")
+        assert result == {"1": 2}
+        _mock_sleep.assert_not_called()
+
+    @patch("main.time.sleep")
+    @patch("main._call_gemini")
+    def test_sanitizes_control_characters(self, mock_gemini, _mock_sleep):
+        from main import _call_gemini_json
+        mock_gemini.return_value = '{"1":\x02 2}'
+        result = _call_gemini_json("prompt", "key")
+        assert result == {"1": 2}
+        _mock_sleep.assert_not_called()
+
+    @patch("main.time.sleep")
+    @patch("main._call_gemini")
+    def test_retries_on_json_error(self, mock_gemini, mock_sleep):
+        from main import _call_gemini_json
+        mock_gemini.side_effect = ["not-json", '{"1": 2}']
+        result = _call_gemini_json("prompt", "key")
+        assert result == {"1": 2}
+        assert mock_gemini.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("main.time.sleep")
+    @patch("main._call_gemini")
+    def test_retries_on_api_error(self, mock_gemini, mock_sleep):
+        from main import _call_gemini_json
+        mock_gemini.side_effect = [GrocyAPIError("HTML error"), '{"1": 2}']
+        result = _call_gemini_json("prompt", "key")
+        assert result == {"1": 2}
+        assert mock_gemini.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("main.time.sleep")
+    @patch("main._call_gemini")
+    def test_raises_after_max_retries(self, mock_gemini, mock_sleep):
+        import json as _json
+        from main import _call_gemini_json
+        mock_gemini.return_value = "not-json"
+        with pytest.raises(_json.JSONDecodeError):
+            _call_gemini_json("prompt", "key", max_retries=3)
+        assert mock_gemini.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("main.time.sleep")
+    @patch("main._call_gemini")
+    def test_exponential_backoff(self, mock_gemini, mock_sleep):
+        import json as _json
+        from main import _call_gemini_json
+        mock_gemini.return_value = "bad"
+        with pytest.raises(_json.JSONDecodeError):
+            _call_gemini_json("prompt", "key", max_retries=3)
+        delays = [c[0][0] for c in mock_sleep.call_args_list]
+        assert delays == [2, 4]
+
+
 # ---------------------------------------------------------------------------
 # _ai_sort_products
 # ---------------------------------------------------------------------------
@@ -637,8 +699,9 @@ class TestAiSortProducts:
         assert result == 0
         mock_gemini.assert_not_called()
 
+    @patch("main.time.sleep")
     @patch("main._call_gemini")
-    def test_invalid_json_skips_batch(self, mock_gemini):
+    def test_invalid_json_skips_batch(self, mock_gemini, _mock_sleep):
         from main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}]
@@ -691,8 +754,9 @@ class TestAiAssignDueDates:
         assert result == 0
         mock_gemini.assert_not_called()
 
+    @patch("main.time.sleep")
     @patch("main._call_gemini")
-    def test_invalid_json_skips_batch(self, mock_gemini):
+    def test_invalid_json_skips_batch(self, mock_gemini, _mock_sleep):
         from main import _ai_assign_due_dates
         products = [{"id": 1, "name": "Maito"}]
         grocy = self._make_grocy(products)
@@ -823,8 +887,9 @@ class TestAiGroupProducts:
         assert result == 0
         mock_gemini.assert_not_called()
 
+    @patch("main.time.sleep")
     @patch("main._call_gemini")
-    def test_invalid_json_skips_batch(self, mock_gemini):
+    def test_invalid_json_skips_batch(self, mock_gemini, _mock_sleep):
         from main import _ai_group_products
         products = [{"id": 1, "name": "Maito"}]
         grocy = self._make_grocy(products)
