@@ -519,11 +519,14 @@ def _call_gemini_json(
     raise last_exc  # type: ignore[misc]
 
 
-def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> int:
+def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL, *, product_ids: list[int] | None = None) -> int:
     """Use Gemini AI to assign each Grocy product to an appropriate location.
 
     Fetches all locations and products from Grocy, asks Gemini to map each
     product to a location, then updates the products in Grocy.
+
+    When *product_ids* is given, only those products are processed instead of
+    the entire Grocy catalogue.
 
     Returns the number of products updated.
     """
@@ -542,6 +545,10 @@ def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEM
     except GrocyAPIError as exc:
         logger.error("Could not fetch products from Grocy: %s", exc)
         return 0
+
+    if product_ids is not None:
+        allowed = set(product_ids)
+        products = [p for p in products if int(p["id"]) in allowed]
 
     if not products:
         logger.info("No products found in Grocy – nothing to sort.")
@@ -637,11 +644,14 @@ def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEM
     return updated
 
 
-def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL) -> int:
+def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL, *, product_ids: list[int] | None = None) -> int:
     """Use Gemini AI to set default best-before days for each Grocy product.
 
     Fetches all products from Grocy, asks Gemini to estimate typical best-before
     days for each, then updates the products in Grocy.
+
+    When *product_ids* is given, only those products are processed instead of
+    the entire Grocy catalogue.
 
     Returns the number of products updated.
     """
@@ -650,6 +660,10 @@ def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _
     except GrocyAPIError as exc:
         logger.error("Could not fetch products from Grocy: %s", exc)
         return 0
+
+    if product_ids is not None:
+        allowed = set(product_ids)
+        products = [p for p in products if int(p["id"]) in allowed]
 
     if not products:
         logger.info("No products found in Grocy – nothing to date.")
@@ -717,6 +731,7 @@ def _ai_group_products(
     *,
     location_id: int | None = None,
     quantity_unit_id: int | None = None,
+    product_ids: list[int] | None = None,
 ) -> int:
     """Use Gemini AI to group similar products under shared parent products.
 
@@ -729,6 +744,9 @@ def _ai_group_products(
     ``hide_on_stock_overview`` so it does not clutter the stock overview.
     A product group matching the parent name (e.g. ``"Maito"``) is created
     for each group and assigned to every child product in that group.
+
+    When *product_ids* is given, only those products are considered for
+    grouping instead of the entire Grocy catalogue.
 
     Returns the number of products updated.
     """
@@ -767,6 +785,9 @@ def _ai_group_products(
         p for p in products
         if not p.get("parent_product_id") and int(p["id"]) not in has_children
     ]
+    if product_ids is not None:
+        allowed = set(product_ids)
+        ungrouped = [p for p in ungrouped if int(p["id"]) in allowed]
     if not ungrouped:
         logger.info("All products already have parent products – nothing to group.")
         return 0
@@ -1107,7 +1128,7 @@ def _process_products(args: argparse.Namespace, grocy: GrocyClient | None, known
     return 0 if errors == 0 else 1
 
 
-def _discover_products(args: argparse.Namespace) -> int:
+def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     """Discover products via Barcode Buddy pending barcodes.
 
     Processes both "New Barcodes" (looked-up but unassigned) and "Unknown
@@ -1121,7 +1142,10 @@ def _discover_products(args: argparse.Namespace) -> int:
     3. Add units to Grocy stock (using the quantity from BB).
     4. Remove the barcode from Barcode Buddy.
 
-    Returns 0 on success, 1 if any errors occurred.
+    Returns a ``(return_code, product_ids)`` tuple.  *return_code* is 0 on
+    success and 1 if any errors occurred.  *product_ids* contains the Grocy
+    IDs of all products that were successfully created or stocked during this
+    run.
     """
     bbuddy = BarcodeBuddyClient(
         base_url=args.bbuddy_url,
@@ -1152,15 +1176,16 @@ def _discover_products(args: argparse.Namespace) -> int:
         pending = bbuddy.get_pending_barcodes()
     except BarcodeBuddyError as exc:
         logger.error("Failed to fetch barcodes from Barcode Buddy: %s", exc)
-        return 1
+        return 1, []
 
     if not pending:
         logger.info("No pending barcodes in Barcode Buddy.")
-        return 0
+        return 0, []
 
     logger.info("Found %d pending barcode(s) in Barcode Buddy.", len(pending))
 
     created = skipped = errors = 0
+    discovered_ids: list[int] = []
 
     for entry in pending:
         barcode = entry.barcode
@@ -1243,6 +1268,7 @@ def _discover_products(args: argparse.Namespace) -> int:
 
         # Add to Grocy stock.
         if grocy_id is not None:
+            discovered_ids.append(int(grocy_id))
             try:
                 amount = float(entry.amount) if entry.amount else 1.0
                 grocy.add_stock(int(grocy_id), amount=amount)
@@ -1268,7 +1294,7 @@ def _discover_products(args: argparse.Namespace) -> int:
         "--discover complete: created/stocked: %d  not found: %d  errors: %d",
         created, skipped, errors,
     )
-    return 0 if errors == 0 else 1
+    return (0 if errors == 0 else 1), discovered_ids
 
 
 def _delete_all_products(grocy: GrocyClient) -> int:
@@ -1478,18 +1504,19 @@ def main(argv: list[str] | None = None) -> int:
 
     # Discover mode: Barcode Buddy → K-Ruoka → Grocy pipeline.
     if args.discover:
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         # After discover, run AI sort/date/group when a Gemini key is available.
-        if rc == 0 and args.gemini_api_key:
+        if rc == 0 and args.gemini_api_key and discovered_ids:
             grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
-            _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model)
-            _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model)
+            _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model, product_ids=discovered_ids)
+            _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model, product_ids=discovered_ids)
             _ai_group_products(
                 grocy,
                 args.gemini_api_key,
                 args.gemini_model,
                 location_id=getattr(args, "location_id", None),
                 quantity_unit_id=getattr(args, "quantity_unit_id", None),
+                product_ids=discovered_ids,
             )
         return rc
 

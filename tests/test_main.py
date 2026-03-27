@@ -1082,7 +1082,7 @@ class TestDiscoverChainsAI:
     @patch("main._ai_group_products")
     @patch("main._ai_assign_due_dates")
     @patch("main._ai_sort_products")
-    @patch("main._discover_products", return_value=0)
+    @patch("main._discover_products", return_value=(0, [42, 99]))
     @patch("main.GrocyClient")
     def test_discover_chains_sort_date_group(
         self, MockGrocy, mock_discover, mock_sort, mock_date, mock_group,
@@ -1105,13 +1105,19 @@ class TestDiscoverChainsAI:
         assert rc == 0
         mock_discover.assert_called_once()
         mock_sort.assert_called_once()
+        _, sort_kwargs = mock_sort.call_args
+        assert sort_kwargs["product_ids"] == [42, 99]
         mock_date.assert_called_once()
+        _, date_kwargs = mock_date.call_args
+        assert date_kwargs["product_ids"] == [42, 99]
         mock_group.assert_called_once()
+        _, group_kwargs = mock_group.call_args
+        assert group_kwargs["product_ids"] == [42, 99]
 
     @patch("main._ai_group_products")
     @patch("main._ai_assign_due_dates")
     @patch("main._ai_sort_products")
-    @patch("main._discover_products", return_value=0)
+    @patch("main._discover_products", return_value=(0, [42]))
     def test_discover_no_gemini_key_skips_ai(
         self, mock_discover, mock_sort, mock_date, mock_group,
     ):
@@ -1135,7 +1141,7 @@ class TestDiscoverChainsAI:
     @patch("main._ai_group_products")
     @patch("main._ai_assign_due_dates")
     @patch("main._ai_sort_products")
-    @patch("main._discover_products", return_value=1)
+    @patch("main._discover_products", return_value=(1, []))
     def test_discover_failure_skips_ai(
         self, mock_discover, mock_sort, mock_date, mock_group,
     ):
@@ -1157,10 +1163,32 @@ class TestDiscoverChainsAI:
         mock_date.assert_not_called()
         mock_group.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# parse_args – --delete-all flag
-# ---------------------------------------------------------------------------
+    @patch("main._ai_group_products")
+    @patch("main._ai_assign_due_dates")
+    @patch("main._ai_sort_products")
+    @patch("main._discover_products", return_value=(0, []))
+    @patch("main.GrocyClient")
+    def test_discover_no_new_products_skips_ai(
+        self, MockGrocy, mock_discover, mock_sort, mock_date, mock_group,
+    ):
+        """When discover succeeds but finds no new products, AI is skipped."""
+        rc = main([
+            "--discover",
+            "--store", "N110",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--bbuddy-url", "https://bb.example.com",
+            "--bbuddy-user", "admin",
+            "--bbuddy-password", "secret",
+            "--location-id", "2",
+            "--quantity-unit-id", "2",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_discover.assert_called_once()
+        mock_sort.assert_not_called()
+        mock_date.assert_not_called()
+        mock_group.assert_not_called()
 
 class TestParseArgsDeleteAll:
     def test_delete_all_flag(self):
@@ -1440,8 +1468,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 0
+        assert discovered_ids == []
 
     @patch("main.KRuokaScraper")
     @patch("main.GrocyClient")
@@ -1482,8 +1511,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 0
+        assert discovered_ids == [99]
         # Unknown barcode → should search K-Ruoka.
         scraper_instance.search.assert_called_once()
         grocy_instance.create_product.assert_called_once()
@@ -1531,9 +1561,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 0
-        # K-Ruoka search should always run, even when BB has a name.
+        assert discovered_ids == [50]
         scraper_instance.search.assert_called_once()
         grocy_instance.create_product.assert_called_once()
         grocy_instance.add_stock.assert_called_once_with(50, amount=2.0)
@@ -1580,8 +1610,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 0
+        assert discovered_ids == [60]
         scraper_instance.search.assert_called_once()
         mock_sk.assert_called_once_with("6410405082657")
         grocy_instance.create_product.assert_called_once()
@@ -1621,8 +1652,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 0
+        assert discovered_ids == []
         grocy_instance.create_product.assert_not_called()
         bb_instance.delete_barcode.assert_not_called()
         mock_sk.assert_called_once_with("0000000000000")
@@ -1675,8 +1707,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 0
+        assert discovered_ids == [88]
         mock_sk.assert_called_once_with("6414893095588")
         grocy_instance.create_product.assert_called_once()
         # Verify the product was created with S-kaupat data.
@@ -1709,8 +1742,9 @@ class TestDiscoverProducts:
             quantity_unit_id=2,
             upload_images=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         assert rc == 1
+        assert discovered_ids == []
 
 
 # ---------------------------------------------------------------------------
@@ -1869,11 +1903,12 @@ class TestMultiStoreDiscoverFallback:
             upload_images=False,
             skip_existing=False,
         )
-        rc = _discover_products(args)
+        rc, discovered_ids = _discover_products(args)
         # Two scrapers created for the two stores.
         assert MockScraper.call_count == 2
         # The product was found via the second store and synced.
         assert rc == 0
+        assert discovered_ids == [1]
 
 
 # ---------------------------------------------------------------------------

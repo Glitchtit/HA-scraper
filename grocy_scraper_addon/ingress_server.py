@@ -236,17 +236,17 @@ def _handle_discover() -> dict[str, Any]:
 
     args = _build_args(opts)
     with _capture_logs() as logs:
-        result_code: int = _main._discover_products(args)
+        result_code, discovered_ids = _main._discover_products(args)
         # Chain AI sort/date/group when Gemini key is available.
         gemini_key = opts.get("gemini_api_key", "")
-        if result_code == 0 and gemini_key:
+        if result_code == 0 and gemini_key and discovered_ids:
             grocy = GrocyClient(
                 base_url=opts.get("grocy_url", ""),
                 api_key=opts.get("grocy_api_key", ""),
             )
             model = opts.get("gemini_model", "gemini-1.5-flash")
-            _main._ai_sort_products(grocy, gemini_key, model)
-            _main._ai_assign_due_dates(grocy, gemini_key, model)
+            _main._ai_sort_products(grocy, gemini_key, model, product_ids=discovered_ids)
+            _main._ai_assign_due_dates(grocy, gemini_key, model, product_ids=discovered_ids)
             location_id = int(opts.get("location_id", 0)) or None
             quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
             _main._ai_group_products(
@@ -255,6 +255,7 @@ def _handle_discover() -> dict[str, Any]:
                 model,
                 location_id=location_id,
                 quantity_unit_id=quantity_unit_id,
+                product_ids=discovered_ids,
             )
     return {"success": result_code == 0, "skipped": False, "logs": logs}
 
