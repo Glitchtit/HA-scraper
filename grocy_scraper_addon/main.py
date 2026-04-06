@@ -1631,6 +1631,23 @@ def _discover_single_barcode(
         except (GrocyAPIError, ValueError) as exc:
             logger.warning("Could not add stock for '%s': %s", product.name, exc)
 
+    # Remove the barcode from Barcode Buddy's unknown/pending list.
+    if getattr(args, "bbuddy_url", "") and getattr(args, "bbuddy_user", ""):
+        try:
+            bbuddy = BarcodeBuddyClient(
+                base_url=args.bbuddy_url,
+                api_key=args.bbuddy_key,
+                username=args.bbuddy_user,
+                password=args.bbuddy_password,
+            )
+            for entry in bbuddy.get_pending_barcodes():
+                if entry.barcode == barcode:
+                    bbuddy.delete_barcode(entry.id)
+                    logger.info("Removed EAN %s from Barcode Buddy.", barcode)
+                    break
+        except BarcodeBuddyError as exc:
+            logger.debug("Could not clean up Barcode Buddy for %s: %s", barcode, exc)
+
     logger.info("Single-barcode discover complete for EAN %s.", barcode)
     return {
         "success": True,

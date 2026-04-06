@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.13.2
+
+- Fix: single-barcode discover (from HA-grocy-stock scan) now removes the barcode from Barcode Buddy's unknown/pending list after a successful find
+
 ## 1.13.1
 
 - Fix: periodic discover (s6 loop) now exports `GEMINI_API` and `GEMINI_MODEL` env vars so the AI optimize step runs automatically on newly discovered products
