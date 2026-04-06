@@ -484,7 +484,7 @@ def _call_gemini(prompt: str, api_key: str, model: str = _GEMINI_DEFAULT_MODEL) 
             url,
             json=payload,
             params={"key": api_key},
-            timeout=60,
+            timeout=300,
         )
         resp.raise_for_status()
         data = resp.json()
