@@ -398,7 +398,7 @@ class TestValidateArgsAI:
     def _base_ai_args(self, **overrides):
         from argparse import Namespace
         defaults = dict(
-            sort=True, date=False, group=False,
+            sort=True, date=False, group=False, optimize=False,
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             gemini_api_key="GEMINI_KEY",
@@ -435,7 +435,7 @@ class TestValidateArgsAI:
         from main import _validate_args
         from argparse import Namespace
         args = Namespace(
-            sort=False, date=False, group=False,
+            sort=False, date=False, group=False, optimize=False,
             query=None, browse=False,
             discover=False, delete_all=False, update=False,
             dry_run=False,
@@ -448,7 +448,7 @@ class TestValidateArgsAI:
         from main import _validate_args
         from argparse import Namespace
         args = Namespace(
-            sort=False, date=False, group=False,
+            sort=False, date=False, group=False, optimize=False,
             query=None, browse=False,
             discover=False, delete_all=False, update=False,
             dry_run=True,
@@ -1077,19 +1077,15 @@ class TestMainAIMode:
 
 
 class TestDiscoverChainsAI:
-    """Discover mode should run sort/date/group when a Gemini key is set."""
+    """Discover mode should run optimize when a Gemini key is set."""
 
-    @patch("main._ai_group_products")
-    @patch("main._ai_assign_due_dates")
-    @patch("main._ai_sort_products")
+    @patch("main._ai_optimize_products")
     @patch("main._discover_products", return_value=(0, [42, 99]))
     @patch("main.GrocyClient")
-    def test_discover_chains_sort_date_group(
-        self, MockGrocy, mock_discover, mock_sort, mock_date, mock_group,
+    def test_discover_chains_optimize(
+        self, MockGrocy, mock_discover, mock_optimize,
     ):
-        mock_sort.return_value = 1
-        mock_date.return_value = 1
-        mock_group.return_value = 1
+        mock_optimize.return_value = 3
         rc = main([
             "--discover",
             "--store", "N110",
@@ -1104,22 +1100,14 @@ class TestDiscoverChainsAI:
         ])
         assert rc == 0
         mock_discover.assert_called_once()
-        mock_sort.assert_called_once()
-        _, sort_kwargs = mock_sort.call_args
-        assert sort_kwargs["product_ids"] == [42, 99]
-        mock_date.assert_called_once()
-        _, date_kwargs = mock_date.call_args
-        assert date_kwargs["product_ids"] == [42, 99]
-        mock_group.assert_called_once()
-        _, group_kwargs = mock_group.call_args
-        assert group_kwargs["product_ids"] == [42, 99]
+        mock_optimize.assert_called_once()
+        _, opt_kwargs = mock_optimize.call_args
+        assert opt_kwargs["product_ids"] == [42, 99]
 
-    @patch("main._ai_group_products")
-    @patch("main._ai_assign_due_dates")
-    @patch("main._ai_sort_products")
+    @patch("main._ai_optimize_products")
     @patch("main._discover_products", return_value=(0, [42]))
     def test_discover_no_gemini_key_skips_ai(
-        self, mock_discover, mock_sort, mock_date, mock_group,
+        self, mock_discover, mock_optimize,
     ):
         rc = main([
             "--discover",
@@ -1131,19 +1119,16 @@ class TestDiscoverChainsAI:
             "--bbuddy-password", "secret",
             "--location-id", "2",
             "--quantity-unit-id", "2",
+            "--gemini-api-key", "",
         ])
         assert rc == 0
         mock_discover.assert_called_once()
-        mock_sort.assert_not_called()
-        mock_date.assert_not_called()
-        mock_group.assert_not_called()
+        mock_optimize.assert_not_called()
 
-    @patch("main._ai_group_products")
-    @patch("main._ai_assign_due_dates")
-    @patch("main._ai_sort_products")
+    @patch("main._ai_optimize_products")
     @patch("main._discover_products", return_value=(1, []))
     def test_discover_failure_skips_ai(
-        self, mock_discover, mock_sort, mock_date, mock_group,
+        self, mock_discover, mock_optimize,
     ):
         rc = main([
             "--discover",
@@ -1159,17 +1144,13 @@ class TestDiscoverChainsAI:
         ])
         assert rc == 1
         mock_discover.assert_called_once()
-        mock_sort.assert_not_called()
-        mock_date.assert_not_called()
-        mock_group.assert_not_called()
+        mock_optimize.assert_not_called()
 
-    @patch("main._ai_group_products")
-    @patch("main._ai_assign_due_dates")
-    @patch("main._ai_sort_products")
+    @patch("main._ai_optimize_products")
     @patch("main._discover_products", return_value=(0, []))
     @patch("main.GrocyClient")
     def test_discover_no_new_products_skips_ai(
-        self, MockGrocy, mock_discover, mock_sort, mock_date, mock_group,
+        self, MockGrocy, mock_discover, mock_optimize,
     ):
         """When discover succeeds but finds no new products, AI is skipped."""
         rc = main([
@@ -1186,9 +1167,7 @@ class TestDiscoverChainsAI:
         ])
         assert rc == 0
         mock_discover.assert_called_once()
-        mock_sort.assert_not_called()
-        mock_date.assert_not_called()
-        mock_group.assert_not_called()
+        mock_optimize.assert_not_called()
 
 class TestParseArgsDeleteAll:
     def test_delete_all_flag(self):
@@ -1224,7 +1203,7 @@ class TestValidateArgsDeleteAll:
             grocy_url="https://grocy.example.com",
             grocy_key="KEY",
             query=None, browse=False, discover=False,
-            sort=False, date=False, group=False,
+            sort=False, date=False, group=False, optimize=False,
             update=False,
             dry_run=False,
             store="",
@@ -1387,7 +1366,7 @@ class TestValidateArgsDiscover:
         from argparse import Namespace
         defaults = dict(
             discover=True, query=None, browse=False,
-            sort=False, date=False, group=False,
+            sort=False, date=False, group=False, optimize=False,
             delete_all=False, update=False,
             store="N110",
             grocy_url="https://grocy.example.com",
@@ -1888,7 +1867,7 @@ class TestMultiStoreDiscoverFallback:
 
         args = Namespace(
             discover=True, query=None, browse=False,
-            sort=False, date=False, group=False,
+            sort=False, date=False, group=False, optimize=False,
             delete_all=False, update=False,
             bbuddy_url="https://bb.example.com",
             bbuddy_key="KEY",
@@ -1963,3 +1942,179 @@ class TestMultiStoreUpdateFallback:
         assert MockScraper.call_count == 2
         assert rc == 0
         grocy_instance.update_product.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# --optimize flag
+# ---------------------------------------------------------------------------
+
+class TestParseArgsOptimize:
+    def test_optimize_flag(self):
+        args = parse_args([
+            "--optimize",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI_KEY",
+        ])
+        assert args.optimize is True
+
+    def test_optimize_default_false(self):
+        args = parse_args(["--store", "N110", "--browse", "--dry-run"])
+        assert args.optimize is False
+
+
+class TestValidateArgsOptimize:
+    def test_valid_optimize_passes(self):
+        from main import _validate_args
+        args = Namespace(
+            sort=False, date=False, group=False, optimize=True,
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            gemini_api_key="GEMINI_KEY",
+            query=None, browse=False,
+            discover=False, delete_all=False, update=False,
+            dry_run=False,
+            store="", location_id=None, quantity_unit_id=None,
+        )
+        assert _validate_args(args) == 0
+
+    def test_optimize_missing_gemini_key_fails(self):
+        from main import _validate_args
+        args = Namespace(
+            sort=False, date=False, group=False, optimize=True,
+            grocy_url="https://grocy.example.com",
+            grocy_key="KEY",
+            gemini_api_key="",
+            query=None, browse=False,
+            discover=False, delete_all=False, update=False,
+            dry_run=False,
+            store="", location_id=None, quantity_unit_id=None,
+        )
+        assert _validate_args(args) == 1
+
+
+class TestMainOptimizeMode:
+    @patch("main._ai_optimize_products")
+    @patch("main.GrocyClient")
+    def test_optimize_mode_calls_ai_optimize(self, MockGrocy, mock_optimize):
+        mock_optimize.return_value = 5
+        rc = main([
+            "--optimize",
+            "--grocy-url", "https://grocy.example.com",
+            "--grocy-key", "KEY",
+            "--gemini-api-key", "GEMINI",
+        ])
+        assert rc == 0
+        mock_optimize.assert_called_once()
+
+
+class TestAiOptimizeProducts:
+    def _make_grocy(self, products, locations):
+        g = MagicMock(spec=GrocyClient)
+        g.get_all_products.return_value = products
+        g.get_locations.return_value = locations
+        g.update_product.return_value = None
+        g.get_product_stock_locations.return_value = []
+        g.transfer_stock.return_value = None
+        g.ensure_product_group.return_value = 100
+        g.create_product.return_value = 999
+        g.get_product_barcodes.return_value = []
+        g.update_barcode.return_value = None
+        g.delete_product.return_value = None
+        g.delete_product_image.return_value = None
+        return g
+
+    @patch("main._call_gemini")
+    def test_sort_date_group_in_single_pass(self, mock_gemini):
+        from main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Maito 1L"},
+            {"id": 2, "name": "Pesuaine"},
+        ]
+        locations = [{"id": 2, "name": "Fridge"}, {"id": 3, "name": "Cabinet"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": "Maito", "pack_of": null, "pack_count": null}, '
+            '"2": {"location_id": 3, "best_before_days": 1095, '
+            '"group_name": null, "pack_of": null, "pack_count": null}}'
+        )
+
+        result = _ai_optimize_products(grocy, "gemini-key")
+        assert result >= 2
+        # Check sort (location)
+        grocy.update_product.assert_any_call(1, location_id=2)
+        grocy.update_product.assert_any_call(2, location_id=3)
+        # Check date (best_before_days)
+        grocy.update_product.assert_any_call(1, default_best_before_days=14)
+        grocy.update_product.assert_any_call(2, default_best_before_days=1095)
+
+    @patch("main._call_gemini")
+    def test_pack_detection_moves_barcode_and_deletes(self, mock_gemini):
+        from main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Red Bull"},
+            {"id": 2, "name": "Red Bull 4-pack"},
+        ]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "1234567890123", "product_id": 2, "amount": 1},
+        ]
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 365, '
+            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"2": {"location_id": 2, "best_before_days": 365, '
+            '"group_name": null, "pack_of": "Red Bull", "pack_count": 4}}'
+        )
+
+        result = _ai_optimize_products(grocy, "gemini-key")
+        assert result >= 1
+        # Barcode moved to base product with amount=4
+        grocy.update_barcode.assert_called_once_with(10, product_id=1, amount=4)
+        # Pack product deleted
+        grocy.delete_product.assert_called_once_with(2)
+
+    @patch("main._call_gemini")
+    def test_no_products_returns_zero(self, mock_gemini):
+        from main import _ai_optimize_products
+        grocy = self._make_grocy([], [])
+        result = _ai_optimize_products(grocy, "gemini-key")
+        assert result == 0
+        mock_gemini.assert_not_called()
+
+    @patch("main._call_gemini")
+    def test_product_ids_filter(self, mock_gemini):
+        from main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Maito"},
+            {"id": 2, "name": "Leipä"},
+            {"id": 3, "name": "Voi"},
+        ]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": null, "pack_of": null, "pack_count": null}}'
+        )
+
+        result = _ai_optimize_products(grocy, "gemini-key", product_ids=[1])
+        assert result >= 1
+        # Only product 1 should be in the prompt (1 product in the batch)
+        call_args = mock_gemini.call_args
+        prompt = call_args[0][0]
+        assert "Maito" in prompt
+        # Products 2 and 3 should NOT be processed
+        assert "Leipä" not in prompt
+        assert "Voi" not in prompt
+
+    @patch("main._call_gemini")
+    def test_gemini_failure_continues(self, mock_gemini):
+        from main import _ai_optimize_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.side_effect = GrocyAPIError("API down")
+
+        result = _ai_optimize_products(grocy, "gemini-key")
+        assert result == 0

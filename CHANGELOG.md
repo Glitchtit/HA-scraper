@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-04-06
+
+### Added
+
+- New `--optimize` CLI flag and `/api/optimize` ingress endpoint that consolidates AI sort, date, group, and **pack detection** into a single Gemini prompt per batch. Multi-packs (e.g. "Red Bull 4-pack") are detected and their barcodes moved to the base product with the correct amount; the pack product is then deleted.
+- `GrocyClient.update_barcode()` and `get_product_barcodes()` methods for barcode manipulation.
+- ✨ Optimize button in the ingress web UI.
+
+### Changed
+
+- Optimize batch size increased to 1000 products (up from 100 for individual sort/date/group) to leverage modern LLM context windows and give the AI a better overview of the whole database.
+- Discover and add-products pipelines now chain `_ai_optimize_products()` instead of three separate sort/date/group calls.
+
 ## [1.9.0] - 2026-03-27
 
 ### Added

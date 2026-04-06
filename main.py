@@ -258,11 +258,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--optimize",
+        action="store_true",
+        default=False,
+        help=(
+            "Use Gemini AI to optimize the entire Grocy products database in a "
+            "single pass: assign storage locations (sort), estimate best-before "
+            "dates, group similar products under parent products, and detect "
+            "multi-packs (e.g. '4-pack' → move barcode to base product with "
+            "amount=4 and delete the pack product).  "
+            "Requires --grocy-url, --grocy-key, and the GEMINI_API environment variable."
+        ),
+    )
+    parser.add_argument(
         "--gemini-api-key",
         default=os.environ.get("GEMINI_API", ""),
         metavar="KEY",
         help=(
-            "Gemini API key used for AI-powered --sort, --date, and --group analysis.  "
+            "Gemini API key used for AI-powered --sort, --date, --group, and "
+            "--optimize analysis.  "
             "Also read from the GEMINI_API environment variable."
         ),
     )
@@ -271,8 +285,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=os.environ.get("GEMINI_MODEL", _GEMINI_DEFAULT_MODEL),
         metavar="MODEL",
         help=(
-            "Gemini model name to use for --sort, --date, and --group analysis "
-            f"(default: {_GEMINI_DEFAULT_MODEL}).  "
+            "Gemini model name to use for --sort, --date, --group, and --optimize "
+            f"analysis (default: {_GEMINI_DEFAULT_MODEL}).  "
             "Also read from the GEMINI_MODEL environment variable."
         ),
     )
@@ -444,6 +458,7 @@ _GEMINI_BASE_URL = (
 )
 _GEMINI_DEFAULT_MODEL = "gemini-1.5-flash"
 _GEMINI_BATCH_SIZE = 100
+_GEMINI_OPTIMIZE_BATCH_SIZE = 1000
 _GEMINI_MAX_RETRIES = 3
 
 
@@ -948,9 +963,364 @@ def _ai_group_products(
     return updated
 
 
+def _ai_optimize_products(
+    grocy: GrocyClient,
+    gemini_api_key: str,
+    model: str = _GEMINI_DEFAULT_MODEL,
+    *,
+    location_id: int | None = None,
+    quantity_unit_id: int | None = None,
+    product_ids: list[int] | None = None,
+) -> int:
+    """Use Gemini AI to optimize the Grocy product database in a single pass.
+
+    Combines sorting (location assignment), best-before date estimation,
+    product grouping, and multi-pack detection into one Gemini prompt per
+    batch.  Uses a larger batch size (1000) to give the model a broad view
+    of the catalogue.
+
+    **Pack handling**: when the model identifies a product as a multi-pack
+    (e.g. "Red Bull 4-pack"), the pack product's barcode is moved to the
+    base product with ``amount = pack_count``, and the pack product is
+    deleted from Grocy.
+
+    When *product_ids* is given, only those products are processed.
+
+    Returns the number of products updated.
+    """
+    # --- Fetch locations -------------------------------------------------
+    try:
+        locations = grocy.get_locations()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch locations from Grocy: %s", exc)
+        return 0
+
+    location_names: dict[int, str] = {}
+    location_lines = ""
+    if locations:
+        location_names = {
+            int(loc["id"]): loc.get("name", str(loc["id"])) for loc in locations
+        }
+        location_lines = "\n".join(
+            f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
+        )
+
+    # --- Fetch products --------------------------------------------------
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch products from Grocy: %s", exc)
+        return 0
+
+    if not products:
+        logger.info("No products found in Grocy – nothing to optimize.")
+        return 0
+
+    # Build a name→product index (used for grouping & pack handling).
+    name_to_product: dict[str, dict] = {}
+    for p in products:
+        name_to_product[p.get("name", "")] = p
+
+    # Determine which products already act as parents (have children).
+    has_children: set[int] = set()
+    for p in products:
+        ppid = p.get("parent_product_id")
+        if ppid:
+            has_children.add(int(ppid))
+
+    # Filter to requested product IDs if provided.
+    if product_ids is not None:
+        allowed = set(product_ids)
+        products = [p for p in products if int(p["id"]) in allowed]
+
+    if not products:
+        logger.info("No matching products – nothing to optimize.")
+        return 0
+
+    # Ensure "Group master" product group for parent products.
+    group_master_id: int | None = None
+    try:
+        group_master_id = grocy.ensure_product_group("Group master")
+    except GrocyAPIError as exc:
+        logger.warning("Could not ensure 'Group master' product group: %s", exc)
+
+    logger.info("Asking Gemini to optimize %d product(s) …", len(products))
+
+    updated = 0
+    for i in range(0, len(products), _GEMINI_OPTIMIZE_BATCH_SIZE):
+        batch = products[i : i + _GEMINI_OPTIMIZE_BATCH_SIZE]
+        product_lines = "\n".join(
+            f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
+        )
+
+        location_section = ""
+        if location_lines:
+            location_section = (
+                "Available storage locations:\n"
+                f"{location_lines}\n\n"
+            )
+
+        prompt = (
+            "You are a grocery database expert helping to organise a home pantry.\n\n"
+            f"{location_section}"
+            "For each product below, return a JSON object mapping the product ID "
+            "(as a string) to an object with these fields:\n"
+            '  "location_id": (integer) the most appropriate storage location ID '
+            "from the list above, or null if no locations are available.\n"
+            '  "best_before_days": (integer) estimated days until best-before date '
+            "for an unopened product under normal home storage.\n"
+            '  "group_name": (string) a generic Finnish parent product name '
+            '(e.g. "Maito" for milks, "Energiajuoma" for energy drinks) '
+            "if the product should be grouped, or null if it is unique.\n"
+            '  "pack_of": (string) the base product name if this product is a '
+            "multi-pack (e.g. for \"Red Bull 4-pack\" → \"Red Bull\"), or null "
+            "if it is not a pack.\n"
+            '  "pack_count": (integer) the number of individual items in the pack '
+            "(e.g. 4 for a 4-pack), or null if not a pack.\n\n"
+            "Guidelines:\n"
+            "- Location: dairy/meat/fresh produce/drinks/energy drinks/soda → refrigerator; "
+            "cleaning/laundry → cleaning cabinet; dry goods/canned/packaged/eggs → cupboard/pantry.\n"
+            "- Best-before: fresh milk ≈ 7–14d; yogurt ≈ 21d; butter ≈ 90d; "
+            "hard cheese ≈ 180d; eggs ≈ 28d; bread ≈ 7d; canned ≈ 730d; "
+            "dry pasta/rice ≈ 1095d; cooking oil ≈ 365d; frozen ≈ 730d; "
+            "cleaning/laundry ≈ 1095d.\n"
+            "- Grouping: group ALL grocery categories.\n"
+            "- Packs: detect multi-packs from names like '4-pack', '6x0.33l', "
+            "'monipakkaus', '4 kpl', etc.\n\n"
+            "Return ONLY valid JSON, for example:\n"
+            '{"1": {"location_id": 2, "best_before_days": 14, "group_name": "Maito", '
+            '"pack_of": null, "pack_count": null}, '
+            '"2": {"location_id": 3, "best_before_days": 730, "group_name": null, '
+            '"pack_of": "Red Bull", "pack_count": 4}}\n\n'
+            "Products:\n"
+            f"{product_lines}"
+        )
+
+        try:
+            mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.error(
+                "Gemini optimize batch %d failed: %s",
+                i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc,
+            )
+            continue
+
+        # --- Apply results -----------------------------------------------
+        # First pass: collect parent names and pack base names to pre-create.
+        parent_names: set[str] = set()
+        pack_base_names: set[str] = set()
+        for product in batch:
+            pid = str(product["id"])
+            info = mapping.get(pid)
+            if not isinstance(info, dict):
+                continue
+            gn = info.get("group_name")
+            if gn:
+                parent_names.add(str(gn))
+            po = info.get("pack_of")
+            if po:
+                pack_base_names.add(str(po))
+
+        # Ensure parent products exist (for grouping).
+        parent_name_to_id: dict[str, int] = {}
+        parent_name_to_group_id: dict[str, int] = {}
+        for parent_name in parent_names:
+            existing = name_to_product.get(parent_name)
+            if existing and not existing.get("parent_product_id"):
+                parent_name_to_id[parent_name] = int(existing["id"])
+            elif existing:
+                logger.debug("Skipping '%s' as parent – already a child.", parent_name)
+                continue
+            else:
+                try:
+                    pid_new = grocy.create_product(
+                        parent_name,
+                        location_id=location_id,
+                        quantity_unit_id=quantity_unit_id,
+                    )
+                    logger.info("  → Created parent product '%s' (ID %d).", parent_name, pid_new)
+                    parent_name_to_id[parent_name] = pid_new
+                    name_to_product[parent_name] = {"id": pid_new, "name": parent_name}
+                except GrocyAPIError as exc:
+                    logger.warning("Could not create parent product '%s': %s", parent_name, exc)
+                    continue
+
+            try:
+                parent_name_to_group_id[parent_name] = grocy.ensure_product_group(parent_name)
+            except GrocyAPIError as exc:
+                logger.warning("Could not ensure product group '%s': %s", parent_name, exc)
+
+            parent_update: dict = {
+                "cumulate_min_stock_amount_of_sub_products": 1,
+                "hide_on_stock_overview": 1,
+            }
+            if group_master_id is not None:
+                parent_update["product_group_id"] = group_master_id
+            try:
+                grocy.update_product(parent_name_to_id[parent_name], **parent_update)
+            except GrocyAPIError as exc:
+                logger.warning("Could not update parent product '%s': %s", parent_name, exc)
+
+        # Ensure base products exist (for pack handling).
+        pack_base_name_to_id: dict[str, int] = {}
+        for base_name in pack_base_names:
+            existing = name_to_product.get(base_name)
+            if existing:
+                pack_base_name_to_id[base_name] = int(existing["id"])
+            else:
+                try:
+                    pid_new = grocy.create_product(
+                        base_name,
+                        location_id=location_id,
+                        quantity_unit_id=quantity_unit_id,
+                    )
+                    logger.info("  → Created base product '%s' (ID %d) for pack.", base_name, pid_new)
+                    pack_base_name_to_id[base_name] = pid_new
+                    name_to_product[base_name] = {"id": pid_new, "name": base_name}
+                except GrocyAPIError as exc:
+                    logger.warning("Could not create base product '%s': %s", base_name, exc)
+
+        # Second pass: apply sort, date, group, and pack for each product.
+        deleted_ids: set[int] = set()
+        for product in batch:
+            pid = str(product["id"])
+            info = mapping.get(pid)
+            if not isinstance(info, dict):
+                logger.debug("No optimize info for product %s ('%s').", pid, product.get("name"))
+                continue
+
+            product_id = int(product["id"])
+
+            # --- Pack handling (do first, may delete product) -------------
+            pack_of = info.get("pack_of")
+            pack_count = info.get("pack_count")
+            if pack_of and pack_count:
+                base_id = pack_base_name_to_id.get(str(pack_of))
+                if base_id is not None and base_id != product_id:
+                    try:
+                        barcodes = grocy.get_product_barcodes(product_id)
+                        for bc_entry in barcodes:
+                            bc_id = int(bc_entry["id"])
+                            grocy.update_barcode(
+                                bc_id,
+                                product_id=base_id,
+                                amount=int(pack_count),
+                            )
+                            logger.info(
+                                "  → Moved barcode '%s' from '%s' to '%s' (amount=%d).",
+                                bc_entry.get("barcode", "?"),
+                                product.get("name"),
+                                pack_of,
+                                int(pack_count),
+                            )
+                        # Delete the pack product.
+                        picture = product.get("picture_file_name", "")
+                        if picture:
+                            try:
+                                grocy.delete_product_image(picture)
+                            except GrocyAPIError:
+                                pass
+                        grocy.delete_product(product_id)
+                        logger.info(
+                            "  → Deleted pack product '%s' (ID %s).",
+                            product.get("name"), pid,
+                        )
+                        deleted_ids.add(product_id)
+                        updated += 1
+                        continue  # Skip sort/date/group for deleted product.
+                    except GrocyAPIError as exc:
+                        logger.warning(
+                            "Could not handle pack for '%s': %s",
+                            product.get("name"), exc,
+                        )
+
+            # --- Sort (location assignment) -------------------------------
+            loc_id = info.get("location_id")
+            if loc_id is not None and locations:
+                try:
+                    grocy.update_product(product_id, location_id=int(loc_id))
+                    logger.info(
+                        "  → Set location '%s' for '%s' (ID %s).",
+                        location_names.get(int(loc_id), loc_id),
+                        product.get("name"), pid,
+                    )
+                    updated += 1
+                except (GrocyAPIError, ValueError) as exc:
+                    logger.warning(
+                        "Could not update location for '%s': %s",
+                        product.get("name"), exc,
+                    )
+
+                # Transfer existing stock to the new location.
+                try:
+                    stock_locs = grocy.get_product_stock_locations(product_id)
+                    target = int(loc_id)
+                    for entry in stock_locs:
+                        entry_loc = int(entry.get("location_id", 0))
+                        entry_amount = float(entry.get("amount", 0))
+                        if entry_loc == target or entry_amount <= 0:
+                            continue
+                        grocy.transfer_stock(product_id, entry_amount, entry_loc, target)
+                        logger.info(
+                            "    ↳ Moved %.4g unit(s) from '%s' → '%s' for '%s'.",
+                            entry_amount,
+                            location_names.get(entry_loc, entry_loc),
+                            location_names.get(target, target),
+                            product.get("name"),
+                        )
+                except GrocyAPIError as exc:
+                    logger.debug(
+                        "Could not transfer stock for '%s': %s",
+                        product.get("name"), exc,
+                    )
+
+            # --- Date (best-before days) ----------------------------------
+            days = info.get("best_before_days")
+            if days is not None:
+                try:
+                    grocy.update_product(product_id, default_best_before_days=int(days))
+                    logger.info(
+                        "  → Set %d best-before days for '%s' (ID %s).",
+                        int(days), product.get("name"), pid,
+                    )
+                except (GrocyAPIError, ValueError) as exc:
+                    logger.warning(
+                        "Could not update due days for '%s': %s",
+                        product.get("name"), exc,
+                    )
+
+            # --- Group (parent product assignment) ------------------------
+            group_name = info.get("group_name")
+            if group_name:
+                parent_id = parent_name_to_id.get(str(group_name))
+                if (
+                    parent_id is not None
+                    and parent_id != product_id
+                    and not product.get("parent_product_id")
+                    and product_id not in has_children
+                ):
+                    child_update: dict = {"parent_product_id": parent_id}
+                    child_group_id = parent_name_to_group_id.get(str(group_name))
+                    if child_group_id is not None:
+                        child_update["product_group_id"] = child_group_id
+                    try:
+                        grocy.update_product(product_id, **child_update)
+                        logger.info(
+                            "  → Grouped '%s' (ID %s) under '%s'.",
+                            product.get("name"), pid, group_name,
+                        )
+                    except (GrocyAPIError, ValueError) as exc:
+                        logger.warning(
+                            "Could not group '%s': %s", product.get("name"), exc,
+                        )
+
+    logger.info("--optimize complete: %d product(s) updated.", updated)
+    return updated
+
+
 def _validate_args(args: argparse.Namespace) -> int:
     """Return 0 if arguments are valid, 1 otherwise."""
-    ai_mode = args.sort or args.date or args.group
+    ai_mode = args.sort or args.date or args.group or args.optimize
     scrape_mode = bool(args.query or args.browse)
     discover_mode = args.discover
     delete_all_mode = args.delete_all
@@ -960,7 +1330,7 @@ def _validate_args(args: argparse.Namespace) -> int:
     if not ai_mode and not scrape_mode and not discover_mode and not delete_all_mode and not update_mode:
         logger.error(
             "Specify a scraping mode (--query / --browse), an AI analysis mode "
-            "(--sort / --date), --discover, --update, or --delete-all."
+            "(--sort / --date / --optimize), --discover, --update, or --delete-all."
         )
         return 1
 
@@ -989,7 +1359,7 @@ def _validate_args(args: argparse.Namespace) -> int:
     if ai_mode:
         if not args.gemini_api_key:
             logger.error(
-                "Gemini API key is required for --sort / --date / --group.  "
+                "Gemini API key is required for --sort / --date / --group / --optimize.  "
                 "Use --gemini-api-key or set the GEMINI_API environment variable."
             )
             return 1
@@ -1484,8 +1854,16 @@ def main(argv: list[str] | None = None) -> int:
 
     # AI analysis modes operate on the existing Grocy database independently
     # of the scraping pipeline.
-    if args.sort or args.date or args.group:
+    if args.sort or args.date or args.group or args.optimize:
         grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+        if args.optimize:
+            _ai_optimize_products(
+                grocy,
+                args.gemini_api_key,
+                args.gemini_model,
+                location_id=getattr(args, "location_id", None),
+                quantity_unit_id=getattr(args, "quantity_unit_id", None),
+            )
         if args.sort:
             _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model)
         if args.date:
@@ -1505,12 +1883,10 @@ def main(argv: list[str] | None = None) -> int:
     # Discover mode: Barcode Buddy → K-Ruoka → Grocy pipeline.
     if args.discover:
         rc, discovered_ids = _discover_products(args)
-        # After discover, run AI sort/date/group when a Gemini key is available.
+        # After discover, run AI optimize when a Gemini key is available.
         if rc == 0 and args.gemini_api_key and discovered_ids:
             grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
-            _ai_sort_products(grocy, args.gemini_api_key, args.gemini_model, product_ids=discovered_ids)
-            _ai_assign_due_dates(grocy, args.gemini_api_key, args.gemini_model, product_ids=discovered_ids)
-            _ai_group_products(
+            _ai_optimize_products(
                 grocy,
                 args.gemini_api_key,
                 args.gemini_model,

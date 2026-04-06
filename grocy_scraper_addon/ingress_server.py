@@ -3,7 +3,7 @@
 Serves a single-page application that lets users:
 
 * Search for K-Ruoka products by keyword
-* Run Discover, Sort, Date, Group, and Update operations via action buttons
+* Run Discover, Optimize, Sort, Date, Group, and Update operations via action buttons
 * View console/log output in a terminal pane with verbose toggle
 
 API endpoints
@@ -12,6 +12,7 @@ GET  /                  Serve the HTML UI
 GET  /api/config        Return current add-on configuration summary
 POST /api/search        Search products on K-Ruoka
 POST /api/discover      Run Barcode Buddy -> K-Ruoka -> Grocy discover pipeline
+POST /api/optimize      Run Gemini AI combined optimization (sort + date + group + pack)
 POST /api/sort          Run Gemini AI product location sorting
 POST /api/date          Run Gemini AI best-before date assignment
 POST /api/group         Run Gemini AI product grouping (parent-product assignment)
@@ -237,7 +238,7 @@ def _handle_discover() -> dict[str, Any]:
     args = _build_args(opts)
     with _capture_logs() as logs:
         result_code, discovered_ids = _main._discover_products(args)
-        # Chain AI sort/date/group when Gemini key is available.
+        # Chain AI optimize when Gemini key is available.
         gemini_key = opts.get("gemini_api_key", "")
         if result_code == 0 and gemini_key and discovered_ids:
             grocy = GrocyClient(
@@ -245,11 +246,9 @@ def _handle_discover() -> dict[str, Any]:
                 api_key=opts.get("grocy_api_key", ""),
             )
             model = opts.get("gemini_model", "gemini-1.5-flash")
-            _main._ai_sort_products(grocy, gemini_key, model, product_ids=discovered_ids)
-            _main._ai_assign_due_dates(grocy, gemini_key, model, product_ids=discovered_ids)
             location_id = int(opts.get("location_id", 0)) or None
             quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
-            _main._ai_group_products(
+            _main._ai_optimize_products(
                 grocy,
                 gemini_key,
                 model,
@@ -258,6 +257,45 @@ def _handle_discover() -> dict[str, Any]:
                 product_ids=discovered_ids,
             )
     return {"success": result_code == 0, "skipped": False, "logs": logs}
+
+
+def _handle_optimize() -> dict[str, Any]:
+    """Run Gemini AI combined optimization (sort + date + group + pack)."""
+    opts = _read_options()
+    gemini_key = opts.get("gemini_api_key", "")
+    if not gemini_key:
+        return {
+            "success": False,
+            "skipped": True,
+            "updated": 0,
+            "logs": [
+                {
+                    "level": "WARNING",
+                    "message": "A Gemini API key is required for Optimize. "
+                    "Add it in the add-on configuration.",
+                }
+            ],
+        }
+
+    from grocy_scraper.grocy_client import GrocyClient
+    import main as _main
+
+    grocy = GrocyClient(
+        base_url=opts.get("grocy_url", ""),
+        api_key=opts.get("grocy_api_key", ""),
+    )
+    model = opts.get("gemini_model", "gemini-1.5-flash")
+    location_id = int(opts.get("location_id", 0)) or None
+    quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
+    with _capture_logs() as logs:
+        updated: int = _main._ai_optimize_products(
+            grocy,
+            gemini_key,
+            model,
+            location_id=location_id,
+            quantity_unit_id=quantity_unit_id,
+        )
+    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
 
 
 def _handle_sort() -> dict[str, Any]:
@@ -438,14 +476,12 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 logger.exception(msg)
                 errors.append(msg)
 
-        # Chain AI sort/date/group for newly added products when Gemini key
+        # Chain AI optimize for newly added products when Gemini key
         # is available – mirrors the behaviour of _handle_discover.
         gemini_key = opts.get("gemini_api_key", "")
         if gemini_key and added_ids:
             model = opts.get("gemini_model", "gemini-1.5-flash")
-            _main._ai_sort_products(grocy, gemini_key, model, product_ids=added_ids)
-            _main._ai_assign_due_dates(grocy, gemini_key, model, product_ids=added_ids)
-            _main._ai_group_products(
+            _main._ai_optimize_products(
                 grocy,
                 gemini_key,
                 model,
@@ -517,6 +553,7 @@ _HTML = """\
     .btn:disabled { opacity:0.4; cursor:not-allowed; }
     .btn-primary { background:#03a9f4; color:#fff; }
     .btn-discover { background:#6200ea; color:#fff; }
+    .btn-optimize { background:#ff6f00; color:#fff; }
     .btn-sort     { background:#00796b; color:#fff; }
     .btn-date     { background:#e65100; color:#fff; }
     .btn-update   { background:#1565c0; color:#fff; }
@@ -680,6 +717,7 @@ _HTML = """\
     <h2>&#128295; Actions</h2>
     <div class="action-row">
       <button class="btn btn-discover" id="discover-btn">&#128269; Discover</button>
+      <button class="btn btn-optimize" id="optimize-btn">&#10024; Optimize</button>
       <button class="btn btn-sort"     id="sort-btn">&#128230; Sort</button>
       <button class="btn btn-date"     id="date-btn">&#128197; Date</button>
       <button class="btn btn-group"    id="group-btn">&#128279; Group</button>
@@ -729,6 +767,7 @@ _HTML = """\
   var selectionCount = $("#selection-count");
   var addStatus   = $("#add-status");
   var discoverBtn = $("#discover-btn");
+  var optimizeBtn = $("#optimize-btn");
   var sortBtn     = $("#sort-btn");
   var dateBtn     = $("#date-btn");
   var groupBtn    = $("#group-btn");
@@ -740,7 +779,7 @@ _HTML = """\
   var configCard  = $("#config-card");
   var configInfo  = $("#config-info");
 
-  var actionBtns = [discoverBtn, sortBtn, dateBtn, groupBtn, updateBtn];
+  var actionBtns = [discoverBtn, optimizeBtn, sortBtn, dateBtn, groupBtn, updateBtn];
   var lastProducts = [];
 
   // ── Utilities ─────────────────────────────────────────────────────────────
@@ -961,6 +1000,7 @@ _HTML = """\
     if (e.target.classList.contains("product-check")) updateSelectionCount();
   });
   discoverBtn.addEventListener("click", function () { runAction("discover", "Discover"); });
+  optimizeBtn.addEventListener("click", function () { runAction("optimize", "Optimize"); });
   sortBtn.addEventListener("click",     function () { runAction("sort", "Sort"); });
   dateBtn.addEventListener("click",     function () { runAction("date", "Date"); });
   groupBtn.addEventListener("click",    function () { runAction("group", "Group"); });
@@ -988,6 +1028,7 @@ _HTML = """\
 _POST_HANDLERS: dict[str, Any] = {
     "/api/search": _handle_search,
     "/api/discover": _handle_discover,
+    "/api/optimize": _handle_optimize,
     "/api/sort": _handle_sort,
     "/api/date": _handle_date,
     "/api/group": _handle_group,
