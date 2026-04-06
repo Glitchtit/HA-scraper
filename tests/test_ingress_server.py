@@ -231,7 +231,7 @@ class TestHandleDiscover:
         assert result["success"] is True
         assert result["skipped"] is False
 
-    def test_discover_chains_sort_date_group(self, ingress_mod: ModuleType) -> None:
+    def test_discover_chains_optimize(self, ingress_mod: ModuleType) -> None:
         opts = {
             "bbuddy_url": "http://bb",
             "bbuddy_user": "admin",
@@ -250,23 +250,15 @@ class TestHandleDiscover:
                 with mock.patch("grocy_scraper.grocy_client.GrocyClient", mock_grocy_cls):
                     main_mod = sys.modules["main"]
                     main_mod._discover_products.return_value = (0, [42, 99])
-                    main_mod._ai_sort_products.return_value = 2
-                    main_mod._ai_assign_due_dates.return_value = 3
-                    main_mod._ai_group_products.return_value = 4
+                    main_mod._ai_optimize_products.return_value = 5
                     result = ingress_mod._handle_discover()
 
         assert result["success"] is True
         assert result["skipped"] is False
         main_mod._discover_products.assert_called_once()
-        main_mod._ai_sort_products.assert_called_once()
-        _, sort_kwargs = main_mod._ai_sort_products.call_args
-        assert sort_kwargs["product_ids"] == [42, 99]
-        main_mod._ai_assign_due_dates.assert_called_once()
-        _, date_kwargs = main_mod._ai_assign_due_dates.call_args
-        assert date_kwargs["product_ids"] == [42, 99]
-        main_mod._ai_group_products.assert_called_once()
-        _, group_kwargs = main_mod._ai_group_products.call_args
-        assert group_kwargs["product_ids"] == [42, 99]
+        main_mod._ai_optimize_products.assert_called_once()
+        _, opt_kwargs = main_mod._ai_optimize_products.call_args
+        assert opt_kwargs["product_ids"] == [42, 99]
 
     def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
@@ -673,9 +665,7 @@ class TestHandleAddProducts:
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
              mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
-             mock.patch("main._ai_sort_products") as mock_sort, \
-             mock.patch("main._ai_assign_due_dates") as mock_date, \
-             mock.patch("main._ai_group_products") as mock_group:
+             mock.patch("main._ai_optimize_products") as mock_optimize:
             result = ingress_mod._handle_add_products(
                 {
                     "products": [
@@ -688,13 +678,7 @@ class TestHandleAddProducts:
         assert result["success"] is True
         assert result["added"] == 2
 
-        mock_sort.assert_called_once_with(
-            mock_grocy, "gem-key", "gemini-2.0-flash", product_ids=[10, 20],
-        )
-        mock_date.assert_called_once_with(
-            mock_grocy, "gem-key", "gemini-2.0-flash", product_ids=[10, 20],
-        )
-        mock_group.assert_called_once_with(
+        mock_optimize.assert_called_once_with(
             mock_grocy,
             "gem-key",
             "gemini-2.0-flash",
@@ -714,18 +698,14 @@ class TestHandleAddProducts:
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
              mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
-             mock.patch("main._ai_sort_products") as mock_sort, \
-             mock.patch("main._ai_assign_due_dates") as mock_date, \
-             mock.patch("main._ai_group_products") as mock_group:
+             mock.patch("main._ai_optimize_products") as mock_optimize:
             result = ingress_mod._handle_add_products(
                 {"products": [{"name": "A", "ean": "111"}]}
             )
 
         assert result["success"] is True
         assert result["added"] == 1
-        mock_sort.assert_not_called()
-        mock_date.assert_not_called()
-        mock_group.assert_not_called()
+        mock_optimize.assert_not_called()
 
     def test_skips_ai_when_no_products_added(self, ingress_mod: ModuleType) -> None:
         opts = {
@@ -738,18 +718,14 @@ class TestHandleAddProducts:
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
              mock.patch("grocy_scraper.grocy_client.GrocyClient", return_value=mock_grocy), \
-             mock.patch("main._ai_sort_products") as mock_sort, \
-             mock.patch("main._ai_assign_due_dates") as mock_date, \
-             mock.patch("main._ai_group_products") as mock_group:
+             mock.patch("main._ai_optimize_products") as mock_optimize:
             result = ingress_mod._handle_add_products(
                 {"products": [{"name": "Existing", "ean": "111"}]}
             )
 
         assert result["success"] is True
         assert result["added"] == 0
-        mock_sort.assert_not_called()
-        mock_date.assert_not_called()
-        mock_group.assert_not_called()
+        mock_optimize.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

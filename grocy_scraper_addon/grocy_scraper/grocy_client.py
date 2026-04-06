@@ -472,6 +472,41 @@ class GrocyClient:
                 f"Failed to transfer stock for product {product_id}: {exc}"
             ) from exc
 
+    def get_product_barcodes(self, product_id: int) -> list[dict]:
+        """Return barcode entries for *product_id*.
+
+        Fetches all barcodes and filters by ``product_id``.  Each entry
+        contains at least ``id``, ``product_id``, ``barcode``, and
+        ``amount``.
+        """
+        all_barcodes = self.get_all_barcodes()
+        return [b for b in all_barcodes if int(b.get("product_id", 0)) == product_id]
+
+    def update_barcode(self, barcode_id: int, **fields) -> None:
+        """Update fields on an existing barcode entry.
+
+        Parameters
+        ----------
+        barcode_id:
+            The Grocy internal barcode entry ID (not the barcode string).
+        **fields:
+            Arbitrary barcode fields to update (e.g. ``product_id=5``,
+            ``amount=4``).
+        """
+        url = self._url(f"/api/objects/product_barcodes/{barcode_id}")
+        try:
+            resp = self._session.put(url, json=fields, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to update barcode {barcode_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to update barcode {barcode_id}: {exc}"
+            ) from exc
+
     def delete_product_image(self, filename: str) -> None:
         """Delete a product picture file from Grocy.
 
