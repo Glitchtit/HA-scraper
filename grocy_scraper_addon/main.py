@@ -49,6 +49,7 @@ except ImportError:
 from grocy_scraper.barcodebuddy_client import BarcodeBuddyClient, BarcodeBuddyError
 from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 from grocy_scraper.scraper import KRuokaScraper, Product
+from grocy_scraper.searxng_client import SearXNGError, lookup_ean as searxng_lookup
 from grocy_scraper.skaupat_client import SKaupatError, lookup_ean as skaupat_lookup
 
 import requests
@@ -288,6 +289,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Gemini model name to use for --sort, --date, --group, and --optimize "
             f"analysis (default: {_GEMINI_DEFAULT_MODEL}).  "
             "Also read from the GEMINI_MODEL environment variable."
+        ),
+    )
+    parser.add_argument(
+        "--searxng-url",
+        default=os.environ.get("SEARXNG_URL", ""),
+        metavar="URL",
+        help=(
+            "Base URL of a SearXNG instance for fallback product lookups by EAN "
+            "(e.g. http://192.168.1.100:8181).  "
+            "Also read from the SEARXNG_URL environment variable."
         ),
     )
 
@@ -1567,8 +1578,22 @@ def _discover_single_barcode(
         except SKaupatError as exc:
             logger.debug("S-kaupat lookup failed: %s", exc)
 
+    # Fallback: SearXNG web search.
+    if product is None and getattr(args, "searxng_url", ""):
+        try:
+            sx = searxng_lookup(barcode, searxng_url=args.searxng_url)
+            if sx is not None:
+                logger.info("Found via SearXNG: '%s'.", sx.name)
+                product = Product(
+                    name=sx.name,
+                    ean=sx.ean,
+                    image_url=sx.image_url,
+                )
+        except SearXNGError as exc:
+            logger.debug("SearXNG lookup failed: %s", exc)
+
     if product is None:
-        logger.info("EAN %s not found on K-Ruoka or S-kaupat.", barcode)
+        logger.info("EAN %s not found on K-Ruoka, S-kaupat, or SearXNG.", barcode)
         return {"success": False, "error": f"Product not found for EAN {barcode}"}
 
     logger.info("Found: '%s' (EAN %s).", product.name, product.ean)
@@ -1716,12 +1741,26 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
             except SKaupatError as exc:
                 logger.debug("  S-kaupat lookup failed: %s", exc)
 
+        # Fallback: SearXNG web search.
+        if product is None and getattr(args, "searxng_url", ""):
+            try:
+                sx = searxng_lookup(barcode, searxng_url=args.searxng_url)
+                if sx is not None:
+                    logger.info("  Found via SearXNG: '%s'.", sx.name)
+                    product = Product(
+                        name=sx.name,
+                        ean=sx.ean,
+                        image_url=sx.image_url,
+                    )
+            except SearXNGError as exc:
+                logger.debug("  SearXNG lookup failed: %s", exc)
+
         if product is None and bb_name:
-            logger.info("  Not on K-Ruoka or S-kaupat; using Barcode Buddy name '%s'.", bb_name)
+            logger.info("  Not on K-Ruoka, S-kaupat, or SearXNG; using Barcode Buddy name '%s'.", bb_name)
             product = Product(name=bb_name, ean=barcode)
 
         if product is None:
-            logger.info("  EAN %s not found on K-Ruoka or S-kaupat – skipping.", barcode)
+            logger.info("  EAN %s not found on K-Ruoka, S-kaupat, or SearXNG – skipping.", barcode)
             skipped += 1
             continue
 
@@ -1924,6 +1963,21 @@ def _update_products(args: argparse.Namespace) -> int:
                     break
             except SKaupatError as exc:
                 logger.debug("  S-kaupat lookup failed for %s: %s", ean, exc)
+
+            # SearXNG fallback.
+            if getattr(args, "searxng_url", ""):
+                try:
+                    sx = searxng_lookup(ean, searxng_url=args.searxng_url)
+                    if sx is not None:
+                        found = Product(
+                            name=sx.name,
+                            ean=sx.ean,
+                            image_url=sx.image_url,
+                        )
+                        matched_ean = ean
+                        break
+                except SearXNGError as exc:
+                    logger.debug("  SearXNG lookup failed for %s: %s", ean, exc)
 
         if found is None:
             logger.debug("  Product %d ('%s') not found online – skipping.", pid, current_name)

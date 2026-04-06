@@ -131,6 +131,7 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
         use_graphql=opts.get("use_graphql", True),
         gemini_api_key=opts.get("gemini_api_key", ""),
         gemini_model=opts.get("gemini_model", "gemini-1.5-flash"),
+        searxng_url=opts.get("searxng_url", ""),
         verbose=False,
         dry_run=False,
         skip_existing=True,

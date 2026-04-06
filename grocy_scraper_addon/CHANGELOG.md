@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.13.0
+
+- SearXNG fallback: when a product EAN is not found via K-Ruoka or S-kaupat, the add-on can now search a self-hosted SearXNG instance to discover product info from web results (especially k-ruoka.fi product pages). Configure via the new `searxng_url` add-on option.
+- Kesko image CDN integration: product images are fetched from the Kesko CDN without store context for SearXNG-discovered products.
+
 ## 1.12.0
 
 - Remove deprecated standalone CLI (`main.py`); `grocy_scraper_addon/main.py` is now the single entry point
