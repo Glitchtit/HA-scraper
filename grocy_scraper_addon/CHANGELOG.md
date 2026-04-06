@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.11.1
+
+- Fix: sync `_discover_single_barcode()` to add-on `main.py`, fixing `AttributeError` when scanning barcodes via Grocy Stock
+
 ## 1.11.0
 - Increase Gemini API timeout from 60s to 300s to prevent read timeouts on large optimize batches
 
