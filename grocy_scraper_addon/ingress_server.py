@@ -11,7 +11,8 @@ API endpoints
 GET  /                  Serve the HTML UI
 GET  /api/config        Return current add-on configuration summary
 POST /api/search        Search products on K-Ruoka
-POST /api/discover      Run Barcode Buddy -> K-Ruoka -> Grocy discover pipeline
+POST /api/discover      Run discover pipeline.  Optionally accepts {"barcode": "..."} for
+                        single-barcode mode (bypasses Barcode Buddy).
 POST /api/optimize      Run Gemini AI combined optimization (sort + date + group + pack)
 POST /api/sort          Run Gemini AI product location sorting
 POST /api/date          Run Gemini AI best-before date assignment
@@ -212,13 +213,51 @@ def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-def _handle_discover() -> dict[str, Any]:
-    """Run the Barcode Buddy -> K-Ruoka -> Grocy discover pipeline.
+def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Run the discover pipeline.
 
-    After discover succeeds, automatically runs AI sort, date and group
-    when a Gemini API key is configured.
+    When *body* contains a ``"barcode"`` key, only that single barcode is
+    looked up (K-Ruoka / S-kaupat → Grocy).  Otherwise the full Barcode
+    Buddy → K-Ruoka → Grocy batch pipeline is executed.
     """
     opts = _read_options()
+
+    single_barcode = (body or {}).get("barcode", "").strip() if body else ""
+
+    if single_barcode:
+        # --- Single-barcode mode (no Barcode Buddy needed) ----------------
+        import main as _main
+
+        args = _build_args(opts)
+        with _capture_logs() as logs:
+            result = _main._discover_single_barcode(args, single_barcode)
+
+            # Chain AI optimize for the new product when Gemini is available.
+            grocy_id = result.get("grocy_id")
+            gemini_key = opts.get("gemini_api_key", "")
+            if result.get("success") and gemini_key and grocy_id and not result.get("already_existed"):
+                from grocy_scraper.grocy_client import GrocyClient as _GC
+
+                grocy = _GC(
+                    base_url=opts.get("grocy_url", ""),
+                    api_key=opts.get("grocy_api_key", ""),
+                )
+                model = opts.get("gemini_model", "gemini-1.5-flash")
+                location_id = int(opts.get("location_id", 0)) or None
+                quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
+                _main._ai_optimize_products(
+                    grocy,
+                    gemini_key,
+                    model,
+                    location_id=location_id,
+                    quantity_unit_id=quantity_unit_id,
+                    product_ids=[int(grocy_id)],
+                )
+
+        result["logs"] = logs
+        return result
+
+    # --- Batch mode (original behaviour) -----------------------------------
     if not (opts.get("bbuddy_url") and opts.get("bbuddy_user") and opts.get("bbuddy_password")):
         return {
             "success": False,
@@ -1089,7 +1128,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            if handler is _handle_search or handler is _handle_add_products:
+            if handler is _handle_search or handler is _handle_add_products or handler is _handle_discover:
                 result = handler(body)
             else:
                 result = handler()

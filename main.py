@@ -1667,6 +1667,127 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     return (0 if errors == 0 else 1), discovered_ids
 
 
+def _discover_single_barcode(
+    args: argparse.Namespace,
+    barcode: str,
+) -> dict:
+    """Discover a single barcode by searching K-Ruoka / S-kaupat and syncing to Grocy.
+
+    Unlike :func:`_discover_products`, this bypasses Barcode Buddy entirely —
+    the caller already knows the barcode.  It searches online stores, creates
+    the product in Grocy, adds 1 unit to stock, and returns a result dict.
+
+    Returns ``{"success": True, "product": {...}, "grocy_id": int}`` on
+    success, or ``{"success": False, "error": "..."}`` on failure.
+    """
+    grocy = GrocyClient(base_url=args.grocy_url, api_key=args.grocy_key)
+    store_ids = _parse_store_ids(args.store)
+    scrapers = [
+        KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
+        for sid in store_ids
+    ]
+
+    # Check if barcode already exists in Grocy.
+    try:
+        existing = grocy.get_product_by_barcode(barcode)
+        if existing:
+            name = existing.get("name", barcode)
+            grocy_id = existing.get("id")
+            logger.info("Barcode %s already in Grocy as '%s' (ID %s).", barcode, name, grocy_id)
+            return {
+                "success": True,
+                "product": {"name": name, "barcode": barcode},
+                "grocy_id": grocy_id,
+                "already_existed": True,
+            }
+    except GrocyAPIError as exc:
+        logger.debug("Barcode lookup failed (proceeding): %s", exc)
+
+    logger.info("Looking up EAN %s …", barcode)
+
+    # Search K-Ruoka by EAN across configured stores.
+    product = None
+    for scraper in scrapers:
+        try:
+            for p in scraper.search(barcode, max_products=10):
+                if p.ean == barcode:
+                    product = p
+                    break
+        except Exception as exc:
+            logger.warning(
+                "Store %s failed for EAN %s (%s); trying next store …",
+                scraper.store_id, barcode, exc,
+            )
+        if product is not None:
+            break
+
+    # Fallback: S-kaupat EAN lookup.
+    if product is None:
+        try:
+            sk = skaupat_lookup(barcode)
+            if sk is not None:
+                logger.info("Found on S-kaupat: '%s'.", sk.name)
+                product = Product(
+                    name=sk.name,
+                    ean=sk.ean,
+                    description=sk.description,
+                    image_url=sk.image_url,
+                )
+        except SKaupatError as exc:
+            logger.debug("S-kaupat lookup failed: %s", exc)
+
+    if product is None:
+        logger.info("EAN %s not found on K-Ruoka or S-kaupat.", barcode)
+        return {"success": False, "error": f"Product not found for EAN {barcode}"}
+
+    logger.info("Found: '%s' (EAN %s).", product.name, product.ean)
+
+    # Sync product to Grocy.
+    known_barcodes: set[str] = set()
+    try:
+        added = sync_product(
+            product,
+            grocy,
+            location_id=args.location_id,
+            quantity_unit_id=args.quantity_unit_id,
+            skip_existing=False,
+            known_barcodes=known_barcodes,
+            upload_images=args.upload_images,
+        )
+    except GrocyAPIError as exc:
+        logger.error("Grocy error for '%s': %s", product.name, exc)
+        return {"success": False, "error": f"Failed to create product in Grocy: {exc}"}
+
+    # Look up the Grocy product ID.
+    grocy_id = None
+    try:
+        existing = grocy.get_product_by_barcode(barcode)
+        if existing:
+            grocy_id = existing.get("id")
+    except GrocyAPIError:
+        pass
+
+    # Add 1 unit to stock.
+    if grocy_id is not None:
+        try:
+            grocy.add_stock(int(grocy_id), amount=1.0)
+            logger.info("Added 1 unit to Grocy stock (product ID %s).", grocy_id)
+        except (GrocyAPIError, ValueError) as exc:
+            logger.warning("Could not add stock for '%s': %s", product.name, exc)
+
+    logger.info("Single-barcode discover complete for EAN %s.", barcode)
+    return {
+        "success": True,
+        "product": {
+            "name": product.name,
+            "barcode": product.ean,
+            "description": product.description or "",
+        },
+        "grocy_id": grocy_id,
+        "already_existed": not added,
+    }
+
+
 def _delete_all_products(grocy: GrocyClient) -> int:
     """Delete every product from the Grocy database.
 
