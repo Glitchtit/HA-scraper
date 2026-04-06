@@ -41,7 +41,7 @@ _LOGGER = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).parent.parent.parent
 
 # Logger namespaces whose records are captured for terminal output
-_CAPTURE_NAMESPACES = ("grocy_scraper", "main")
+_CAPTURE_NAMESPACES = ("grocy_scraper", "grocy_scraper_addon.main")
 
 
 def _ensure_repo_on_path() -> None:
@@ -313,7 +313,7 @@ def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, An
         use_graphql=options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
     )
 
-    import main as _main  # noqa: PLC0415
+    from grocy_scraper_addon import main as _main  # noqa: PLC0415
 
     with _capture_logs(on_emit=on_log):
         result_code: int = _main._discover_products(args)
@@ -381,7 +381,7 @@ def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
     _ensure_repo_on_path()
 
     from grocy_scraper.grocy_client import GrocyClient  # noqa: PLC0415
-    import main as _main  # noqa: PLC0415
+    from grocy_scraper_addon import main as _main  # noqa: PLC0415
 
     grocy = GrocyClient(
         base_url=config.get(CONF_GROCY_URL, ""),
@@ -455,7 +455,7 @@ def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
     _ensure_repo_on_path()
 
     from grocy_scraper.grocy_client import GrocyClient  # noqa: PLC0415
-    import main as _main  # noqa: PLC0415
+    from grocy_scraper_addon import main as _main  # noqa: PLC0415
 
     grocy = GrocyClient(
         base_url=config.get(CONF_GROCY_URL, ""),
