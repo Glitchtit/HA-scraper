@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.12.0
+
+- Remove deprecated standalone CLI (`main.py`); `grocy_scraper_addon/main.py` is now the single entry point
+- Redirect all test and integration imports to `grocy_scraper_addon.main`
+
 ## 1.11.1
 
 - Fix: sync `_discover_single_barcode()` to add-on `main.py`, fixing `AttributeError` when scanning barcodes via Grocy Stock

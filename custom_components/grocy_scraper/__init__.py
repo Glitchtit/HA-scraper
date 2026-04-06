@@ -221,10 +221,7 @@ def _run_discover_sync(config: dict, options: dict) -> dict:
         use_graphql=options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
     )
 
-    # main._discover_products lives in the repo-root main.py alongside this
-    # integration.  Calling it directly (rather than duplicating ~150 lines)
-    # is an intentional trade-off; both files are maintained together.
-    import main as _main  # noqa: PLC0415  (repo root is in sys.path at this point)
+    from grocy_scraper_addon import main as _main  # noqa: PLC0415
 
     result_code: int = _main._discover_products(args)
     return {"success": result_code == 0, "result_code": result_code}

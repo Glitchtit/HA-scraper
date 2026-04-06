@@ -1,6 +1,6 @@
 # grocy_scraper
 
-A Python command-line tool, **[Home Assistant](https://www.home-assistant.io/) custom integration**, and **Home Assistant Supervisor add-on** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes and populates a **[Grocy](https://grocy.info/)** product database through its REST API.
+A **[Home Assistant](https://www.home-assistant.io/) custom integration** and **Home Assistant Supervisor add-on** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes and populates a **[Grocy](https://grocy.info/)** product database through its REST API.
 
 ---
 
@@ -108,7 +108,7 @@ Open the integration's **Configure** button to set:
 - **No Cloudflare bypass needed** when using the default GraphQL backend
 - *(Optional)* A [Barcode Buddy](https://github.com/Forceu/barcodebuddy) instance for the `--discover` feature
 
-## Installation
+## Development setup
 
 ```bash
 git clone https://github.com/Glitchtit/grocy_scraper.git
@@ -116,17 +116,17 @@ cd grocy_scraper
 pip install -r requirements.txt
 ```
 
+> **Note:** The standalone CLI (`main.py`) has been removed. All functionality
+> is available through the Home Assistant add-on and custom integration.
+> The entry point is `grocy_scraper_addon/main.py`.
+
 ---
 
 ## Backends
 
 ### GraphQL (default, recommended)
 
-The mobile app GraphQL API at `https://mobile.k-ruoka.fi/graphql` — **no Cloudflare bypass required**.  Simply install and run:
-
-```bash
-python main.py --store N110 --browse --dry-run
-```
+The mobile app GraphQL API at `https://mobile.k-ruoka.fi/graphql` — **no Cloudflare bypass required**.
 
 **Limitations**: The server enforces an `offset ≤ 1000` hard limit, so a single
 query returns at most 1,100 products.  The `browse()` mode works around this by
@@ -136,11 +136,7 @@ Very large categories (> 1,100 products) will be partially fetched.
 ### kr-api REST (fallback)
 
 The web SPA REST API at `https://www.k-ruoka.fi/kr-api` — requires a Cloudflare
-bypass.  Use `--no-graphql` to activate it:
-
-```bash
-python main.py --store N110 --browse --no-graphql --dry-run
-```
+bypass.  Enable it in the add-on configuration by setting `use_graphql` to `false`.
 
 **Cloudflare bypass** — choose one strategy:
 
@@ -198,141 +194,39 @@ BARCODEBDY_API=your_bbuddy_api_key_here
 
 ---
 
-## Usage
+## Features
 
-### Search for specific products
+All features below are available through the add-on configuration and the HA
+custom integration panel.
 
-```bash
-python main.py --store N110 --query "maito" \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
-```
+### Browse / search the catalogue
 
-### Browse the full catalogue
-
-```bash
-python main.py --store N110 --browse \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
-```
-
-### Limit the number of products
-
-```bash
-python main.py --store N110 --browse --max-products 100 \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
-```
-
-### Dry-run (scrape only, do not write to Grocy)
-
-```bash
-python main.py --store N110 --query "juusto" --dry-run
-```
+Configure the add-on with your `store_id` and Grocy credentials. The add-on
+runs `--browse` automatically on the configured schedule.
 
 ### AI: assign products to locations (--sort)
 
 Uses Gemini AI to read your Grocy product list and available locations, then
 sets each product's storage location to the most appropriate one (e.g. dairy →
-fridge, cleaning supplies → cleaning cabinet).  Requires a Gemini API key.
-
-```bash
-python main.py --sort \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
-    --gemini-api-key MY_GEMINI_KEY
-```
+fridge, cleaning supplies → cleaning cabinet).  Requires a Gemini API key in
+the add-on configuration.
 
 ### AI: set default best-before days (--date)
 
 Uses Gemini AI to estimate typical best-before days for every product in your
 Grocy database and updates the `default_best_before_days` field accordingly.
 
-```bash
-python main.py --date \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
-    --gemini-api-key MY_GEMINI_KEY
-```
-
-You can combine `--sort` and `--date` in a single run, and also combine them
-with `--browse` or `--query` to scrape *and* analyse in one step:
-
-```bash
-python main.py --sort --date --browse --store N110 \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
-    --gemini-api-key MY_GEMINI_KEY \
-    --location-id 2 --quantity-unit-id 2
-```
-
-### Use the kr-api fallback backend
-
-```bash
-python main.py --store N110 --browse --no-graphql \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY
-```
-
 ### Discover products from Barcode Buddy (--discover)
 
 Fetches unknown barcodes from your [Barcode Buddy](https://github.com/Forceu/barcodebuddy)
 instance, searches K-Ruoka for matching products by EAN, creates them in Grocy,
-adds to stock, and removes them from the Barcode Buddy unknown list:
+adds to stock, and removes them from the Barcode Buddy unknown list.
 
-```bash
-python main.py --discover --store N110 \
-    --grocy-url https://grocy.example.com --grocy-key MY_API_KEY \
-    --location-id 2 --quantity-unit-id 2 \
-    --bbuddy-url https://bbuddy.example.com --bbuddy-key MY_BBUDDY_KEY
-```
-
-Or configure via environment variables / `.env`:
+Configure via add-on options or environment variables / `.env`:
 
 ```dotenv
 BARCODEBDY_URL=https://bbuddy.example.com
 BARCODEBDY_API=your_bbuddy_api_key_here
-```
-
-### All options
-
-```
-usage: main.py [-h] (--query TERM | --browse | --discover | --sort | --date)
-               [--store STORE_ID] [--max-products N]
-               [--grocy-url URL] [--grocy-key KEY]
-               [--location-id ID] [--quantity-unit-id ID]
-               [--bbuddy-url URL] [--bbuddy-key KEY]
-               [--gemini-api-key KEY]
-               [--dry-run] [--skip-existing | --no-skip-existing]
-               [--upload-images] [--no-graphql] [--verbose]
-
-options:
-  --query TERM          Search for products matching this term.
-  --browse              Browse the full product catalogue.
-  --discover            Fetch unknown barcodes from Barcode Buddy, search
-                        K-Ruoka, add to Grocy, stock, and remove from BB.
-  --store STORE_ID      K-group store ID (e.g. N110, N137).
-                        Also read from KRUOKA_STORE_ID env var.
-  --max-products N      Stop after scraping N products.
-  --grocy-url URL       Base URL of the Grocy instance.
-                        Also read from GROCY_BASE_URL env var.
-  --grocy-key KEY       Grocy API key.
-                        Also read from GROCY_API_KEY env var.
-  --location-id ID      Grocy location ID to assign to new products.
-  --quantity-unit-id ID Grocy quantity unit ID to assign to new products.
-  --bbuddy-url URL      Base URL of the Barcode Buddy instance.
-                        Also read from BARCODEBDY_URL env var.
-  --bbuddy-key KEY      Barcode Buddy API key.
-                        Also read from BARCODEBDY_API env var.
-  --sort                Use Gemini AI to assign each product in the Grocy
-                        database to the most appropriate available location.
-  --date                Use Gemini AI to set default best-before days for
-                        each product in the Grocy database.
-  --gemini-api-key KEY  Gemini API key for --sort / --date analysis.
-                        Also read from GEMINI_API env var.
-  --gemini-model MODEL  Gemini model to use for --sort / --date analysis
-                        (default: gemini-1.5-flash).
-                        Also read from GEMINI_MODEL env var.
-  --dry-run             Scrape products but do not write to Grocy.
-  --skip-existing       Skip products whose EAN is already in Grocy (default).
-  --no-skip-existing    Re-add products even if their EAN is already in Grocy.
-  --upload-images       Download and upload product images to Grocy.
-  --no-graphql          Use the kr-api REST backend instead of GraphQL.
-                        Requires a Cloudflare bypass (see .env.example).
-  -v, --verbose         Enable DEBUG logging.
 ```
 
 ---
@@ -372,7 +266,6 @@ grocy_scraper/
 │   ├── test_grocy_client.py
 │   ├── test_barcodebuddy_client.py
 │   └── test_main.py
-├── main.py               # CLI entry point
 ├── requirements.txt
 └── .env.example
 ```

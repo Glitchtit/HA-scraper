@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from main import main, parse_args, sync_product, _parse_store_ids
+from grocy_scraper_addon.main import main, parse_args, sync_product, _parse_store_ids
 from grocy_scraper.scraper import Product
 from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
 
@@ -80,22 +80,22 @@ class TestEnvInt:
     """Unit tests for the _env_int helper."""
 
     def test_returns_int(self):
-        from main import _env_int
+        from grocy_scraper_addon.main import _env_int
         with patch.dict("os.environ", {"MY_VAR": "5"}):
             assert _env_int("MY_VAR") == 5
 
     def test_returns_none_when_unset(self):
-        from main import _env_int
+        from grocy_scraper_addon.main import _env_int
         with patch.dict("os.environ", {}, clear=True):
             assert _env_int("MY_VAR") is None
 
     def test_returns_none_for_empty_string(self):
-        from main import _env_int
+        from grocy_scraper_addon.main import _env_int
         with patch.dict("os.environ", {"MY_VAR": ""}):
             assert _env_int("MY_VAR") is None
 
     def test_raises_on_non_numeric(self):
-        from main import _env_int
+        from grocy_scraper_addon.main import _env_int
         with patch.dict("os.environ", {"MY_VAR": "abc"}):
             with pytest.raises(ValueError):
                 _env_int("MY_VAR")
@@ -172,7 +172,7 @@ class TestSyncProduct:
         )
         assert result is False
 
-    @patch("main.requests.get")
+    @patch("grocy_scraper_addon.main.requests.get")
     def test_uploads_image_when_enabled(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.content = b"\xff\xd8image-data"
@@ -202,7 +202,7 @@ class TestSyncProduct:
         )
         grocy.upload_product_image.assert_not_called()
 
-    @patch("main.requests.get")
+    @patch("grocy_scraper_addon.main.requests.get")
     def test_image_download_failure_does_not_break_sync(self, mock_get):
         import requests as req
         mock_get.side_effect = req.RequestException("timeout")
@@ -226,17 +226,17 @@ class TestSyncProduct:
 
 class TestImageExtension:
     def test_known_mime_types(self):
-        from main import _image_extension
+        from grocy_scraper_addon.main import _image_extension
         assert _image_extension("image/jpeg", "") == ".jpg"
         assert _image_extension("image/png", "") == ".png"
         assert _image_extension("image/webp", "") == ".webp"
 
     def test_unknown_mime_falls_back_to_url(self):
-        from main import _image_extension
+        from grocy_scraper_addon.main import _image_extension
         assert _image_extension("application/octet-stream", "https://example.com/img.png?w=100") == ".png"
 
     def test_unknown_mime_no_ext_defaults_to_jpg(self):
-        from main import _image_extension
+        from grocy_scraper_addon.main import _image_extension
         assert _image_extension("application/octet-stream", "https://example.com/img") == ".jpg"
 
 
@@ -254,7 +254,7 @@ class TestMainDryRun:
             Product(name="Maito", ean="111"),
             Product(name="Kerma", ean="222"),
         ]
-        with patch("main.KRuokaScraper") as MockScraper:
+        with patch("grocy_scraper_addon.main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter(products)
             rc = main(["--store", "N110", "--browse", "--dry-run"])
@@ -266,7 +266,7 @@ class TestMainDryRun:
 
     def test_dry_run_passes_use_graphql_true(self, capsys):
         """By default, KRuokaScraper is constructed with use_graphql=True."""
-        with patch("main.KRuokaScraper") as MockScraper:
+        with patch("grocy_scraper_addon.main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter([])
             main(["--store", "N110", "--browse", "--dry-run"])
@@ -276,7 +276,7 @@ class TestMainDryRun:
 
     def test_no_graphql_flag_passes_false(self, capsys):
         """--no-graphql passes use_graphql=False to KRuokaScraper."""
-        with patch("main.KRuokaScraper") as MockScraper:
+        with patch("grocy_scraper_addon.main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter([])
             main(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
@@ -360,7 +360,7 @@ class TestParseArgsAIFlags:
         assert args.gemini_api_key == "env-key-123"
 
     def test_gemini_model_default(self):
-        from main import _GEMINI_DEFAULT_MODEL
+        from grocy_scraper_addon.main import _GEMINI_DEFAULT_MODEL
         args = parse_args([
             "--sort",
             "--grocy-url", "https://grocy.example.com",
@@ -413,26 +413,26 @@ class TestValidateArgsAI:
         return Namespace(**defaults)
 
     def test_valid_sort_passes(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_ai_args()) == 0
 
     def test_missing_gemini_key_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         args = self._base_ai_args(gemini_api_key="")
         assert _validate_args(args) == 1
 
     def test_missing_grocy_url_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         args = self._base_ai_args(grocy_url="")
         assert _validate_args(args) == 1
 
     def test_missing_grocy_key_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         args = self._base_ai_args(grocy_key="")
         assert _validate_args(args) == 1
 
     def test_no_mode_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         from argparse import Namespace
         args = Namespace(
             sort=False, date=False, group=False, optimize=False,
@@ -445,7 +445,7 @@ class TestValidateArgsAI:
         assert _validate_args(args) == 1
 
     def test_dry_run_alone_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         from argparse import Namespace
         args = Namespace(
             sort=False, date=False, group=False, optimize=False,
@@ -463,9 +463,9 @@ class TestValidateArgsAI:
 # ---------------------------------------------------------------------------
 
 class TestCallGemini:
-    @patch("main.requests.post")
+    @patch("grocy_scraper_addon.main.requests.post")
     def test_returns_text_from_response(self, mock_post):
-        from main import _call_gemini
+        from grocy_scraper_addon.main import _call_gemini
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "candidates": [{"content": {"parts": [{"text": '{"1": 2}'}]}}]
@@ -477,9 +477,9 @@ class TestCallGemini:
         _, kwargs = mock_post.call_args
         assert kwargs["params"]["key"] == "api-key"
 
-    @patch("main.requests.post")
+    @patch("grocy_scraper_addon.main.requests.post")
     def test_uses_specified_model_in_url(self, mock_post):
-        from main import _call_gemini
+        from grocy_scraper_addon.main import _call_gemini
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
             "candidates": [{"content": {"parts": [{"text": "{}"}]}}]
@@ -490,19 +490,19 @@ class TestCallGemini:
         url = mock_post.call_args[0][0]
         assert "gemini-2.0-flash" in url
 
-    @patch("main.requests.post")
+    @patch("grocy_scraper_addon.main.requests.post")
     def test_http_error_raises(self, mock_post):
         import requests as req
-        from main import _call_gemini
+        from grocy_scraper_addon.main import _call_gemini
         mock_resp = MagicMock(status_code=400)
         mock_post.return_value = mock_resp
         mock_resp.raise_for_status.side_effect = req.HTTPError(response=mock_resp)
         with pytest.raises(GrocyAPIError, match="Gemini API error"):
             _call_gemini("prompt", "bad-key")
 
-    @patch("main.requests.post")
+    @patch("grocy_scraper_addon.main.requests.post")
     def test_unexpected_format_raises(self, mock_post):
-        from main import _call_gemini
+        from grocy_scraper_addon.main import _call_gemini
         mock_resp = MagicMock()
         mock_resp.json.return_value = {}  # missing 'candidates'
         mock_resp.raise_for_status.return_value = None
@@ -512,60 +512,60 @@ class TestCallGemini:
 
 
 class TestCallGeminiJson:
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_returns_parsed_json(self, mock_gemini, _mock_sleep):
-        from main import _call_gemini_json
+        from grocy_scraper_addon.main import _call_gemini_json
         mock_gemini.return_value = '{"1": 2}'
         result = _call_gemini_json("prompt", "key")
         assert result == {"1": 2}
         _mock_sleep.assert_not_called()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_sanitizes_control_characters(self, mock_gemini, _mock_sleep):
-        from main import _call_gemini_json
+        from grocy_scraper_addon.main import _call_gemini_json
         mock_gemini.return_value = '{"1":\x02 2}'
         result = _call_gemini_json("prompt", "key")
         assert result == {"1": 2}
         _mock_sleep.assert_not_called()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_retries_on_json_error(self, mock_gemini, mock_sleep):
-        from main import _call_gemini_json
+        from grocy_scraper_addon.main import _call_gemini_json
         mock_gemini.side_effect = ["not-json", '{"1": 2}']
         result = _call_gemini_json("prompt", "key")
         assert result == {"1": 2}
         assert mock_gemini.call_count == 2
         mock_sleep.assert_called_once()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_retries_on_api_error(self, mock_gemini, mock_sleep):
-        from main import _call_gemini_json
+        from grocy_scraper_addon.main import _call_gemini_json
         mock_gemini.side_effect = [GrocyAPIError("HTML error"), '{"1": 2}']
         result = _call_gemini_json("prompt", "key")
         assert result == {"1": 2}
         assert mock_gemini.call_count == 2
         mock_sleep.assert_called_once()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_raises_after_max_retries(self, mock_gemini, mock_sleep):
         import json as _json
-        from main import _call_gemini_json
+        from grocy_scraper_addon.main import _call_gemini_json
         mock_gemini.return_value = "not-json"
         with pytest.raises(_json.JSONDecodeError):
             _call_gemini_json("prompt", "key", max_retries=3)
         assert mock_gemini.call_count == 3
         assert mock_sleep.call_count == 2
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_exponential_backoff(self, mock_gemini, mock_sleep):
         import json as _json
-        from main import _call_gemini_json
+        from grocy_scraper_addon.main import _call_gemini_json
         mock_gemini.return_value = "bad"
         with pytest.raises(_json.JSONDecodeError):
             _call_gemini_json("prompt", "key", max_retries=3)
@@ -587,9 +587,9 @@ class TestAiSortProducts:
         g.transfer_stock.return_value = None
         return g
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_updates_products_with_ai_locations(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}, {"id": 2, "name": "Pesuaine"}]
         locations = [{"id": 2, "name": "Fridge"}, {"id": 3, "name": "Cleaning Cabinet"}]
         grocy = self._make_grocy(products, locations)
@@ -600,9 +600,9 @@ class TestAiSortProducts:
         grocy.update_product.assert_any_call(1, location_id=2)
         grocy.update_product.assert_any_call(2, location_id=3)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_transfers_stock_to_new_location(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
@@ -615,9 +615,9 @@ class TestAiSortProducts:
         assert result == 1
         grocy.transfer_stock.assert_called_once_with(1, 3.0, 5, 2)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_skips_transfer_when_stock_already_at_target(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}]
         grocy = self._make_grocy(products, locations)
@@ -629,9 +629,9 @@ class TestAiSortProducts:
         _ai_sort_products(grocy, "gemini-key")
         grocy.transfer_stock.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_transfers_from_multiple_locations(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}, {"id": 6, "name": "Counter"}]
         grocy = self._make_grocy(products, locations)
@@ -647,9 +647,9 @@ class TestAiSortProducts:
         grocy.transfer_stock.assert_any_call(1, 2.0, 5, 2)
         grocy.transfer_stock.assert_any_call(1, 1.0, 6, 2)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_transfer_error_does_not_abort(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}, {"id": 2, "name": "Pasta"}]
         locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
@@ -664,9 +664,9 @@ class TestAiSortProducts:
         assert result == 2
         assert grocy.transfer_stock.call_count == 2
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_stock_locations_error_continues(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}, {"id": 2, "name": "Pasta"}]
         locations = [{"id": 2, "name": "Fridge"}, {"id": 5, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
@@ -680,18 +680,18 @@ class TestAiSortProducts:
         assert result == 2
         grocy.transfer_stock.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_no_locations_returns_zero(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_locations.return_value = []
         result = _ai_sort_products(grocy, "key")
         assert result == 0
         mock_gemini.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_no_products_returns_zero(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_locations.return_value = [{"id": 2, "name": "Fridge"}]
         grocy.get_all_products.return_value = []
@@ -699,10 +699,10 @@ class TestAiSortProducts:
         assert result == 0
         mock_gemini.assert_not_called()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_invalid_json_skips_batch(self, mock_gemini, _mock_sleep):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}]
         grocy = self._make_grocy(products, locations)
@@ -712,9 +712,9 @@ class TestAiSortProducts:
         assert result == 0
         grocy.update_product.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_grocy_error_on_locations_returns_zero(self, mock_gemini):
-        from main import _ai_sort_products
+        from grocy_scraper_addon.main import _ai_sort_products
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_locations.side_effect = GrocyAPIError("fail")
         result = _ai_sort_products(grocy, "key")
@@ -733,9 +733,9 @@ class TestAiAssignDueDates:
         g.update_product.return_value = None
         return g
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_updates_products_with_ai_dates(self, mock_gemini):
-        from main import _ai_assign_due_dates
+        from grocy_scraper_addon.main import _ai_assign_due_dates
         products = [{"id": 1, "name": "Maito"}, {"id": 5, "name": "Pasta"}]
         grocy = self._make_grocy(products)
         mock_gemini.return_value = '{"1": 14, "5": 1095}'
@@ -745,19 +745,19 @@ class TestAiAssignDueDates:
         grocy.update_product.assert_any_call(1, default_best_before_days=14)
         grocy.update_product.assert_any_call(5, default_best_before_days=1095)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_no_products_returns_zero(self, mock_gemini):
-        from main import _ai_assign_due_dates
+        from grocy_scraper_addon.main import _ai_assign_due_dates
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_all_products.return_value = []
         result = _ai_assign_due_dates(grocy, "key")
         assert result == 0
         mock_gemini.assert_not_called()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_invalid_json_skips_batch(self, mock_gemini, _mock_sleep):
-        from main import _ai_assign_due_dates
+        from grocy_scraper_addon.main import _ai_assign_due_dates
         products = [{"id": 1, "name": "Maito"}]
         grocy = self._make_grocy(products)
         mock_gemini.return_value = "not-json"
@@ -766,9 +766,9 @@ class TestAiAssignDueDates:
         assert result == 0
         grocy.update_product.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_grocy_error_returns_zero(self, mock_gemini):
-        from main import _ai_assign_due_dates
+        from grocy_scraper_addon.main import _ai_assign_due_dates
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_all_products.side_effect = GrocyAPIError("fail")
         result = _ai_assign_due_dates(grocy, "key")
@@ -797,9 +797,9 @@ class TestAiGroupProducts:
         )
         return g
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_groups_products_under_new_parent(self, mock_gemini):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 1, "name": "Pirkka kevytmaito 1l"},
             {"id": 2, "name": "Valio kevytmaito 1l"},
@@ -834,9 +834,9 @@ class TestAiGroupProducts:
             2, parent_product_id=100, product_group_id=self._PARENT_GROUP_ID,
         )
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_reuses_existing_parent_product(self, mock_gemini):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 10, "name": "Maito"},  # Already exists as potential parent.
             {"id": 11, "name": "Pirkka kevytmaito 1l"},
@@ -860,9 +860,9 @@ class TestAiGroupProducts:
             product_group_id=self._GROUP_MASTER_ID,
         )
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_skips_already_grouped_products(self, mock_gemini):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 1, "name": "Pirkka maito", "parent_product_id": 99},
             {"id": 2, "name": "Valio maito"},
@@ -878,19 +878,19 @@ class TestAiGroupProducts:
         assert "Valio maito" in prompt_text
         assert "Pirkka maito" not in prompt_text
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_no_products_returns_zero(self, mock_gemini):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_all_products.return_value = []
         result = _ai_group_products(grocy, "key")
         assert result == 0
         mock_gemini.assert_not_called()
 
-    @patch("main.time.sleep")
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main.time.sleep")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_invalid_json_skips_batch(self, mock_gemini, _mock_sleep):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [{"id": 1, "name": "Maito"}]
         grocy = self._make_grocy(products)
         mock_gemini.return_value = "not-json"
@@ -899,19 +899,19 @@ class TestAiGroupProducts:
         assert result == 0
         grocy.update_product.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_grocy_error_returns_zero(self, mock_gemini):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_all_products.side_effect = GrocyAPIError("fail")
         result = _ai_group_products(grocy, "key")
         assert result == 0
         mock_gemini.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_does_not_set_product_as_own_parent(self, mock_gemini):
         """If Gemini maps a product to a parent with the same name, skip it."""
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [{"id": 5, "name": "Maito"}]
         grocy = self._make_grocy(products)
         # Gemini says product 5 should be under "Maito", but that IS product 5.
@@ -924,9 +924,9 @@ class TestAiGroupProducts:
                  if "parent_product_id" in (c.kwargs or {})]
         assert len(calls) == 0
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_passes_location_and_quantity_unit(self, mock_gemini):
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [{"id": 1, "name": "Pirkka maito"}]
         grocy = self._make_grocy(products)
         mock_gemini.return_value = '{"1": "Maito"}'
@@ -936,10 +936,10 @@ class TestAiGroupProducts:
             "Maito", location_id=5, quantity_unit_id=3,
         )
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_group_without_product_group_on_ensure_failure(self, mock_gemini):
         """If ensure_product_group fails, grouping still works without group IDs."""
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 1, "name": "Pirkka maito"},
             {"id": 2, "name": "Valio maito"},
@@ -960,11 +960,11 @@ class TestAiGroupProducts:
         grocy.update_product.assert_any_call(1, parent_product_id=100)
         grocy.update_product.assert_any_call(2, parent_product_id=100)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_skips_products_that_are_already_parents(self, mock_gemini):
         """Products that already have sub-products must not be assigned a
         parent – that would create unsupported 2-level nesting in Grocy."""
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 10, "name": "Sipuli"},           # already a parent
             {"id": 11, "name": "Punasipuli", "parent_product_id": 10},
@@ -982,11 +982,11 @@ class TestAiGroupProducts:
         assert "Sipuli" not in prompt_text
         assert "Juusto" in prompt_text
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_skips_existing_parent_that_is_already_a_child(self, mock_gemini):
         """If an existing product matching the parent name is already a child
         of another product, it must not be reused as a parent."""
-        from main import _ai_group_products
+        from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 1, "name": "Sipuli", "parent_product_id": 99},
             {"id": 2, "name": "Valkosipuli"},
@@ -1012,8 +1012,8 @@ class TestAiGroupProducts:
 # ---------------------------------------------------------------------------
 
 class TestMainAIMode:
-    @patch("main._ai_sort_products")
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_sort_products")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_sort_mode_calls_ai_sort(self, MockGrocy, mock_sort):
         mock_sort.return_value = 3
         rc = main([
@@ -1025,8 +1025,8 @@ class TestMainAIMode:
         assert rc == 0
         mock_sort.assert_called_once()
 
-    @patch("main._ai_assign_due_dates")
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_assign_due_dates")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_date_mode_calls_ai_dates(self, MockGrocy, mock_date):
         mock_date.return_value = 5
         rc = main([
@@ -1038,9 +1038,9 @@ class TestMainAIMode:
         assert rc == 0
         mock_date.assert_called_once()
 
-    @patch("main._ai_assign_due_dates")
-    @patch("main._ai_sort_products")
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_assign_due_dates")
+    @patch("grocy_scraper_addon.main._ai_sort_products")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_sort_and_date_together(self, MockGrocy, mock_sort, mock_date):
         mock_sort.return_value = 2
         mock_date.return_value = 2
@@ -1062,8 +1062,8 @@ class TestMainAIMode:
         ])
         assert rc == 1
 
-    @patch("main._ai_group_products")
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_group_products")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_group_mode_calls_ai_group(self, MockGrocy, mock_group):
         mock_group.return_value = 4
         rc = main([
@@ -1079,9 +1079,9 @@ class TestMainAIMode:
 class TestDiscoverChainsAI:
     """Discover mode should run optimize when a Gemini key is set."""
 
-    @patch("main._ai_optimize_products")
-    @patch("main._discover_products", return_value=(0, [42, 99]))
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_optimize_products")
+    @patch("grocy_scraper_addon.main._discover_products", return_value=(0, [42, 99]))
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_discover_chains_optimize(
         self, MockGrocy, mock_discover, mock_optimize,
     ):
@@ -1104,8 +1104,8 @@ class TestDiscoverChainsAI:
         _, opt_kwargs = mock_optimize.call_args
         assert opt_kwargs["product_ids"] == [42, 99]
 
-    @patch("main._ai_optimize_products")
-    @patch("main._discover_products", return_value=(0, [42]))
+    @patch("grocy_scraper_addon.main._ai_optimize_products")
+    @patch("grocy_scraper_addon.main._discover_products", return_value=(0, [42]))
     def test_discover_no_gemini_key_skips_ai(
         self, mock_discover, mock_optimize,
     ):
@@ -1125,8 +1125,8 @@ class TestDiscoverChainsAI:
         mock_discover.assert_called_once()
         mock_optimize.assert_not_called()
 
-    @patch("main._ai_optimize_products")
-    @patch("main._discover_products", return_value=(1, []))
+    @patch("grocy_scraper_addon.main._ai_optimize_products")
+    @patch("grocy_scraper_addon.main._discover_products", return_value=(1, []))
     def test_discover_failure_skips_ai(
         self, mock_discover, mock_optimize,
     ):
@@ -1146,9 +1146,9 @@ class TestDiscoverChainsAI:
         mock_discover.assert_called_once()
         mock_optimize.assert_not_called()
 
-    @patch("main._ai_optimize_products")
-    @patch("main._discover_products", return_value=(0, []))
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_optimize_products")
+    @patch("grocy_scraper_addon.main._discover_products", return_value=(0, []))
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_discover_no_new_products_skips_ai(
         self, MockGrocy, mock_discover, mock_optimize,
     ):
@@ -1217,19 +1217,19 @@ class TestValidateArgsDeleteAll:
         return Namespace(**defaults)
 
     def test_valid_delete_all_passes(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_args()) == 0
 
     def test_missing_grocy_url_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_args(grocy_url="")) == 1
 
     def test_missing_grocy_key_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_args(grocy_key="")) == 1
 
     def test_store_not_required(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_args(store="")) == 0
 
 
@@ -1238,17 +1238,17 @@ class TestValidateArgsDeleteAll:
 # ---------------------------------------------------------------------------
 
 class TestDeleteAllProducts:
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_empty_database_returns_0(self, MockGrocy):
-        from main import _delete_all_products
+        from grocy_scraper_addon.main import _delete_all_products
         grocy = MockGrocy.return_value
         grocy.get_all_products.return_value = []
         assert _delete_all_products(grocy) == 0
         grocy.delete_product.assert_not_called()
 
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_deletes_all_products(self, MockGrocy):
-        from main import _delete_all_products
+        from grocy_scraper_addon.main import _delete_all_products
         grocy = MockGrocy.return_value
         grocy.get_all_products.return_value = [
             {"id": 1, "name": "Milk"},
@@ -1261,16 +1261,16 @@ class TestDeleteAllProducts:
         grocy.delete_product.assert_any_call(2)
         grocy.delete_product.assert_any_call(3)
 
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_fetch_error_returns_1(self, MockGrocy):
-        from main import _delete_all_products
+        from grocy_scraper_addon.main import _delete_all_products
         grocy = MockGrocy.return_value
         grocy.get_all_products.side_effect = GrocyAPIError("connection refused")
         assert _delete_all_products(grocy) == 1
 
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_partial_failure_returns_1(self, MockGrocy):
-        from main import _delete_all_products
+        from grocy_scraper_addon.main import _delete_all_products
         grocy = MockGrocy.return_value
         grocy.get_all_products.return_value = [
             {"id": 1, "name": "Milk"},
@@ -1384,39 +1384,39 @@ class TestValidateArgsDiscover:
         return Namespace(**defaults)
 
     def test_valid_discover_passes(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args()) == 0
 
     def test_missing_store_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(store="")) == 1
 
     def test_missing_grocy_url_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(grocy_url="")) == 1
 
     def test_missing_grocy_key_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(grocy_key="")) == 1
 
     def test_missing_bbuddy_url_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(bbuddy_url="")) == 1
 
     def test_missing_bbuddy_user_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(bbuddy_user="")) == 1
 
     def test_missing_bbuddy_password_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(bbuddy_password="")) == 1
 
     def test_missing_location_id_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(location_id=None)) == 1
 
     def test_missing_quantity_unit_id_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(quantity_unit_id=None)) == 1
 
 
@@ -1425,14 +1425,14 @@ class TestValidateArgsDiscover:
 # ---------------------------------------------------------------------------
 
 class TestDiscoverProducts:
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_no_pending_returns_0(self, MockBB, MockGrocy, MockScraper):
         MockBB.return_value.get_pending_barcodes.return_value = []
         MockGrocy.return_value.get_all_barcodes.return_value = []
 
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
         args = Namespace(
             bbuddy_url="https://bb.example.com",
@@ -1451,12 +1451,12 @@ class TestDiscoverProducts:
         assert rc == 0
         assert discovered_ids == []
 
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_unknown_barcode_searched_on_kruoka(self, MockBB, MockGrocy, MockScraper):
         from grocy_scraper.barcodebuddy_client import PendingBarcode
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
@@ -1499,13 +1499,13 @@ class TestDiscoverProducts:
         grocy_instance.add_stock.assert_called_once_with(99, amount=1.0)
         bb_instance.delete_barcode.assert_called_once_with("42")
 
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_new_barcode_kruoka_overrides_bb_name(self, MockBB, MockGrocy, MockScraper):
         """K-Ruoka result takes priority over Barcode Buddy name."""
         from grocy_scraper.barcodebuddy_client import PendingBarcode
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
@@ -1548,14 +1548,14 @@ class TestDiscoverProducts:
         grocy_instance.add_stock.assert_called_once_with(50, amount=2.0)
         bb_instance.delete_barcode.assert_called_once_with("10")
 
-    @patch("main.skaupat_lookup")
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.skaupat_lookup")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_new_barcode_falls_back_to_bb_name(self, MockBB, MockGrocy, MockScraper, mock_sk):
         """When K-Ruoka and S-kaupat have no match, fall back to BB name."""
         from grocy_scraper.barcodebuddy_client import PendingBarcode
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
@@ -1597,13 +1597,13 @@ class TestDiscoverProducts:
         grocy_instance.create_product.assert_called_once()
         bb_instance.delete_barcode.assert_called_once_with("10")
 
-    @patch("main.skaupat_lookup")
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.skaupat_lookup")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_not_found_on_kruoka_or_skaupat_skips(self, MockBB, MockGrocy, MockScraper, mock_sk):
         from grocy_scraper.barcodebuddy_client import PendingBarcode
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
@@ -1638,15 +1638,15 @@ class TestDiscoverProducts:
         bb_instance.delete_barcode.assert_not_called()
         mock_sk.assert_called_once_with("0000000000000")
 
-    @patch("main.skaupat_lookup")
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.skaupat_lookup")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_skaupat_fallback_creates_product(self, MockBB, MockGrocy, MockScraper, mock_sk):
         """When K-Ruoka has no match, S-kaupat result is used."""
         from grocy_scraper.barcodebuddy_client import PendingBarcode
         from grocy_scraper.skaupat_client import SKaupatProduct
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
 
         bb_instance = MockBB.return_value
@@ -1697,12 +1697,12 @@ class TestDiscoverProducts:
         grocy_instance.add_stock.assert_called_once_with(88, amount=1.0)
         bb_instance.delete_barcode.assert_called_once_with("77")
 
-    @patch("main.KRuokaScraper")
-    @patch("main.GrocyClient")
-    @patch("main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
     def test_bb_fetch_error_returns_1(self, MockBB, MockGrocy, MockScraper):
         from grocy_scraper.barcodebuddy_client import BarcodeBuddyError
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
         from argparse import Namespace
 
         MockGrocy.return_value.get_all_barcodes.return_value = []
@@ -1760,7 +1760,7 @@ class TestMultiStoreFallbackRunScraper:
     def test_first_store_succeeds(self, capsys):
         """When the first store works, only one scraper is created."""
         products = [Product(name="Maito", ean="111")]
-        with patch("main.KRuokaScraper") as MockScraper:
+        with patch("grocy_scraper_addon.main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter(products)
             rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
@@ -1788,7 +1788,7 @@ class TestMultiStoreFallbackRunScraper:
                 instance.browse.return_value = iter(products)
             return instance
 
-        with patch("main.KRuokaScraper", side_effect=make_scraper):
+        with patch("grocy_scraper_addon.main.KRuokaScraper", side_effect=make_scraper):
             rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
 
         assert rc == 0
@@ -1797,7 +1797,7 @@ class TestMultiStoreFallbackRunScraper:
 
     def test_all_stores_fail_raises(self, capsys):
         """When all stores fail, the last error is raised."""
-        with patch("main.KRuokaScraper") as MockScraper:
+        with patch("grocy_scraper_addon.main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.side_effect = RuntimeError("all fail")
             with pytest.raises(RuntimeError, match="all fail"):
@@ -1806,7 +1806,7 @@ class TestMultiStoreFallbackRunScraper:
     def test_single_store_still_works(self, capsys):
         """Single store (no comma) still works as before."""
         products = [Product(name="Kerma", ean="222")]
-        with patch("main.KRuokaScraper") as MockScraper:
+        with patch("grocy_scraper_addon.main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.search.return_value = iter(products)
             rc = main(["--store", "N110", "--query", "kerma", "--dry-run"])
@@ -1823,14 +1823,14 @@ class TestMultiStoreFallbackRunScraper:
 class TestMultiStoreDiscoverFallback:
     """Test that discover tries multiple stores for each barcode."""
 
-    @patch("main.skaupat_lookup", return_value=None)
-    @patch("main.BarcodeBuddyClient")
-    @patch("main.GrocyClient")
-    @patch("main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.skaupat_lookup", return_value=None)
+    @patch("grocy_scraper_addon.main.BarcodeBuddyClient")
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
     def test_discover_tries_second_store(
         self, MockScraper, MockGrocy, MockBBuddy, mock_skaupat,
     ):
-        from main import _discover_products
+        from grocy_scraper_addon.main import _discover_products
 
         # Set up Barcode Buddy to return one pending barcode.
         bb_instance = MockBBuddy.return_value
@@ -1897,13 +1897,13 @@ class TestMultiStoreDiscoverFallback:
 class TestMultiStoreUpdateFallback:
     """Test that update tries multiple stores for each barcode."""
 
-    @patch("main.skaupat_lookup", return_value=None)
-    @patch("main.GrocyClient")
-    @patch("main.KRuokaScraper")
+    @patch("grocy_scraper_addon.main.skaupat_lookup", return_value=None)
+    @patch("grocy_scraper_addon.main.GrocyClient")
+    @patch("grocy_scraper_addon.main.KRuokaScraper")
     def test_update_tries_second_store(
         self, MockScraper, MockGrocy, mock_skaupat,
     ):
-        from main import _update_products
+        from grocy_scraper_addon.main import _update_products
 
         grocy_instance = MockGrocy.return_value
         grocy_instance.get_all_products.return_value = [
@@ -1965,7 +1965,7 @@ class TestParseArgsOptimize:
 
 class TestValidateArgsOptimize:
     def test_valid_optimize_passes(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         args = Namespace(
             sort=False, date=False, group=False, optimize=True,
             grocy_url="https://grocy.example.com",
@@ -1979,7 +1979,7 @@ class TestValidateArgsOptimize:
         assert _validate_args(args) == 0
 
     def test_optimize_missing_gemini_key_fails(self):
-        from main import _validate_args
+        from grocy_scraper_addon.main import _validate_args
         args = Namespace(
             sort=False, date=False, group=False, optimize=True,
             grocy_url="https://grocy.example.com",
@@ -1994,8 +1994,8 @@ class TestValidateArgsOptimize:
 
 
 class TestMainOptimizeMode:
-    @patch("main._ai_optimize_products")
-    @patch("main.GrocyClient")
+    @patch("grocy_scraper_addon.main._ai_optimize_products")
+    @patch("grocy_scraper_addon.main.GrocyClient")
     def test_optimize_mode_calls_ai_optimize(self, MockGrocy, mock_optimize):
         mock_optimize.return_value = 5
         rc = main([
@@ -2024,9 +2024,9 @@ class TestAiOptimizeProducts:
         g.delete_product_image.return_value = None
         return g
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_sort_date_group_in_single_pass(self, mock_gemini):
-        from main import _ai_optimize_products
+        from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Maito 1L"},
             {"id": 2, "name": "Pesuaine"},
@@ -2049,9 +2049,9 @@ class TestAiOptimizeProducts:
         grocy.update_product.assert_any_call(1, default_best_before_days=14)
         grocy.update_product.assert_any_call(2, default_best_before_days=1095)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_pack_detection_moves_barcode_and_deletes(self, mock_gemini):
-        from main import _ai_optimize_products
+        from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Red Bull"},
             {"id": 2, "name": "Red Bull 4-pack"},
@@ -2075,17 +2075,17 @@ class TestAiOptimizeProducts:
         # Pack product deleted
         grocy.delete_product.assert_called_once_with(2)
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_no_products_returns_zero(self, mock_gemini):
-        from main import _ai_optimize_products
+        from grocy_scraper_addon.main import _ai_optimize_products
         grocy = self._make_grocy([], [])
         result = _ai_optimize_products(grocy, "gemini-key")
         assert result == 0
         mock_gemini.assert_not_called()
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_product_ids_filter(self, mock_gemini):
-        from main import _ai_optimize_products
+        from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Maito"},
             {"id": 2, "name": "Leipä"},
@@ -2108,9 +2108,9 @@ class TestAiOptimizeProducts:
         assert "Leipä" not in prompt
         assert "Voi" not in prompt
 
-    @patch("main._call_gemini")
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_gemini_failure_continues(self, mock_gemini):
-        from main import _ai_optimize_products
+        from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}]
         grocy = self._make_grocy(products, locations)
