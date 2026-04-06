@@ -46,6 +46,16 @@ if bashio::config.has_value 'searxng_url'; then
     SEARXNG_URL=$(bashio::config 'searxng_url')
 fi
 
+# ── Optional Gemini AI options ────────────────────────────────────────────────
+if bashio::config.has_value 'gemini_api_key'; then
+    export GEMINI_API
+    GEMINI_API=$(bashio::config 'gemini_api_key')
+fi
+if bashio::config.has_value 'gemini_model'; then
+    export GEMINI_MODEL
+    GEMINI_MODEL=$(bashio::config 'gemini_model')
+fi
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 IMAGES_FLAG=""
 if ! bashio::config.true 'upload_images'; then
