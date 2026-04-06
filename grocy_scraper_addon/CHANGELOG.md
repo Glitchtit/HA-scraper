@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.13.1
+
+- Fix: periodic discover (s6 loop) now exports `GEMINI_API` and `GEMINI_MODEL` env vars so the AI optimize step runs automatically on newly discovered products
+
 ## 1.13.0
 
 - SearXNG fallback: when a product EAN is not found via K-Ruoka or S-kaupat, the add-on can now search a self-hosted SearXNG instance to discover product info from web results (especially k-ruoka.fi product pages). Configure via the new `searxng_url` add-on option.
