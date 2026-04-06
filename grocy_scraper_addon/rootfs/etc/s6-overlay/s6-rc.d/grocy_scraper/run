@@ -41,6 +41,11 @@ if bashio::config.has_value 'bbuddy_password'; then
     BARCODEBDY_PASSWORD=$(bashio::config 'bbuddy_password')
 fi
 
+if bashio::config.has_value 'searxng_url'; then
+    export SEARXNG_URL
+    SEARXNG_URL=$(bashio::config 'searxng_url')
+fi
+
 # ── Feature flags ─────────────────────────────────────────────────────────────
 IMAGES_FLAG=""
 if ! bashio::config.true 'upload_images'; then
