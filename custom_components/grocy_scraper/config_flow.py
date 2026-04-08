@@ -23,6 +23,7 @@ from .const import (
     CONF_USE_GRAPHQL,
     CONF_GEMINI_API_KEY,
     CONF_GEMINI_MODEL,
+    CONF_GEMINI_MODEL_OPTIMIZE,
     DEFAULT_DISCOVER_INTERVAL,
     DEFAULT_UPLOAD_IMAGES,
     DEFAULT_USE_GRAPHQL,
@@ -134,6 +135,10 @@ class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_GEMINI_MODEL,
                     default=opts.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL),
+                ): str,
+                vol.Optional(
+                    CONF_GEMINI_MODEL_OPTIMIZE,
+                    default=opts.get(CONF_GEMINI_MODEL_OPTIMIZE, ""),
                 ): str,
             }
         )

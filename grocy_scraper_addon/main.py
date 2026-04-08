@@ -292,6 +292,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--gemini-model-optimize",
+        default=os.environ.get("GEMINI_MODEL_OPTIMIZE", ""),
+        metavar="MODEL",
+        help=(
+            "Optional stronger Gemini model to use for full --optimize and "
+            "--group operations (clean-slate mode).  When empty, falls back "
+            "to --gemini-model.  Also read from the GEMINI_MODEL_OPTIMIZE "
+            "environment variable."
+        ),
+    )
+    parser.add_argument(
         "--searxng-url",
         default=os.environ.get("SEARXNG_URL", ""),
         metavar="URL",
@@ -917,6 +928,7 @@ def _ai_group_products(
     gemini_api_key: str,
     model: str = _GEMINI_DEFAULT_MODEL,
     *,
+    optimize_model: str = "",
     location_id: int | None = None,
     quantity_unit_id: int | None = None,
     product_ids: list[int] | None = None,
@@ -943,6 +955,7 @@ def _ai_group_products(
     Returns the number of products updated.
     """
     full_mode = product_ids is None
+    effective_model = (optimize_model or model) if full_mode else model
 
     # Incremental mode: deduplicate parents first.
     dedup_map: dict[str, str] = {}
@@ -1097,12 +1110,19 @@ def _ai_group_products(
             '"Suklaa" for chocolate, "Sipsi" for chips). '
             "If an existing parent product name fits, you MUST use that "
             "exact name.\n\n"
-            '2. "category" — a BROAD product category in Finnish that covers '
-            "many related parents. Categories should be few and general "
-            '(e.g. "Mausteet" covers all spices like Mustapippuri, Oregano, '
-            'Timjami; "Makeiset" covers all candy and chocolate; '
-            '"Maitotaloustuotteet" covers milk, cream, yogurt; '
-            '"Juomat" covers all drinks). '
+            '2. "category" — a product category in Finnish at a practical, '
+            "kitchen-shelf level of detail. Think about how a home cook "
+            "would organise their kitchen — not industrial taxonomy.\n"
+            "  - Keep a single broad category for truly homogeneous groups "
+            '(e.g. "Mausteet" for all spices, "Makeiset" for all candy, '
+            '"Siivous" for all cleaning products).\n'
+            "  - Split large heterogeneous groups into meaningful sub-categories "
+            "that a user would recognise as distinct: dairy should become "
+            '"Maito", "Voi", "Juusto", "Kerma", "Jogurtti"; '
+            'drinks should become "Mehu", "Limu", "Energiajuoma", "Kahvi", '
+            '"Tee"; meat should become "Nauta", "Sika", "Kana", "Kala".\n'
+            "  - The test is: would a user browsing their stock find it helpful "
+            "to see these products on the same shelf? If not, split.\n"
             "If an existing category name fits, you MUST use that "
             "exact name.\n\n"
             "Group ALL grocery categories including "
@@ -1112,14 +1132,15 @@ def _ai_group_products(
             "If a product should NOT be grouped, map it to null.\n\n"
             "Return ONLY a JSON object mapping product IDs (as strings) to "
             "objects or null, e.g.\n"
-            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}, '
+            '{"1": {"parent": "Maito", "category": "Maito"}, '
             '"2": {"parent": "Mustapippuri", "category": "Mausteet"}, '
+            '"3": {"parent": "Cheddar", "category": "Juusto"}, '
             '"7": null}.\n\n'
             "Products:\n"
             f"{product_lines}"
         )
         try:
-            mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
+            mapping: dict = _call_gemini_json(prompt, gemini_api_key, effective_model)
         except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error(
                 "Gemini group batch %d failed: %s",
@@ -1350,6 +1371,7 @@ def _ai_optimize_products(
     gemini_api_key: str,
     model: str = _GEMINI_DEFAULT_MODEL,
     *,
+    optimize_model: str = "",
     location_id: int | None = None,
     quantity_unit_id: int | None = None,
     product_ids: list[int] | None = None,
@@ -1378,6 +1400,7 @@ def _ai_optimize_products(
     Returns the number of products updated.
     """
     full_mode = product_ids is None
+    effective_model = (optimize_model or model) if full_mode else model
 
     # --- Fetch locations -------------------------------------------------
     try:
@@ -1556,10 +1579,15 @@ def _ai_optimize_products(
             'black pepper, "Oregano" for oregano, "Maito" for milk). '
             "If an existing parent product name fits, you MUST use that "
             "exact name. Null if the product is unique.\n"
-            '  "category": (string) a BROAD Finnish product category that covers '
-            "many related parent products. Categories should be few and general "
-            '(e.g. "Mausteet" for all spices, "Makeiset" for all candy, '
-            '"Maitotaloustuotteet" for all dairy, "Juomat" for all drinks). '
+            '  "category": (string) a product category in Finnish at a practical, '
+            "kitchen-shelf level of detail. Think about how a home cook would "
+            "organise their kitchen — not industrial taxonomy. Keep a single "
+            "broad category for truly homogeneous groups (e.g. \"Mausteet\" for "
+            "all spices, \"Makeiset\" for all candy, \"Siivous\" for cleaning). "
+            "Split large heterogeneous groups into meaningful sub-categories: "
+            "dairy → \"Maito\", \"Voi\", \"Juusto\", \"Kerma\", \"Jogurtti\"; "
+            "drinks → \"Mehu\", \"Limu\", \"Energiajuoma\", \"Kahvi\", \"Tee\"; "
+            "meat → \"Nauta\", \"Sika\", \"Kana\", \"Kala\". "
             "If an existing category name fits, you MUST use that exact name. "
             "Null if the product is unique.\n"
             '  "pack_of": (string) the base product name if this product is a '
@@ -1580,7 +1608,7 @@ def _ai_optimize_products(
             "'monipakkaus', '4 kpl', etc.\n\n"
             "Return ONLY valid JSON, for example:\n"
             '{"1": {"location_id": 2, "best_before_days": 14, '
-            '"group_name": "Maito", "category": "Maitotaloustuotteet", '
+            '"group_name": "Maito", "category": "Maito", '
             '"pack_of": null, "pack_count": null}, '
             '"2": {"location_id": 3, "best_before_days": 730, '
             '"group_name": null, "category": null, '
@@ -1590,7 +1618,7 @@ def _ai_optimize_products(
         )
 
         try:
-            mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
+            mapping: dict = _call_gemini_json(prompt, gemini_api_key, effective_model)
         except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error(
                 "Gemini optimize batch %d failed: %s",
@@ -2684,6 +2712,7 @@ def main(argv: list[str] | None = None) -> int:
                 grocy,
                 args.gemini_api_key,
                 args.gemini_model,
+                optimize_model=getattr(args, "gemini_model_optimize", ""),
                 location_id=getattr(args, "location_id", None),
                 quantity_unit_id=getattr(args, "quantity_unit_id", None),
             )
@@ -2696,6 +2725,7 @@ def main(argv: list[str] | None = None) -> int:
                 grocy,
                 args.gemini_api_key,
                 args.gemini_model,
+                optimize_model=getattr(args, "gemini_model_optimize", ""),
                 location_id=getattr(args, "location_id", None),
                 quantity_unit_id=getattr(args, "quantity_unit_id", None),
             )

@@ -325,6 +325,7 @@ def _handle_optimize() -> dict[str, Any]:
         api_key=opts.get("grocy_api_key", ""),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
+    optimize_model = opts.get("gemini_model_optimize", "")
     location_id = int(opts.get("location_id", 0)) or None
     quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
     with _capture_logs() as logs:
@@ -332,6 +333,7 @@ def _handle_optimize() -> dict[str, Any]:
             grocy,
             gemini_key,
             model,
+            optimize_model=optimize_model,
             location_id=location_id,
             quantity_unit_id=quantity_unit_id,
         )
@@ -426,6 +428,7 @@ def _handle_group() -> dict[str, Any]:
         api_key=opts.get("grocy_api_key", ""),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
+    optimize_model = opts.get("gemini_model_optimize", "")
     location_id = int(opts.get("location_id", 0)) or None
     quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
     with _capture_logs() as logs:
@@ -433,6 +436,7 @@ def _handle_group() -> dict[str, Any]:
             grocy,
             gemini_key,
             model,
+            optimize_model=optimize_model,
             location_id=location_id,
             quantity_unit_id=quantity_unit_id,
         )

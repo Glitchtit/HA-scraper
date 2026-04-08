@@ -1310,11 +1310,11 @@ class TestAiGroupProducts:
         products = [
             {"id": 1, "name": "Pirkka maito"},
             {"id": 2, "name": "Valio maito"},
-            {"id": 3, "name": "Juusto"},
+            {"id": 3, "name": "Ketsuppi"},
         ]
         grocy = self._make_grocy(products)
         mock_gemini.return_value = (
-            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+            '{"1": {"parent": "Maito", "category": "Maito"}}'
         )
 
         result = _ai_group_products(grocy, "gemini-key", product_ids=[1])
@@ -1325,7 +1325,7 @@ class TestAiGroupProducts:
         prompt = mock_gemini.call_args[0][0]
         assert "Pirkka maito" in prompt
         assert "Valio maito" not in prompt
-        assert "Juusto" not in prompt
+        assert "Ketsuppi" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_incremental_mode_skips_already_grouped(self, mock_gemini, _mock_dedup):
@@ -1371,6 +1371,59 @@ class TestAiGroupProducts:
         assert '"Sipuli"' in prompt_text
         assert "Existing product categories" in prompt_text
         assert '"Vihannekset"' in prompt_text
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_uses_optimize_model(self, mock_gemini, _mock_dedup):
+        """Full mode uses optimize_model when provided."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [{"id": 1, "name": "Pirkka maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maito"}}'
+        )
+
+        _ai_group_products(
+            grocy, "gemini-key", "gemini-1.5-flash",
+            optimize_model="gemini-2.0-pro",
+        )
+        # The Gemini call should use the optimize model in full mode.
+        call_model = mock_gemini.call_args[0][2]
+        assert call_model == "gemini-2.0-pro"
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_falls_back_to_regular_model(self, mock_gemini, _mock_dedup):
+        """Full mode falls back to regular model when optimize_model is empty."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [{"id": 1, "name": "Pirkka maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maito"}}'
+        )
+
+        _ai_group_products(
+            grocy, "gemini-key", "gemini-1.5-flash",
+            optimize_model="",
+        )
+        call_model = mock_gemini.call_args[0][2]
+        assert call_model == "gemini-1.5-flash"
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_incremental_mode_uses_regular_model(self, mock_gemini, _mock_dedup):
+        """Incremental mode always uses the regular model, not optimize_model."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [{"id": 1, "name": "Pirkka maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maito"}}'
+        )
+
+        _ai_group_products(
+            grocy, "gemini-key", "gemini-1.5-flash",
+            optimize_model="gemini-2.0-pro",
+            product_ids=[1],
+        )
+        call_model = mock_gemini.call_args[0][2]
+        assert call_model == "gemini-1.5-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -2656,13 +2709,13 @@ class TestAiOptimizeProducts:
         products = [
             {"id": 1, "name": "Maito"},
             {"id": 2, "name": "Leip\u00e4"},
-            {"id": 3, "name": "Voi"},
+            {"id": 3, "name": "Ketsuppi"},
         ]
         locations = [{"id": 2, "name": "Fridge"}]
         grocy = self._make_grocy(products, locations)
         mock_gemini.return_value = (
             '{"1": {"location_id": 2, "best_before_days": 14, '
-            '"group_name": null, "category": "Maitotaloustuotteet", '
+            '"group_name": null, "category": "Maito", '
             '"pack_of": null, "pack_count": null}}'
         )
 
@@ -2674,7 +2727,7 @@ class TestAiOptimizeProducts:
         prompt = mock_gemini.call_args[0][0]
         assert "Maito" in prompt
         assert "Leip\u00e4" not in prompt
-        assert "Voi" not in prompt
+        assert "Ketsuppi" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_incremental_existing_parents_in_prompt(self, mock_gemini, _mock_dedup):
@@ -2794,3 +2847,64 @@ class TestAiOptimizeProducts:
 
         _ai_optimize_products(grocy, "gemini-key")
         grocy.delete_product.assert_any_call(50)
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_uses_optimize_model(self, mock_gemini, _mock_dedup):
+        """Full mode uses optimize_model when provided."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": null, "category": "Maito", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+
+        _ai_optimize_products(
+            grocy, "gemini-key", "gemini-1.5-flash",
+            optimize_model="gemini-2.0-pro",
+        )
+        call_model = mock_gemini.call_args[0][2]
+        assert call_model == "gemini-2.0-pro"
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_falls_back_to_regular_model(self, mock_gemini, _mock_dedup):
+        """Full mode falls back to regular model when optimize_model is empty."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": null, "category": "Maito", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+
+        _ai_optimize_products(
+            grocy, "gemini-key", "gemini-1.5-flash",
+            optimize_model="",
+        )
+        call_model = mock_gemini.call_args[0][2]
+        assert call_model == "gemini-1.5-flash"
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_incremental_mode_uses_regular_model(self, mock_gemini, _mock_dedup):
+        """Incremental mode always uses the regular model, not optimize_model."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": null, "category": "Maito", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+
+        _ai_optimize_products(
+            grocy, "gemini-key", "gemini-1.5-flash",
+            optimize_model="gemini-2.0-pro",
+            product_ids=[1],
+        )
+        call_model = mock_gemini.call_args[0][2]
+        assert call_model == "gemini-1.5-flash"
