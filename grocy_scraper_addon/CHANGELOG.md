@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.15.0
+
+- Separate parent products from product groups: parent products are now many and detailed (e.g. "Mustapippuri", "Oregano"), while product groups are few and broad categories (e.g. "Mausteet" for all spices, "Makeiset" for all candy)
+- Add `category` field to both group and optimize Gemini prompts for broad product group assignment
+- Existing product category names are now included as prompt hints to encourage reuse
+- Revert v1.14.3 product group sync in dedup (was syncing to narrow parent names)
+
 ## 1.14.3
 
 - Fix: dedup now syncs product groups with parent products — when merging synonymous parents, children's `product_group_id` is updated to match the canonical group, and orphaned product groups are deleted
