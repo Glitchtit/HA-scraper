@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.16.0
+
+- Clean-slate optimize: `--optimize` now strips ALL existing parent assignments and rebuilds the entire parent/group structure from scratch using AI
+- Full mode sends every leaf product to Gemini without existing parent/category hints, allowing the AI to determine the ideal structure
+- Old parent-only placeholder products are automatically deleted when they receive no new children
+- Unused product groups are cleaned up after rebuild
+- Discover mode (`--discover`) remains incremental — new products are slotted into the existing structure with dedup and parent/category hints
+- Fix in-memory parent clearing bug that prevented stripped-child products from being reused as parents
+
 ## 1.15.0
 
 - Separate parent products from product groups: parent products are now many and detailed (e.g. "Mustapippuri", "Oregano"), while product groups are few and broad categories (e.g. "Mausteet" for all spices, "Makeiset" for all candy)
