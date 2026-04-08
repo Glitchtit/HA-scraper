@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.14.1
+
+- Fix: add parent product deduplication before optimize and group — synonymous parents (e.g. "Mauste", "Mausteet", "Mausteseos") are now merged into one canonical parent using Gemini before the main optimize runs, preventing products from bouncing between similar categories
+
 ## 1.14.0
 
 - Fix: optimize now includes existing parent product names in the Gemini prompt so that per-product optimize runs (e.g. after barcode scanning) reuse existing groups instead of creating duplicates like "Mauste", "Mausteet", "Mausteseos"
