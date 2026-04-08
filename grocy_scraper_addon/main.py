@@ -750,6 +750,161 @@ def _ai_assign_due_dates(grocy: GrocyClient, gemini_api_key: str, model: str = _
     return updated
 
 
+def _deduplicate_parent_products(
+    grocy: GrocyClient,
+    gemini_api_key: str,
+    model: str = _GEMINI_DEFAULT_MODEL,
+) -> int:
+    """Merge synonymous parent products so only canonical names survive.
+
+    Collects all parent product names (products that have at least one
+    child), asks Gemini to cluster them into synonym groups, then moves
+    every child of non-canonical parents to the canonical parent and
+    deletes the non-canonical ones.
+
+    Returns the number of parent products merged (deleted).
+    """
+    try:
+        products = grocy.get_all_products()
+    except GrocyAPIError as exc:
+        logger.error("Could not fetch products for dedup: %s", exc)
+        return 0
+
+    # Build parent→children mapping.
+    children_of: dict[int, list[dict]] = {}
+    for p in products:
+        ppid = p.get("parent_product_id")
+        if ppid:
+            children_of.setdefault(int(ppid), []).append(p)
+
+    # Collect parent products (those with children).
+    parent_products: dict[int, dict] = {}
+    for p in products:
+        pid = int(p["id"])
+        if pid in children_of:
+            parent_products[pid] = p
+
+    if len(parent_products) < 2:
+        return 0  # Nothing to deduplicate.
+
+    parent_names = sorted(
+        p.get("name", f"ID-{pid}") for pid, p in parent_products.items()
+    )
+    name_list = ", ".join(f'"{n}"' for n in parent_names)
+
+    prompt = (
+        "You are a grocery database expert.  Below is a list of product "
+        "category names used in a home pantry database.  Some names are "
+        "synonyms, near-duplicates, or overly specific variants of the same "
+        "category (e.g. \"Mauste\", \"Mausteet\", \"Mausteseos\" all refer "
+        "to spices).\n\n"
+        "For each name, return the single canonical (preferred) Finnish "
+        "category name that group should use.  If a name is already the "
+        "best canonical form, map it to itself.  Prefer the most commonly "
+        "used, general Finnish grocery term.\n\n"
+        "Rules:\n"
+        "- Merge true synonyms (Mauste/Mausteet → Mausteet, "
+        "Suklaapatukka/Suklaakonvehti/Suklaavohveli → Suklaa if they "
+        "are all just chocolate products).\n"
+        "- Do NOT merge categories that are genuinely different "
+        "(e.g. \"Mustapippuri\" and \"Mausteet\" should stay separate "
+        "only if you believe they warrant distinct groups — otherwise "
+        "merge specific spice names into the general spice group).\n"
+        "- The canonical name MUST be one of the names in the input list "
+        "OR a name already used by one of them — do not invent new names.\n\n"
+        "Return ONLY a JSON object mapping each input name (string) to its "
+        "canonical name (string), e.g.\n"
+        '{\"Mauste\": \"Mausteet\", \"Mausteet\": \"Mausteet\", '
+        '\"Mausteseos\": \"Mausteet\", \"Leipä\": \"Leipä\"}\n\n'
+        f"Category names:\n  {name_list}"
+    )
+
+    try:
+        mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
+    except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+        logger.warning("Gemini dedup call failed: %s", exc)
+        return 0
+
+    # Build canonical → [non-canonical IDs] from the mapping.
+    # We need name→product lookup.
+    name_to_parent: dict[str, dict] = {}
+    for pid, p in parent_products.items():
+        name_to_parent[p.get("name", "")] = p
+
+    # Group: canonical_name → list of (non-canonical) parent products.
+    canonical_groups: dict[str, list[dict]] = {}
+    for name, canonical in mapping.items():
+        if not isinstance(canonical, str) or not canonical:
+            continue
+        if name == canonical:
+            continue  # Already canonical — skip.
+        parent = name_to_parent.get(name)
+        if parent is None:
+            continue
+        canonical_groups.setdefault(canonical, []).append(parent)
+
+    if not canonical_groups:
+        logger.debug("No duplicate parent groups detected by Gemini.")
+        return 0
+
+    merged = 0
+    for canonical_name, non_canonical_parents in canonical_groups.items():
+        # Find the canonical parent product.
+        canonical_parent = name_to_parent.get(canonical_name)
+        if canonical_parent is None:
+            logger.debug(
+                "Canonical parent '%s' not found — skipping merge.",
+                canonical_name,
+            )
+            continue
+        canonical_id = int(canonical_parent["id"])
+
+        for dup_parent in non_canonical_parents:
+            dup_id = int(dup_parent["id"])
+            dup_name = dup_parent.get("name", "?")
+            dup_children = children_of.get(dup_id, [])
+
+            # Move children to canonical parent.
+            for child in dup_children:
+                child_id = int(child["id"])
+                try:
+                    grocy.update_product(child_id, parent_product_id=canonical_id)
+                    logger.info(
+                        "  → Moved '%s' (ID %d) from '%s' → '%s'.",
+                        child.get("name", "?"), child_id,
+                        dup_name, canonical_name,
+                    )
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Could not move child '%s' to '%s': %s",
+                        child.get("name", "?"), canonical_name, exc,
+                    )
+
+            # Delete the now-empty non-canonical parent.
+            try:
+                picture = dup_parent.get("picture_file_name", "")
+                if picture:
+                    try:
+                        grocy.delete_product_image(picture)
+                    except GrocyAPIError:
+                        pass
+                grocy.delete_product(dup_id)
+                logger.info(
+                    "  → Merged duplicate parent '%s' (ID %d) into '%s'.",
+                    dup_name, dup_id, canonical_name,
+                )
+                merged += 1
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Could not delete duplicate parent '%s': %s",
+                    dup_name, exc,
+                )
+
+    if merged:
+        logger.info("Deduplicated %d parent product(s).", merged)
+    return merged
+
+
 def _ai_group_products(
     grocy: GrocyClient,
     gemini_api_key: str,
@@ -776,6 +931,9 @@ def _ai_group_products(
 
     Returns the number of products updated.
     """
+    # Consolidate duplicate parent products before grouping.
+    _deduplicate_parent_products(grocy, gemini_api_key, model)
+
     try:
         products = grocy.get_all_products()
     except GrocyAPIError as exc:
@@ -1038,6 +1196,9 @@ def _ai_optimize_products(
         location_lines = "\n".join(
             f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
         )
+
+    # --- Deduplicate parent products first ---------------------------------
+    _deduplicate_parent_products(grocy, gemini_api_key, model)
 
     # --- Fetch products --------------------------------------------------
     try:
