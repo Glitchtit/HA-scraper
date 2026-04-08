@@ -914,7 +914,7 @@ class TestDeduplicateParentProducts:
             "grocy_scraper_addon.main._deduplicate_parent_products",
             return_value=(1, {"Karkki": "Makeiset"}),
         ):
-            _ai_group_products(g, "gemini-key")
+            _ai_group_products(g, "gemini-key", product_ids=[50])
 
         # Should use existing "Makeiset" (ID 10), NOT create new "Karkki".
         g.create_product.assert_not_called()
@@ -955,7 +955,7 @@ class TestDeduplicateParentProducts:
             "grocy_scraper_addon.main._deduplicate_parent_products",
             return_value=(1, {"Karkki": "Makeiset"}),
         ):
-            _ai_optimize_products(g, "gemini-key")
+            _ai_optimize_products(g, "gemini-key", product_ids=[50])
 
         # Should use existing "Makeiset" (ID 10), NOT create new "Karkki".
         create_calls = [c for c in g.create_product.call_args_list]
@@ -978,6 +978,9 @@ class TestAiGroupProducts:
         g.update_product.return_value = None
         g.create_product.return_value = 100
         g.get_product_groups.return_value = []
+        g.delete_product.return_value = None
+        g.delete_product_image.return_value = None
+        g.delete_product_group.return_value = None
         # First call → "Group master"; subsequent calls → category groups.
         g.ensure_product_group.side_effect = (
             lambda name: self._GROUP_MASTER_ID
@@ -986,8 +989,11 @@ class TestAiGroupProducts:
         )
         return g
 
+    # -- Full-mode tests (product_ids=None, clean-slate) -------------------
+
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_groups_products_under_new_parent(self, mock_gemini, _mock_dedup):
+        """Full mode: simple grouping of ungrouped products."""
         from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 1, "name": "Pirkka kevytmaito 1l"},
@@ -1003,6 +1009,8 @@ class TestAiGroupProducts:
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 2
+        # Dedup NOT called in full mode.
+        _mock_dedup.assert_not_called()
         # "Group master" and category product groups should be ensured.
         grocy.ensure_product_group.assert_any_call("Group master")
         grocy.ensure_product_group.assert_any_call("Maitotaloustuotteet")
@@ -1029,6 +1037,7 @@ class TestAiGroupProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_reuses_existing_parent_product(self, mock_gemini, _mock_dedup):
+        """Full mode: existing product is reused as parent."""
         from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 10, "name": "Maito"},  # Already exists as potential parent.
@@ -1056,24 +1065,83 @@ class TestAiGroupProducts:
         )
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_skips_already_grouped_products(self, mock_gemini, _mock_dedup):
+    def test_full_mode_strips_parents_and_sends_all(self, mock_gemini, _mock_dedup):
+        """Full mode: existing parent assignments are stripped first and
+        ALL products (except old parent placeholders) go to Gemini."""
         from grocy_scraper_addon.main import _ai_group_products
         products = [
             {"id": 1, "name": "Pirkka maito", "parent_product_id": 99},
             {"id": 2, "name": "Valio maito"},
+            {"id": 99, "name": "OldParent",
+             "cumulate_min_stock_amount_of_sub_products": 1,
+             "hide_on_stock_overview": 1},
         ]
         grocy = self._make_grocy(products)
-        # Only product 2 should be sent to Gemini (product 1 already has parent).
+        # After regrouping, OldParent has no new children.
+        grocy.get_all_products.side_effect = [
+            products,
+            # Cleanup call — OldParent has no children.
+            [
+                {"id": 1, "name": "Pirkka maito", "parent_product_id": 100},
+                {"id": 2, "name": "Valio maito", "parent_product_id": 100},
+                {"id": 99, "name": "OldParent",
+                 "cumulate_min_stock_amount_of_sub_products": 1,
+                 "hide_on_stock_overview": 1},
+                {"id": 100, "name": "Maito"},
+            ],
+            # PG cleanup call.
+            [
+                {"id": 1, "name": "Pirkka maito", "parent_product_id": 100,
+                 "product_group_id": self._CATEGORY_GROUP_ID},
+                {"id": 2, "name": "Valio maito", "parent_product_id": 100,
+                 "product_group_id": self._CATEGORY_GROUP_ID},
+                {"id": 100, "name": "Maito",
+                 "product_group_id": self._GROUP_MASTER_ID},
+            ],
+        ]
         mock_gemini.return_value = (
-            '{"2": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}, '
+            '"2": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
         )
 
         result = _ai_group_products(grocy, "gemini-key")
-        assert result == 1
-        # Verify the prompt only included product 2.
+        # Parent stripping: product 1 had its parent removed.
+        grocy.update_product.assert_any_call(1, parent_product_id="")
+        # Both products sent to Gemini.
         prompt_text = mock_gemini.call_args[0][0]
+        assert "Pirkka maito" in prompt_text
         assert "Valio maito" in prompt_text
-        assert "Pirkka maito" not in prompt_text
+        # Old parent placeholder (99) should NOT be in the prompt.
+        assert "OldParent" not in prompt_text
+        # Old parent 99 should be deleted (no new children).
+        grocy.delete_product.assert_any_call(99)
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_cleans_unused_product_groups(self, mock_gemini, _mock_dedup):
+        """Full mode: product groups with no products assigned are deleted."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [{"id": 1, "name": "Maito"}]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maitotuote", "category": "Maitotaloustuotteet"}}'
+        )
+        # PG cleanup calls return stale group.
+        grocy.get_all_products.side_effect = [
+            products,
+            # PG cleanup: product has new group, but old group "Vanhat" has no products.
+            [{"id": 1, "name": "Maito",
+              "product_group_id": self._CATEGORY_GROUP_ID}],
+        ]
+        grocy.get_product_groups.return_value = [
+            {"id": self._CATEGORY_GROUP_ID, "name": "Maitotaloustuotteet"},
+            {"id": 70, "name": "Vanhat"},
+            {"id": self._GROUP_MASTER_ID, "name": "Group master"},
+        ]
+
+        _ai_group_products(grocy, "gemini-key")
+        # Unused "Vanhat" should be deleted; "Maitotaloustuotteet" and
+        # "Group master" should be kept.
+        grocy.delete_product_group.assert_called_once_with(70)
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_no_products_returns_zero(self, mock_gemini, _mock_dedup):
@@ -1094,7 +1162,6 @@ class TestAiGroupProducts:
 
         result = _ai_group_products(grocy, "key")
         assert result == 0
-        grocy.update_product.assert_not_called()
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_grocy_error_returns_zero(self, mock_gemini, _mock_dedup):
@@ -1165,56 +1232,120 @@ class TestAiGroupProducts:
         grocy.update_product.assert_any_call(2, parent_product_id=100)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_skips_products_that_are_already_parents(self, mock_gemini, _mock_dedup):
-        """Products that already have sub-products must not be assigned a
-        parent – that would create unsupported 2-level nesting in Grocy."""
+    def test_full_mode_no_existing_hints_in_prompt(self, mock_gemini, _mock_dedup):
+        """Full mode: prompt does NOT include existing parent/category hints."""
         from grocy_scraper_addon.main import _ai_group_products
         products = [
-            {"id": 10, "name": "Sipuli"},           # already a parent
+            {"id": 10, "name": "Sipuli"},
             {"id": 11, "name": "Punasipuli", "parent_product_id": 10},
-            {"id": 12, "name": "Keltasipuli", "parent_product_id": 10},
-            {"id": 20, "name": "Juusto"},            # truly ungrouped
         ]
         grocy = self._make_grocy(products)
-        # Gemini only sees product 20 (the only truly ungrouped candidate).
         mock_gemini.return_value = (
-            '{"20": {"parent": "Juustot", "category": "Maitotaloustuotteet"}}'
+            '{"10": null, "11": {"parent": "Sipuli", "category": "Vihannekset"}}'
         )
 
-        result = _ai_group_products(grocy, "gemini-key")
-        assert result == 1
-        # The Products section should NOT contain "Sipuli" (already a parent)
-        # but the existing groups section should list it.
+        _ai_group_products(grocy, "gemini-key")
         prompt_text = mock_gemini.call_args[0][0]
-        products_section = prompt_text.split("Products:")[-1]
-        assert "Sipuli" not in products_section
-        assert "Juusto" in prompt_text
+        assert "Existing parent products" not in prompt_text
+        assert "Existing product categories" not in prompt_text
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_skips_existing_parent_that_is_already_a_child(self, mock_gemini, _mock_dedup):
         """If an existing product matching the parent name is already a child
         of another product, it must not be reused as a parent."""
         from grocy_scraper_addon.main import _ai_group_products
+        # Product 1 "Sipuli" is a child of 99 but 99 is NOT an old parent
+        # placeholder (no cumulate/hide flags), so 1 stays in candidates
+        # but its parent is stripped. After stripping, it can be reused.
         products = [
             {"id": 1, "name": "Sipuli", "parent_product_id": 99},
             {"id": 2, "name": "Valkosipuli"},
+            {"id": 99, "name": "Juurekset"},
         ]
         grocy = self._make_grocy(products)
-        # Gemini says product 2 should be grouped under "Sipuli", but the
-        # existing "Sipuli" (id 1) is already a child → must not reuse it.
         mock_gemini.return_value = (
-            '{"2": {"parent": "Sipuli", "category": "Vihannekset"}}'
+            '{"1": null, "2": {"parent": "Sipuli", "category": "Vihannekset"}, '
+            '"99": null}'
         )
 
         result = _ai_group_products(grocy, "gemini-key")
-        assert result == 0
-        # Because the only candidate parent was skipped, no child assignment
-        # should happen.
-        parent_calls = [
-            c for c in grocy.update_product.call_args_list
-            if "parent_product_id" in (c.kwargs or {})
+        # After stripping, "Sipuli" has no parent_product_id in memory,
+        # so it CAN be reused as a parent for "Valkosipuli".
+        assert result == 1
+        grocy.update_product.assert_any_call(
+            2, parent_product_id=1, product_group_id=self._CATEGORY_GROUP_ID,
+        )
+
+    # -- Incremental-mode tests (product_ids=[...]) ------------------------
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_incremental_mode_uses_dedup(self, mock_gemini, _mock_dedup):
+        """Incremental mode: dedup IS called and only allowed IDs go to Gemini."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Pirkka maito"},
+            {"id": 2, "name": "Valio maito"},
+            {"id": 3, "name": "Juusto"},
         ]
-        assert len(parent_calls) == 0
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
+
+        result = _ai_group_products(grocy, "gemini-key", product_ids=[1])
+        assert result == 1
+        # Dedup IS called in incremental mode.
+        _mock_dedup.assert_called_once()
+        # Only product 1 in the prompt.
+        prompt = mock_gemini.call_args[0][0]
+        assert "Pirkka maito" in prompt
+        assert "Valio maito" not in prompt
+        assert "Juusto" not in prompt
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_incremental_mode_skips_already_grouped(self, mock_gemini, _mock_dedup):
+        """Incremental mode: products with a parent are skipped (not stripped)."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Pirkka maito", "parent_product_id": 99},
+            {"id": 2, "name": "Valio maito"},
+        ]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"2": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
+
+        result = _ai_group_products(grocy, "gemini-key", product_ids=[1, 2])
+        assert result == 1
+        # Only product 2 sent to Gemini (product 1 already has a parent).
+        prompt_text = mock_gemini.call_args[0][0]
+        assert "Valio maito" in prompt_text
+        assert "Pirkka maito" not in prompt_text
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_incremental_mode_includes_existing_hints(self, mock_gemini, _mock_dedup):
+        """Incremental mode: existing parent/category names appear in prompt."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [
+            {"id": 10, "name": "Sipuli"},
+            {"id": 11, "name": "Punasipuli", "parent_product_id": 10},
+            {"id": 20, "name": "Juusto"},
+        ]
+        grocy = self._make_grocy(products)
+        grocy.get_product_groups.return_value = [
+            {"id": 1, "name": "Vihannekset"},
+            {"id": 2, "name": "Group master"},
+        ]
+        mock_gemini.return_value = (
+            '{"20": {"parent": "Juustot", "category": "Maitotaloustuotteet"}}'
+        )
+
+        _ai_group_products(grocy, "gemini-key", product_ids=[20])
+        prompt_text = mock_gemini.call_args[0][0]
+        assert "Existing parent products" in prompt_text
+        assert '"Sipuli"' in prompt_text
+        assert "Existing product categories" in prompt_text
+        assert '"Vihannekset"' in prompt_text
 
 
 # ---------------------------------------------------------------------------
@@ -2234,10 +2365,14 @@ class TestAiOptimizeProducts:
         g.delete_product.return_value = None
         g.delete_product_image.return_value = None
         g.get_product_groups.return_value = []
+        g.delete_product_group.return_value = None
         return g
+
+    # -- Full-mode tests (product_ids=None, clean-slate) -------------------
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_sort_date_group_in_single_pass(self, mock_gemini, _mock_dedup):
+        """Full mode: sort, date, and group in one Gemini call."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Maito 1L"},
@@ -2255,6 +2390,8 @@ class TestAiOptimizeProducts:
         )
 
         result = _ai_optimize_products(grocy, "gemini-key")
+        # Dedup NOT called in full mode.
+        _mock_dedup.assert_not_called()
         # 2 location + 2 date + 1 group = 5 updates minimum
         assert result >= 5
         # Check sort (location)
@@ -2306,11 +2443,163 @@ class TestAiOptimizeProducts:
         mock_gemini.assert_not_called()
 
     @patch("grocy_scraper_addon.main._call_gemini")
+    def test_gemini_failure_continues(self, mock_gemini, _mock_dedup):
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.side_effect = GrocyAPIError("API down")
+
+        result = _ai_optimize_products(grocy, "gemini-key")
+        assert result == 0
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_strips_parents_and_sends_all(self, mock_gemini, _mock_dedup):
+        """Full mode: strips parent assignments and sends all leaf products."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 10, "name": "Mausteet",
+             "cumulate_min_stock_amount_of_sub_products": 1,
+             "hide_on_stock_overview": 1},
+            {"id": 11, "name": "Mustapippuri", "parent_product_id": 10},
+            {"id": 12, "name": "Oregano", "parent_product_id": 10},
+        ]
+        locations = [{"id": 2, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_all_products.side_effect = [
+            products,
+            # Old parent cleanup: 10 still has children -> keep.
+            [
+                {"id": 10, "name": "Mausteet",
+                 "cumulate_min_stock_amount_of_sub_products": 1,
+                 "hide_on_stock_overview": 1},
+                {"id": 11, "name": "Mustapippuri", "parent_product_id": 10},
+                {"id": 12, "name": "Oregano", "parent_product_id": 10},
+            ],
+            # PG cleanup.
+            [
+                {"id": 11, "name": "Mustapippuri", "product_group_id": 100},
+                {"id": 12, "name": "Oregano", "product_group_id": 100},
+            ],
+        ]
+        mock_gemini.return_value = (
+            '{"11": {"location_id": 2, "best_before_days": 730, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
+            '"12": {"location_id": 2, "best_before_days": 730, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key")
+        # Parents should be stripped.
+        grocy.update_product.assert_any_call(11, parent_product_id="")
+        grocy.update_product.assert_any_call(12, parent_product_id="")
+        # Old parent placeholder (10) should NOT be in the Gemini prompt.
+        prompt = mock_gemini.call_args[0][0]
+        assert "Mausteet" not in prompt.split("Products:")[-1]
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_deletes_old_parent_placeholders(self, mock_gemini, _mock_dedup):
+        """Full mode: old parent placeholders with no new children are deleted."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 20, "name": "Mauste",
+             "cumulate_min_stock_amount_of_sub_products": 1,
+             "hide_on_stock_overview": 1},
+            {"id": 11, "name": "Mustapippuri", "parent_product_id": 20},
+            {"id": 12, "name": "Oregano", "parent_product_id": 20},
+        ]
+        locations = [{"id": 2, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_all_products.side_effect = [
+            products,
+            # After rebuild: 20 has no children (reassigned to 999).
+            [
+                {"id": 20, "name": "Mauste",
+                 "cumulate_min_stock_amount_of_sub_products": 1,
+                 "hide_on_stock_overview": 1},
+                {"id": 11, "name": "Mustapippuri", "parent_product_id": 999},
+                {"id": 12, "name": "Oregano", "parent_product_id": 999},
+                {"id": 999, "name": "Mausteet"},
+            ],
+            # PG cleanup.
+            [
+                {"id": 11, "name": "Mustapippuri", "product_group_id": 100},
+                {"id": 12, "name": "Oregano", "product_group_id": 100},
+            ],
+        ]
+        mock_gemini.return_value = (
+            '{"11": {"location_id": 2, "best_before_days": 730, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
+            '"12": {"location_id": 2, "best_before_days": 730, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+
+        result = _ai_optimize_products(grocy, "gemini-key")
+        grocy.delete_product.assert_any_call(20)
+        assert result >= 1
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_cleans_unused_product_groups(self, mock_gemini, _mock_dedup):
+        """Full mode: unused product groups are deleted after rebuild."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [{"id": 1, "name": "Maito"}]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": null, "category": "Maitotaloustuotteet", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+        grocy.get_all_products.side_effect = [
+            products,
+            # PG cleanup: product uses group 100, but group 70 is unused.
+            [{"id": 1, "name": "Maito", "product_group_id": 100}],
+        ]
+        grocy.get_product_groups.return_value = [
+            {"id": 100, "name": "Maitotaloustuotteet"},
+            {"id": 70, "name": "Vanhat"},
+            {"id": 50, "name": "Group master"},
+        ]
+
+        _ai_optimize_products(grocy, "gemini-key")
+        grocy.delete_product_group.assert_called_once_with(70)
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_no_existing_hints_in_prompt(self, mock_gemini, _mock_dedup):
+        """Full mode: prompt does NOT include existing parent/category hints."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 10, "name": "Sipuli"},
+            {"id": 11, "name": "Punasipuli", "parent_product_id": 10},
+        ]
+        locations = [{"id": 2, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"10": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": null, "category": "Vihannekset", '
+            '"pack_of": null, "pack_count": null}, '
+            '"11": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": "Sipuli", "category": "Vihannekset", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key")
+        prompt = mock_gemini.call_args[0][0]
+        assert "Existing parent products" not in prompt
+        assert "Existing product categories" not in prompt
+
+    # -- Incremental-mode tests (product_ids=[...]) ------------------------
+
+    @patch("grocy_scraper_addon.main._call_gemini")
     def test_product_ids_filter(self, mock_gemini, _mock_dedup):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Maito"},
-            {"id": 2, "name": "Leipä"},
+            {"id": 2, "name": "Leip\u00e4"},
             {"id": 3, "name": "Voi"},
         ]
         locations = [{"id": 2, "name": "Fridge"}]
@@ -2323,62 +2612,17 @@ class TestAiOptimizeProducts:
 
         result = _ai_optimize_products(grocy, "gemini-key", product_ids=[1])
         assert result >= 1
-        # Only product 1 should be in the prompt (1 product in the batch)
-        call_args = mock_gemini.call_args
-        prompt = call_args[0][0]
+        # Dedup IS called in incremental mode.
+        _mock_dedup.assert_called_once()
+        # Only product 1 should be in the prompt
+        prompt = mock_gemini.call_args[0][0]
         assert "Maito" in prompt
-        # Products 2 and 3 should NOT be processed
-        assert "Leipä" not in prompt
+        assert "Leip\u00e4" not in prompt
         assert "Voi" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_gemini_failure_continues(self, mock_gemini, _mock_dedup):
-        from grocy_scraper_addon.main import _ai_optimize_products
-        products = [{"id": 1, "name": "Maito"}]
-        locations = [{"id": 2, "name": "Fridge"}]
-        grocy = self._make_grocy(products, locations)
-        mock_gemini.side_effect = GrocyAPIError("API down")
-
-        result = _ai_optimize_products(grocy, "gemini-key")
-        assert result == 0
-
-    @patch("grocy_scraper_addon.main._call_gemini")
-    def test_existing_parent_names_in_prompt(self, mock_gemini, _mock_dedup):
-        """When existing parent products exist, their names appear in the prompt."""
-        from grocy_scraper_addon.main import _ai_optimize_products
-        products = [
-            {"id": 10, "name": "Mausteet", "parent_product_id": None},
-            {"id": 11, "name": "Mustapippuri", "parent_product_id": 10},
-            {"id": 12, "name": "Oregano", "parent_product_id": None},
-        ]
-        locations = [{"id": 2, "name": "Pantry"}]
-        grocy = self._make_grocy(products, locations)
-        # Also provide existing product groups to verify category hint.
-        grocy.get_product_groups.return_value = [
-            {"id": 1, "name": "Mausteet"},
-            {"id": 2, "name": "Group master"},
-        ]
-        mock_gemini.return_value = (
-            '{"10": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "category": "Mausteet", '
-            '"pack_of": null, "pack_count": null}, '
-            '"11": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "category": "Mausteet", '
-            '"pack_of": null, "pack_count": null}, '
-            '"12": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "category": "Mausteet", '
-            '"pack_of": null, "pack_count": null}}'
-        )
-
-        _ai_optimize_products(grocy, "gemini-key")
-        prompt = mock_gemini.call_args[0][0]
-        assert "Existing parent products" in prompt
-        assert "Existing product categories" in prompt
-        assert '"Mausteet"' in prompt
-
-    @patch("grocy_scraper_addon.main._call_gemini")
-    def test_existing_parents_in_prompt_with_product_ids_filter(self, mock_gemini, _mock_dedup):
-        """Even when product_ids filters the batch, existing parents still appear."""
+    def test_incremental_existing_parents_in_prompt(self, mock_gemini, _mock_dedup):
+        """Incremental mode: existing parent/category names appear in prompt."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 10, "name": "Mausteet"},
@@ -2387,6 +2631,10 @@ class TestAiOptimizeProducts:
         ]
         locations = [{"id": 2, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
+        grocy.get_product_groups.return_value = [
+            {"id": 1, "name": "Mausteet"},
+            {"id": 2, "name": "Group master"},
+        ]
         mock_gemini.return_value = (
             '{"12": {"location_id": 2, "best_before_days": 730, '
             '"group_name": "Mausteet", "category": "Mausteet", '
@@ -2398,12 +2646,14 @@ class TestAiOptimizeProducts:
         # Only product 12 in the Products section
         assert "Timjami" in prompt
         assert "Mustapippuri" not in prompt.split("Products:")[-1]
-        # But existing parent names are in the prompt header
+        # Existing parent and category hints are in the prompt header
+        assert "Existing parent products" in prompt
         assert '"Mausteet"' in prompt
+        assert "Existing product categories" in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_regroup_product_under_different_parent(self, mock_gemini, _mock_dedup):
-        """A product already grouped under 'Mauste' gets re-grouped under 'Mausteet'."""
+        """Full mode: product re-grouped from old parent to new one."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 10, "name": "Mausteet"},
@@ -2415,10 +2665,9 @@ class TestAiOptimizeProducts:
         ]
         locations = [{"id": 2, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
-        # After re-grouping, "Mauste" (ID 20) has no children.
-        # Simulate the second get_all_products call (for cleanup).
         grocy.get_all_products.side_effect = [
             products,
+            # After rebuild: 20 has no children.
             [
                 {"id": 10, "name": "Mausteet"},
                 {"id": 20, "name": "Mauste",
@@ -2427,12 +2676,15 @@ class TestAiOptimizeProducts:
                 {"id": 11, "name": "Mustapippuri", "parent_product_id": 10},
                 {"id": 12, "name": "Oregano", "parent_product_id": 10},
             ],
+            # PG cleanup.
+            [
+                {"id": 11, "name": "Mustapippuri", "product_group_id": 100},
+                {"id": 12, "name": "Oregano", "product_group_id": 100},
+            ],
         ]
+        # Gemini sees 10, 11, 12 (20 is old parent placeholder, filtered out).
         mock_gemini.return_value = (
             '{"10": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "category": "Mausteet", '
-            '"pack_of": null, "pack_count": null}, '
-            '"20": {"location_id": 2, "best_before_days": 730, '
             '"group_name": null, "category": "Mausteet", '
             '"pack_of": null, "pack_count": null}, '
             '"11": {"location_id": 2, "best_before_days": 730, '
@@ -2444,20 +2696,18 @@ class TestAiOptimizeProducts:
         )
 
         result = _ai_optimize_products(grocy, "gemini-key")
-        # Re-grouped products should be moved from parent 20 → 10.
         grocy.update_product.assert_any_call(
             11, parent_product_id=10, product_group_id=100,
         )
         grocy.update_product.assert_any_call(
             12, parent_product_id=10, product_group_id=100,
         )
-        # Empty parent "Mauste" (ID 20) should be deleted.
         grocy.delete_product.assert_any_call(20)
         assert result >= 1
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_cleanup_empty_parent_after_optimize(self, mock_gemini, _mock_dedup):
-        """Empty parent products are deleted after optimization."""
+        """Full mode: empty parent products are deleted after optimization."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 50, "name": "OldParent",
@@ -2467,9 +2717,9 @@ class TestAiOptimizeProducts:
         ]
         locations = [{"id": 2, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
-        # After optimize reassigns Child A, OldParent has no children.
         grocy.get_all_products.side_effect = [
             products,
+            # After rebuild: OldParent has no children.
             [
                 {"id": 50, "name": "OldParent",
                  "cumulate_min_stock_amount_of_sub_products": 1,
@@ -2477,45 +2727,14 @@ class TestAiOptimizeProducts:
                 {"id": 51, "name": "Child A", "parent_product_id": 999},
                 {"id": 999, "name": "NewParent"},
             ],
+            # PG cleanup.
+            [{"id": 51, "name": "Child A", "product_group_id": 100}],
         ]
         mock_gemini.return_value = (
-            '{"50": {"location_id": 2, "best_before_days": 365, '
-            '"group_name": null, "category": "Muut", '
-            '"pack_of": null, "pack_count": null}, '
-            '"51": {"location_id": 2, "best_before_days": 365, '
+            '{"51": {"location_id": 2, "best_before_days": 365, '
             '"group_name": "NewParent", "category": "Muut", '
             '"pack_of": null, "pack_count": null}}'
         )
 
         _ai_optimize_products(grocy, "gemini-key")
         grocy.delete_product.assert_any_call(50)
-
-    @patch("grocy_scraper_addon.main._call_gemini")
-    def test_already_correctly_grouped_not_updated(self, mock_gemini, _mock_dedup):
-        """A product already under the correct parent is not re-grouped."""
-        from grocy_scraper_addon.main import _ai_optimize_products
-        products = [
-            {"id": 10, "name": "Mausteet"},
-            {"id": 11, "name": "Mustapippuri", "parent_product_id": 10},
-        ]
-        locations = [{"id": 2, "name": "Pantry"}]
-        grocy = self._make_grocy(products, locations)
-        mock_gemini.return_value = (
-            '{"10": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "category": "Mausteet", '
-            '"pack_of": null, "pack_count": null}, '
-            '"11": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "category": "Mausteet", '
-            '"pack_of": null, "pack_count": null}}'
-        )
-
-        _ai_optimize_products(grocy, "gemini-key")
-        # Should NOT call update_product with parent_product_id since it's
-        # already correctly grouped.
-        for call in grocy.update_product.call_args_list:
-            args, kwargs = call
-            if args[0] == 11 and "parent_product_id" in kwargs:
-                raise AssertionError(
-                    "Product 11 should not have been re-grouped, it's already "
-                    f"under the correct parent. Call: {call}"
-                )

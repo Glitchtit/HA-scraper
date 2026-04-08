@@ -923,13 +923,14 @@ def _ai_group_products(
 ) -> int:
     """Use Gemini AI to group similar products under shared parent products.
 
-    Fetches all products from Grocy, asks Gemini to identify groups of
-    similar items (e.g. different brands of milk), creates parent products
-    where needed, and assigns each child product to its parent.
-    Parent products are created with
-    ``cumulate_min_stock_amount_of_sub_products`` enabled.  Each parent is
-    also assigned to the ``"Group master"`` product group and marked with
-    ``hide_on_stock_overview`` so it does not clutter the stock overview.
+    **Clean-slate mode** (``product_ids`` is ``None``): Strips all existing
+    parent product assignments, sends every real product to Gemini, and
+    rebuilds parent products from scratch.  Old parent-only placeholder
+    products are deleted after rebuilding.
+
+    **Incremental mode** (``product_ids`` is set): Only the listed products
+    are processed; existing parents and categories are provided as hints so
+    that Gemini slots new products into the existing structure.
 
     Gemini returns two levels for each product:
 
@@ -939,13 +940,16 @@ def _ai_group_products(
     The parent is used for Grocy parent-product assignment (many, detailed).
     The category is used for Grocy product-group assignment (few, general).
 
-    When *product_ids* is given, only those products are considered for
-    grouping instead of the entire Grocy catalogue.
-
     Returns the number of products updated.
     """
-    # Consolidate duplicate parent products before grouping.
-    _dedup_count, dedup_map = _deduplicate_parent_products(grocy, gemini_api_key, model)
+    full_mode = product_ids is None
+
+    # Incremental mode: deduplicate parents first.
+    dedup_map: dict[str, str] = {}
+    if not full_mode:
+        _dedup_count, dedup_map = _deduplicate_parent_products(
+            grocy, gemini_api_key, model,
+        )
 
     try:
         products = grocy.get_all_products()
@@ -966,60 +970,92 @@ def _ai_group_products(
             "Could not ensure 'Group master' product group: %s", exc,
         )
 
-    # Build a set of product IDs that already act as parents (have
-    # sub-products).  Grocy only supports one nesting level, so these
-    # products must not be assigned a parent themselves.
-    has_children: set[int] = set()
-    for p in products:
-        ppid = p.get("parent_product_id")
-        if ppid:
-            has_children.add(int(ppid))
+    # --- Clean-slate mode: strip parents & identify old parent products ---
+    old_parent_ids: set[int] = set()
+    if full_mode:
+        has_children: set[int] = set()
+        for p in products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                has_children.add(int(ppid))
 
-    # Collect existing parent product names so Gemini can reuse them.
-    existing_parent_names: list[str] = sorted({
-        p.get("name", "")
-        for p in products
-        if int(p["id"]) in has_children and p.get("name")
-    })
+        for p in products:
+            pid_int = int(p["id"])
+            if (
+                pid_int in has_children
+                and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
+                and p.get("hide_on_stock_overview") in (1, "1", True)
+            ):
+                old_parent_ids.add(pid_int)
 
-    # Only consider products that do not already have a parent and are not
-    # already parents of sub-products (assigning a parent to a product that
-    # already has children would violate Grocy's single-level nesting limit).
-    ungrouped = [
-        p for p in products
-        if not p.get("parent_product_id") and int(p["id"]) not in has_children
-    ]
-    if product_ids is not None:
+        # Strip parent_product_id from all child products.
+        for p in products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                try:
+                    grocy.update_product(int(p["id"]), parent_product_id="")
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Could not strip parent from '%s': %s",
+                        p.get("name"), exc,
+                    )
+                p["parent_product_id"] = None  # Clear in-memory too.
+
+        # Filter to leaf products only.
+        candidates = [p for p in products if int(p["id"]) not in old_parent_ids]
+        logger.info(
+            "Clean-slate mode: stripped parents from all products, "
+            "%d old parent placeholder(s) identified for cleanup.",
+            len(old_parent_ids),
+        )
+    else:
+        # Incremental mode: only ungrouped products.
+        has_children_inc: set[int] = set()
+        for p in products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                has_children_inc.add(int(ppid))
+
+        candidates = [
+            p for p in products
+            if not p.get("parent_product_id") and int(p["id"]) not in has_children_inc
+        ]
         allowed = set(product_ids)
-        ungrouped = [p for p in ungrouped if int(p["id"]) in allowed]
-    if not ungrouped:
-        logger.info("All products already have parent products – nothing to group.")
+        candidates = [p for p in candidates if int(p["id"]) in allowed]
+
+    if not candidates:
+        logger.info("No products to group.")
         return 0
 
-    # Build a name→id index of existing products so we can reuse parents.
+    # Build a name→product index for parent reuse.
     name_to_product: dict[str, dict] = {}
     for p in products:
         name_to_product[p.get("name", "")] = p
 
-    # Collect existing product group names so Gemini can reuse categories.
+    # Collect existing context (incremental mode only).
+    existing_parent_names: list[str] = []
     existing_category_names: list[str] = []
-    try:
-        all_groups = grocy.get_product_groups()
-        existing_category_names = sorted({
-            g.get("name", "")
-            for g in all_groups
-            if g.get("name") and g.get("name") != "Group master"
+    if not full_mode:
+        existing_parent_names = sorted({
+            p.get("name", "")
+            for p in products
+            if int(p["id"]) in has_children_inc and p.get("name")
         })
-    except GrocyAPIError:
-        pass
+        try:
+            all_groups = grocy.get_product_groups()
+            existing_category_names = sorted({
+                g.get("name", "")
+                for g in all_groups
+                if g.get("name") and g.get("name") != "Group master"
+            })
+        except GrocyAPIError:
+            pass
 
-    logger.info(
-        "Asking Gemini to group %d product(s) …", len(ungrouped)
-    )
+    logger.info("Asking Gemini to group %d product(s) …", len(candidates))
 
     updated = 0
-    for i in range(0, len(ungrouped), _GEMINI_BATCH_SIZE):
-        batch = ungrouped[i : i + _GEMINI_BATCH_SIZE]
+    for i in range(0, len(candidates), _GEMINI_BATCH_SIZE):
+        batch = candidates[i : i + _GEMINI_BATCH_SIZE]
         product_lines = "\n".join(
             f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
         )
@@ -1092,7 +1128,7 @@ def _ai_group_products(
             continue
 
         # Collect unique parent names and category names from this batch.
-        # Redirect merged-away parent names to their canonical replacements.
+        # In incremental mode, redirect merged-away names via dedup_map.
         parent_names: set[str] = set()
         category_names: set[str] = set()
         for product in batch:
@@ -1210,6 +1246,77 @@ def _ai_group_products(
                     "Could not group '%s': %s", product.get("name"), exc
                 )
 
+    # --- Clean up old parent-only placeholder products (full mode) -------
+    if full_mode and old_parent_ids:
+        try:
+            all_products_after = grocy.get_all_products()
+        except GrocyAPIError:
+            all_products_after = []
+
+        new_children_of: set[int] = set()
+        for p in all_products_after:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                new_children_of.add(int(ppid))
+
+        for old_pid in old_parent_ids:
+            if old_pid in new_children_of:
+                continue
+            old_prod = next(
+                (p for p in all_products_after if int(p["id"]) == old_pid),
+                None,
+            )
+            if old_prod is None:
+                continue
+            try:
+                picture = old_prod.get("picture_file_name", "")
+                if picture:
+                    try:
+                        grocy.delete_product_image(picture)
+                    except GrocyAPIError:
+                        pass
+                grocy.delete_product(old_pid)
+                logger.info(
+                    "  → Deleted old parent '%s' (ID %d).",
+                    old_prod.get("name"), old_pid,
+                )
+                updated += 1
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Could not delete old parent '%s': %s",
+                    old_prod.get("name"), exc,
+                )
+
+    # --- Clean up unused product groups (full mode only) -----------------
+    if full_mode:
+        try:
+            all_products_final = grocy.get_all_products()
+            all_groups = grocy.get_product_groups()
+        except GrocyAPIError:
+            all_products_final = []
+            all_groups = []
+
+        if all_groups and all_products_final:
+            used_group_ids: set[int] = set()
+            for p in all_products_final:
+                gid = p.get("product_group_id")
+                if gid:
+                    used_group_ids.add(int(gid))
+            for grp in all_groups:
+                grp_id = int(grp["id"])
+                grp_name = grp.get("name", "")
+                if grp_name == "Group master":
+                    continue
+                if grp_id not in used_group_ids:
+                    try:
+                        grocy.delete_product_group(grp_id)
+                        logger.info("  → Deleted unused product group '%s'.", grp_name)
+                    except GrocyAPIError as exc:
+                        logger.warning(
+                            "Could not delete product group '%s': %s",
+                            grp_name, exc,
+                        )
+
     logger.info("--group complete: %d product(s) grouped.", updated)
     return updated
 
@@ -1230,15 +1337,24 @@ def _ai_optimize_products(
     batch.  Uses a larger batch size (1000) to give the model a broad view
     of the catalogue.
 
+    **Clean-slate mode** (``product_ids`` is ``None``): Strips all existing
+    parent product assignments and product groups, sends every real product
+    to Gemini, and rebuilds the parent/group structure from scratch.  Old
+    parent-only placeholder products are deleted after rebuilding.
+
+    **Incremental mode** (``product_ids`` is set): Only the listed products
+    are processed; existing parents and categories are provided as hints so
+    that Gemini slots new products into the existing structure.
+
     **Pack handling**: when the model identifies a product as a multi-pack
     (e.g. "Red Bull 4-pack"), the pack product's barcode is moved to the
     base product with ``amount = pack_count``, and the pack product is
     deleted from Grocy.
 
-    When *product_ids* is given, only those products are processed.
-
     Returns the number of products updated.
     """
+    full_mode = product_ids is None
+
     # --- Fetch locations -------------------------------------------------
     try:
         locations = grocy.get_locations()
@@ -1256,8 +1372,12 @@ def _ai_optimize_products(
             f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
         )
 
-    # --- Deduplicate parent products first ---------------------------------
-    _dedup_count, dedup_map = _deduplicate_parent_products(grocy, gemini_api_key, model)
+    # --- Incremental mode: deduplicate parents first ----------------------
+    dedup_map: dict[str, str] = {}
+    if not full_mode:
+        _dedup_count, dedup_map = _deduplicate_parent_products(
+            grocy, gemini_api_key, model,
+        )
 
     # --- Fetch products --------------------------------------------------
     try:
@@ -1275,32 +1395,72 @@ def _ai_optimize_products(
     for p in products:
         name_to_product[p.get("name", "")] = p
 
-    # Determine which products already act as parents (have children).
-    has_children: set[int] = set()
-    for p in products:
-        ppid = p.get("parent_product_id")
-        if ppid:
-            has_children.add(int(ppid))
+    # --- Clean-slate mode: strip parents & identify old parent products ---
+    old_parent_ids: set[int] = set()
+    if full_mode:
+        # Identify products that are parent-only placeholders (hidden,
+        # cumulate stock, created by previous optimize runs).
+        has_children: set[int] = set()
+        for p in products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                has_children.add(int(ppid))
 
-    # Collect existing parent product names so Gemini can reuse them.
-    existing_parent_names: list[str] = sorted({
-        p.get("name", "")
-        for p in products
-        if int(p["id"]) in has_children and p.get("name")
-    })
+        for p in products:
+            pid_int = int(p["id"])
+            if (
+                pid_int in has_children
+                and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
+                and p.get("hide_on_stock_overview") in (1, "1", True)
+            ):
+                old_parent_ids.add(pid_int)
 
-    # Collect existing product group names so Gemini can reuse categories.
+        # Strip parent_product_id from all child products.
+        for p in products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                try:
+                    grocy.update_product(int(p["id"]), parent_product_id="")
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Could not strip parent from '%s': %s",
+                        p.get("name"), exc,
+                    )
+                p["parent_product_id"] = None  # Clear in-memory too.
+
+        # Filter to leaf products only (exclude old parent-only placeholders).
+        products = [p for p in products if int(p["id"]) not in old_parent_ids]
+        logger.info(
+            "Clean-slate mode: stripped parents from all products, "
+            "%d old parent placeholder(s) identified for cleanup.",
+            len(old_parent_ids),
+        )
+
+    # --- Incremental mode: collect existing context ----------------------
+    existing_parent_names: list[str] = []
     existing_category_names: list[str] = []
-    try:
-        all_groups = grocy.get_product_groups()
-        existing_category_names = sorted({
-            g.get("name", "")
-            for g in all_groups
-            if g.get("name") and g.get("name") != "Group master"
+    if not full_mode:
+        has_children_inc: set[int] = set()
+        for p in products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                has_children_inc.add(int(ppid))
+        existing_parent_names = sorted({
+            p.get("name", "")
+            for p in products
+            if int(p["id"]) in has_children_inc and p.get("name")
         })
-    except GrocyAPIError:
-        pass
-    if product_ids is not None:
+        try:
+            all_groups = grocy.get_product_groups()
+            existing_category_names = sorted({
+                g.get("name", "")
+                for g in all_groups
+                if g.get("name") and g.get("name") != "Group master"
+            })
+        except GrocyAPIError:
+            pass
+
+        # Filter to requested product_ids.
         allowed = set(product_ids)
         products = [p for p in products if int(p["id"]) in allowed]
 
@@ -1416,7 +1576,7 @@ def _ai_optimize_products(
 
         # --- Apply results -----------------------------------------------
         # First pass: collect parent names, category names, and pack base names.
-        # Redirect merged-away names to their canonical replacements.
+        # In incremental mode, redirect merged-away names via dedup_map.
         parent_names: set[str] = set()
         category_names: set[str] = set()
         pack_base_names: set[str] = set()
@@ -1613,14 +1773,7 @@ def _ai_optimize_products(
             group_name = info.get("group_name")
             if group_name:
                 parent_id = parent_name_to_id.get(str(group_name))
-                current_parent = product.get("parent_product_id")
-                current_parent_int = int(current_parent) if current_parent else None
-                if (
-                    parent_id is not None
-                    and parent_id != product_id
-                    and parent_id != current_parent_int
-                    and product_id not in has_children
-                ):
+                if parent_id is not None and parent_id != product_id:
                     child_update: dict = {"parent_product_id": parent_id}
                     cat_name = info.get("category")
                     if cat_name:
@@ -1629,66 +1782,129 @@ def _ai_optimize_products(
                             child_update["product_group_id"] = child_group_id
                     try:
                         grocy.update_product(product_id, **child_update)
-                        if current_parent_int:
-                            logger.info(
-                                "  → Re-grouped '%s' (ID %s) from parent %d → '%s'.",
-                                product.get("name"), pid,
-                                current_parent_int, group_name,
-                            )
-                        else:
-                            logger.info(
-                                "  → Grouped '%s' (ID %s) under '%s'.",
-                                product.get("name"), pid, group_name,
-                            )
+                        logger.info(
+                            "  → Grouped '%s' (ID %s) under '%s'.",
+                            product.get("name"), pid, group_name,
+                        )
                         updated += 1
                     except (GrocyAPIError, ValueError) as exc:
                         logger.warning(
                             "Could not group '%s': %s", product.get("name"), exc,
                         )
 
-    # --- Clean up empty parent products ----------------------------------
-    # Re-scan products to find parents that now have zero children.
-    try:
-        all_products_after = grocy.get_all_products()
-    except GrocyAPIError:
-        all_products_after = []
+    # --- Clean up old parent-only placeholder products -------------------
+    if full_mode and old_parent_ids:
+        # Re-check which old parents are now truly unused (no new children).
+        try:
+            all_products_after = grocy.get_all_products()
+        except GrocyAPIError:
+            all_products_after = []
 
-    if all_products_after:
-        children_of: dict[int, list] = {}
+        new_children_of: set[int] = set()
         for p in all_products_after:
             ppid = p.get("parent_product_id")
             if ppid:
-                children_of.setdefault(int(ppid), []).append(p)
+                new_children_of.add(int(ppid))
 
-        for p in all_products_after:
-            pid_int = int(p["id"])
-            # A product is an empty parent if it was configured as a parent
-            # (cumulate sub-product stock + hidden from overview) but has no
-            # remaining children.
-            if (
-                pid_int not in children_of
-                and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
-                and p.get("hide_on_stock_overview") in (1, "1", True)
-                and pid_int not in deleted_ids
-            ):
-                try:
-                    picture = p.get("picture_file_name", "")
-                    if picture:
-                        try:
-                            grocy.delete_product_image(picture)
-                        except GrocyAPIError:
-                            pass
-                    grocy.delete_product(pid_int)
-                    logger.info(
-                        "  → Deleted empty parent '%s' (ID %d).",
-                        p.get("name"), pid_int,
-                    )
-                    updated += 1
-                except GrocyAPIError as exc:
-                    logger.warning(
-                        "Could not delete empty parent '%s': %s",
-                        p.get("name"), exc,
-                    )
+        for old_pid in old_parent_ids:
+            if old_pid in new_children_of or old_pid in deleted_ids:
+                continue
+            # Find the product record to get image info.
+            old_prod = next(
+                (p for p in all_products_after if int(p["id"]) == old_pid),
+                None,
+            )
+            if old_prod is None:
+                continue
+            try:
+                picture = old_prod.get("picture_file_name", "")
+                if picture:
+                    try:
+                        grocy.delete_product_image(picture)
+                    except GrocyAPIError:
+                        pass
+                grocy.delete_product(old_pid)
+                logger.info(
+                    "  → Deleted old parent '%s' (ID %d).",
+                    old_prod.get("name"), old_pid,
+                )
+                updated += 1
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Could not delete old parent '%s': %s",
+                    old_prod.get("name"), exc,
+                )
+
+    # --- Incremental mode: clean up empty parents (legacy behavior) ------
+    if not full_mode:
+        try:
+            all_products_after = grocy.get_all_products()
+        except GrocyAPIError:
+            all_products_after = []
+
+        if all_products_after:
+            children_of: dict[int, list] = {}
+            for p in all_products_after:
+                ppid = p.get("parent_product_id")
+                if ppid:
+                    children_of.setdefault(int(ppid), []).append(p)
+
+            for p in all_products_after:
+                pid_int = int(p["id"])
+                if (
+                    pid_int not in children_of
+                    and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
+                    and p.get("hide_on_stock_overview") in (1, "1", True)
+                    and pid_int not in deleted_ids
+                ):
+                    try:
+                        picture = p.get("picture_file_name", "")
+                        if picture:
+                            try:
+                                grocy.delete_product_image(picture)
+                            except GrocyAPIError:
+                                pass
+                        grocy.delete_product(pid_int)
+                        logger.info(
+                            "  → Deleted empty parent '%s' (ID %d).",
+                            p.get("name"), pid_int,
+                        )
+                        updated += 1
+                    except GrocyAPIError as exc:
+                        logger.warning(
+                            "Could not delete empty parent '%s': %s",
+                            p.get("name"), exc,
+                        )
+
+    # --- Clean up unused product groups (full mode only) -----------------
+    if full_mode:
+        try:
+            all_products_final = grocy.get_all_products()
+            all_groups = grocy.get_product_groups()
+        except GrocyAPIError:
+            all_products_final = []
+            all_groups = []
+
+        if all_groups and all_products_final:
+            used_group_ids: set[int] = set()
+            for p in all_products_final:
+                gid = p.get("product_group_id")
+                if gid:
+                    used_group_ids.add(int(gid))
+            for grp in all_groups:
+                grp_id = int(grp["id"])
+                grp_name = grp.get("name", "")
+                if grp_name == "Group master":
+                    continue
+                if grp_id not in used_group_ids:
+                    try:
+                        grocy.delete_product_group(grp_id)
+                        logger.info("  → Deleted unused product group '%s'.", grp_name)
+                    except GrocyAPIError as exc:
+                        logger.warning(
+                            "Could not delete product group '%s': %s",
+                            grp_name, exc,
+                        )
 
     logger.info("--optimize complete: %d product(s) updated.", updated)
     return updated
