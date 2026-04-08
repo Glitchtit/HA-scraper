@@ -327,6 +327,34 @@ class GrocyClient:
                 f"Failed to create product group '{name}': {exc}"
             ) from exc
 
+    def get_product_groups(self) -> list[dict]:
+        """Return all product groups from Grocy."""
+        url = self._url("/api/objects/product_groups")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json() or []
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to fetch product groups: {exc}"
+            ) from exc
+
+    def delete_product_group(self, group_id: int) -> None:
+        """Delete a product group from Grocy by its ID."""
+        url = self._url(f"/api/objects/product_groups/{group_id}")
+        try:
+            resp = self._session.delete(url, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to delete product group {group_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to delete product group {group_id}: {exc}"
+            ) from exc
+
     def update_product(self, product_id: int, **fields) -> None:
         """Update fields on an existing product.
 

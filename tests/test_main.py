@@ -800,6 +800,14 @@ class TestDeduplicateParentProducts:
         g.get_all_products.return_value = products
         g.update_product.return_value = None
         g.delete_product.return_value = None
+        g.delete_product_group.return_value = None
+        g.get_product_groups.return_value = [
+            {"id": 70, "name": "Mausteet"},
+            {"id": 71, "name": "Mauste"},
+            {"id": 72, "name": "Mausteseos"},
+            {"id": 80, "name": "Leipä"},
+        ]
+        g.ensure_product_group.return_value = 70
         # Gemini maps all spice variants → "Mausteet", Leipä → itself.
         mock_gemini.return_value = (
             '{"Mausteet": "Mausteet", "Mauste": "Mausteet", '
@@ -809,12 +817,15 @@ class TestDeduplicateParentProducts:
         result = _deduplicate_parent_products(g, "gemini-key")
 
         assert result == (2, {"Mauste": "Mausteet", "Mausteseos": "Mausteet"})
-        # Children of non-canonical parents should be moved.
-        g.update_product.assert_any_call(101, parent_product_id=10)
-        g.update_product.assert_any_call(102, parent_product_id=10)
+        # Children should be moved with product_group_id updated.
+        g.update_product.assert_any_call(101, parent_product_id=10, product_group_id=70)
+        g.update_product.assert_any_call(102, parent_product_id=10, product_group_id=70)
         # Non-canonical parents should be deleted.
         g.delete_product.assert_any_call(11)
         g.delete_product.assert_any_call(12)
+        # Orphaned product groups should be deleted.
+        g.delete_product_group.assert_any_call(71)
+        g.delete_product_group.assert_any_call(72)
         # Canonical parent 10 ("Mausteet") should NOT be deleted.
         assert all(c.args != (10,) for c in g.delete_product.call_args_list)
 
@@ -883,6 +894,12 @@ class TestDeduplicateParentProducts:
         g.update_product.return_value = None
         g.delete_product.return_value = None
         g.delete_product_image.return_value = None
+        g.delete_product_group.return_value = None
+        g.get_product_groups.return_value = [
+            {"id": 70, "name": "Mausteet"},
+            {"id": 71, "name": "Mauste"},
+        ]
+        g.ensure_product_group.return_value = 70
         mock_gemini.return_value = '{"Mausteet": "Mausteet", "Mauste": "Mausteet"}'
 
         result = _deduplicate_parent_products(g, "gemini-key")
@@ -890,6 +907,7 @@ class TestDeduplicateParentProducts:
         assert result == (1, {"Mauste": "Mausteet"})
         g.delete_product_image.assert_called_once_with("mauste.jpg")
         g.delete_product.assert_called_once_with(11)
+        g.delete_product_group.assert_called_once_with(71)
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_redirect_map_used_by_group(self, mock_gemini):
