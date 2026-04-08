@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.17.1
+
+- Fix ingress server blocking: switch to threaded HTTP server so long-running operations (discover/optimize) don't block health-check probes and UI requests
+- Suppress noisy BrokenPipeError tracebacks from disconnected clients
+
 ## 1.17.0
 
 - Configurable AI model for optimize: add `gemini_model_optimize` option to use a stronger model for full optimize/group operations while keeping the lightweight model for discover and single-product tasks
