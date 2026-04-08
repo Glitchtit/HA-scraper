@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.14.2
+
+- Fix: prevent optimize/group from undoing dedup merges — when Gemini suggests a group name that was just merged away by dedup (e.g. "Karkki" after it was merged into "Makeiset"), the name is now redirected to the canonical parent instead of recreating a duplicate
+
 ## 1.14.1
 
 - Fix: add parent product deduplication before optimize and group — synonymous parents (e.g. "Mauste", "Mausteet", "Mausteseos") are now merged into one canonical parent using Gemini before the main optimize runs, preventing products from bouncing between similar categories

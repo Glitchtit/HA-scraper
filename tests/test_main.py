@@ -808,7 +808,7 @@ class TestDeduplicateParentProducts:
 
         result = _deduplicate_parent_products(g, "gemini-key")
 
-        assert result == 2  # "Mauste" and "Mausteseos" merged.
+        assert result == (2, {"Mauste": "Mausteet", "Mausteseos": "Mausteet"})
         # Children of non-canonical parents should be moved.
         g.update_product.assert_any_call(101, parent_product_id=10)
         g.update_product.assert_any_call(102, parent_product_id=10)
@@ -834,9 +834,7 @@ class TestDeduplicateParentProducts:
 
         result = _deduplicate_parent_products(g, "gemini-key")
 
-        assert result == 0
-        g.update_product.assert_not_called()
-        g.delete_product.assert_not_called()
+        assert result == (0, {})
 
     def test_skips_when_fewer_than_two_parents(self):
         """No Gemini call when only 0 or 1 parent exists."""
@@ -850,11 +848,11 @@ class TestDeduplicateParentProducts:
 
         result = _deduplicate_parent_products(g, "gemini-key")
 
-        assert result == 0
+        assert result == (0, {})
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_handles_gemini_failure_gracefully(self, mock_gemini):
-        """Dedup returns 0 and doesn't crash on Gemini failure."""
+        """Dedup returns (0, {}) and doesn't crash on Gemini failure."""
         from grocy_scraper_addon.main import _deduplicate_parent_products
         products = [
             {"id": 10, "name": "Mausteet"},
@@ -868,9 +866,7 @@ class TestDeduplicateParentProducts:
 
         result = _deduplicate_parent_products(g, "gemini-key")
 
-        assert result == 0
-        g.update_product.assert_not_called()
-        g.delete_product.assert_not_called()
+        assert result == (0, {})
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_deletes_image_before_parent(self, mock_gemini):
@@ -891,16 +887,82 @@ class TestDeduplicateParentProducts:
 
         result = _deduplicate_parent_products(g, "gemini-key")
 
-        assert result == 1
+        assert result == (1, {"Mauste": "Mausteet"})
         g.delete_product_image.assert_called_once_with("mauste.jpg")
         g.delete_product.assert_called_once_with(11)
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_redirect_map_used_by_group(self, mock_gemini):
+        """_ai_group_products redirects merged-away names via dedup map."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [
+            {"id": 10, "name": "Makeiset"},
+            {"id": 100, "name": "Curry", "parent_product_id": 10},
+            {"id": 50, "name": "Suklaapatukka"},
+        ]
+        g = MagicMock(spec=GrocyClient)
+        g.get_all_products.return_value = products
+        g.update_product.return_value = None
+        g.ensure_product_group.return_value = 60
+        # Gemini suggests "Karkki" (was merged into "Makeiset" by dedup).
+        mock_gemini.return_value = '{"50": "Karkki"}'
+
+        with patch(
+            "grocy_scraper_addon.main._deduplicate_parent_products",
+            return_value=(1, {"Karkki": "Makeiset"}),
+        ):
+            _ai_group_products(g, "gemini-key")
+
+        # Should use existing "Makeiset" (ID 10), NOT create new "Karkki".
+        g.create_product.assert_not_called()
+        g.update_product.assert_any_call(50, parent_product_id=10, product_group_id=60)
+
+    @patch("grocy_scraper_addon.main._call_gemini_json")
+    def test_redirect_map_used_by_optimize(self, mock_gemini_json):
+        """_ai_optimize_products redirects merged-away names via dedup map."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 10, "name": "Makeiset",
+             "cumulate_min_stock_amount_of_sub_products": 1,
+             "hide_on_stock_overview": 1},
+            {"id": 100, "name": "Curry", "parent_product_id": 10},
+            {"id": 50, "name": "Suklaapatukka"},
+        ]
+        locations = [{"id": 1, "name": "Fridge"}]
+        g = MagicMock(spec=GrocyClient)
+        g.get_all_products.return_value = products
+        g.get_locations.return_value = locations
+        g.update_product.return_value = None
+        g.ensure_product_group.return_value = 60
+        g.get_product_stock_locations.return_value = []
+        # Gemini suggests "Karkki" as group (was merged into "Makeiset").
+        mock_gemini_json.return_value = {
+            "50": {
+                "location_id": 1,
+                "best_before_days": 365,
+                "group_name": "Karkki",
+                "pack_of": None,
+                "pack_count": None,
+            },
+        }
+
+        with patch(
+            "grocy_scraper_addon.main._deduplicate_parent_products",
+            return_value=(1, {"Karkki": "Makeiset"}),
+        ):
+            _ai_optimize_products(g, "gemini-key")
+
+        # Should use existing "Makeiset" (ID 10), NOT create new "Karkki".
+        create_calls = [c for c in g.create_product.call_args_list]
+        assert not any("Karkki" in str(c) for c in create_calls), \
+            f"Should not create 'Karkki' product, but got: {create_calls}"
 
 
 # ---------------------------------------------------------------------------
 # _ai_group_products
 # ---------------------------------------------------------------------------
 
-@patch("grocy_scraper_addon.main._deduplicate_parent_products", return_value=0)
+@patch("grocy_scraper_addon.main._deduplicate_parent_products", return_value=(0, {}))
 class TestAiGroupProducts:
     _GROUP_MASTER_ID = 50
     _PARENT_GROUP_ID = 60
@@ -2131,7 +2193,7 @@ class TestMainOptimizeMode:
         mock_optimize.assert_called_once()
 
 
-@patch("grocy_scraper_addon.main._deduplicate_parent_products", return_value=0)
+@patch("grocy_scraper_addon.main._deduplicate_parent_products", return_value=(0, {}))
 class TestAiOptimizeProducts:
     def _make_grocy(self, products, locations):
         g = MagicMock(spec=GrocyClient)

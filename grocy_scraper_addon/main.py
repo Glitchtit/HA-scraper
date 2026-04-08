@@ -754,7 +754,7 @@ def _deduplicate_parent_products(
     grocy: GrocyClient,
     gemini_api_key: str,
     model: str = _GEMINI_DEFAULT_MODEL,
-) -> int:
+) -> tuple[int, dict[str, str]]:
     """Merge synonymous parent products so only canonical names survive.
 
     Collects all parent product names (products that have at least one
@@ -762,13 +762,18 @@ def _deduplicate_parent_products(
     every child of non-canonical parents to the canonical parent and
     deletes the non-canonical ones.
 
-    Returns the number of parent products merged (deleted).
+    Returns ``(merged_count, redirect_map)`` where *redirect_map* maps
+    each merged-away parent name to its canonical replacement (e.g.
+    ``{"Karkki": "Makeiset", "Mauste": "Mausteet"}``).  Callers should
+    use the map to redirect any Gemini-suggested group name that matches
+    a merged-away parent to the canonical name, preventing recreation of
+    deleted parents.
     """
     try:
         products = grocy.get_all_products()
     except GrocyAPIError as exc:
         logger.error("Could not fetch products for dedup: %s", exc)
-        return 0
+        return 0, {}
 
     # Build parent→children mapping.
     children_of: dict[int, list[dict]] = {}
@@ -785,7 +790,7 @@ def _deduplicate_parent_products(
             parent_products[pid] = p
 
     if len(parent_products) < 2:
-        return 0  # Nothing to deduplicate.
+        return 0, {}  # Nothing to deduplicate.
 
     parent_names = sorted(
         p.get("name", f"ID-{pid}") for pid, p in parent_products.items()
@@ -823,7 +828,7 @@ def _deduplicate_parent_products(
         mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
     except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("Gemini dedup call failed: %s", exc)
-        return 0
+        return 0, {}
 
     # Build canonical → [non-canonical IDs] from the mapping.
     # We need name→product lookup.
@@ -845,9 +850,10 @@ def _deduplicate_parent_products(
 
     if not canonical_groups:
         logger.debug("No duplicate parent groups detected by Gemini.")
-        return 0
+        return 0, {}
 
     merged = 0
+    redirect_map: dict[str, str] = {}  # merged-away name → canonical name
     for canonical_name, non_canonical_parents in canonical_groups.items():
         # Find the canonical parent product.
         canonical_parent = name_to_parent.get(canonical_name)
@@ -894,6 +900,7 @@ def _deduplicate_parent_products(
                     dup_name, dup_id, canonical_name,
                 )
                 merged += 1
+                redirect_map[dup_name] = canonical_name
             except GrocyAPIError as exc:
                 logger.warning(
                     "Could not delete duplicate parent '%s': %s",
@@ -902,7 +909,7 @@ def _deduplicate_parent_products(
 
     if merged:
         logger.info("Deduplicated %d parent product(s).", merged)
-    return merged
+    return merged, redirect_map
 
 
 def _ai_group_products(
@@ -932,7 +939,7 @@ def _ai_group_products(
     Returns the number of products updated.
     """
     # Consolidate duplicate parent products before grouping.
-    _deduplicate_parent_products(grocy, gemini_api_key, model)
+    _dedup_count, dedup_map = _deduplicate_parent_products(grocy, gemini_api_key, model)
 
     try:
         products = grocy.get_all_products()
@@ -1044,12 +1051,15 @@ def _ai_group_products(
             continue
 
         # Collect unique parent names needed for this batch.
+        # Redirect merged-away names to their canonical replacements.
         parent_names: set[str] = set()
         for product in batch:
             pid = str(product["id"])
             parent_name = mapping.get(pid)
             if parent_name:
-                parent_names.add(str(parent_name))
+                parent_name = dedup_map.get(str(parent_name), str(parent_name))
+                mapping[pid] = parent_name
+                parent_names.add(parent_name)
 
         # Ensure each parent product exists.
         parent_name_to_id: dict[str, int] = {}
@@ -1198,7 +1208,7 @@ def _ai_optimize_products(
         )
 
     # --- Deduplicate parent products first ---------------------------------
-    _deduplicate_parent_products(grocy, gemini_api_key, model)
+    _dedup_count, dedup_map = _deduplicate_parent_products(grocy, gemini_api_key, model)
 
     # --- Fetch products --------------------------------------------------
     try:
@@ -1324,6 +1334,7 @@ def _ai_optimize_products(
 
         # --- Apply results -----------------------------------------------
         # First pass: collect parent names and pack base names to pre-create.
+        # Redirect merged-away names to their canonical replacements.
         parent_names: set[str] = set()
         pack_base_names: set[str] = set()
         for product in batch:
@@ -1333,7 +1344,9 @@ def _ai_optimize_products(
                 continue
             gn = info.get("group_name")
             if gn:
-                parent_names.add(str(gn))
+                gn = dedup_map.get(str(gn), str(gn))
+                info["group_name"] = gn
+                parent_names.add(gn)
             po = info.get("pack_of")
             if po:
                 pack_base_names.add(str(po))
