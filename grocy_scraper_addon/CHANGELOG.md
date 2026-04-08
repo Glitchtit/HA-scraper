@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.14.3
+
+- Fix: dedup now syncs product groups with parent products — when merging synonymous parents, children's `product_group_id` is updated to match the canonical group, and orphaned product groups are deleted
+
 ## 1.14.2
 
 - Fix: prevent optimize/group from undoing dedup merges — when Gemini suggests a group name that was just merged away by dedup (e.g. "Karkki" after it was merged into "Makeiset"), the name is now redirected to the canonical parent instead of recreating a duplicate

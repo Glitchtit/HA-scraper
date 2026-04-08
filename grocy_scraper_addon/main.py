@@ -852,8 +852,21 @@ def _deduplicate_parent_products(
         logger.debug("No duplicate parent groups detected by Gemini.")
         return 0, {}
 
+    # Build a name→group_id mapping from existing product groups so we can
+    # update children's product_group_id when moving them.
+    try:
+        all_groups = grocy.get_product_groups()
+    except GrocyAPIError:
+        all_groups = []
+    group_name_to_id: dict[str, int] = {}
+    for grp in all_groups:
+        gname = grp.get("name", "")
+        if gname:
+            group_name_to_id[gname] = int(grp["id"])
+
     merged = 0
     redirect_map: dict[str, str] = {}  # merged-away name → canonical name
+    merged_group_names: set[str] = set()  # track orphaned product group names
     for canonical_name, non_canonical_parents in canonical_groups.items():
         # Find the canonical parent product.
         canonical_parent = name_to_parent.get(canonical_name)
@@ -865,16 +878,28 @@ def _deduplicate_parent_products(
             continue
         canonical_id = int(canonical_parent["id"])
 
+        # Ensure a product group exists for the canonical name.
+        canonical_group_id: int | None = group_name_to_id.get(canonical_name)
+        if canonical_group_id is None:
+            try:
+                canonical_group_id = grocy.ensure_product_group(canonical_name)
+                group_name_to_id[canonical_name] = canonical_group_id
+            except GrocyAPIError:
+                pass
+
         for dup_parent in non_canonical_parents:
             dup_id = int(dup_parent["id"])
             dup_name = dup_parent.get("name", "?")
             dup_children = children_of.get(dup_id, [])
 
-            # Move children to canonical parent.
+            # Move children to canonical parent and update product group.
             for child in dup_children:
                 child_id = int(child["id"])
                 try:
-                    grocy.update_product(child_id, parent_product_id=canonical_id)
+                    update_fields: dict = {"parent_product_id": canonical_id}
+                    if canonical_group_id is not None:
+                        update_fields["product_group_id"] = canonical_group_id
+                    grocy.update_product(child_id, **update_fields)
                     logger.info(
                         "  → Moved '%s' (ID %d) from '%s' → '%s'.",
                         child.get("name", "?"), child_id,
@@ -901,11 +926,28 @@ def _deduplicate_parent_products(
                 )
                 merged += 1
                 redirect_map[dup_name] = canonical_name
+                merged_group_names.add(dup_name)
             except GrocyAPIError as exc:
                 logger.warning(
                     "Could not delete duplicate parent '%s': %s",
                     dup_name, exc,
                 )
+
+    # Clean up orphaned product groups that matched merged-away parent names.
+    for gname in merged_group_names:
+        gid = group_name_to_id.get(gname)
+        if gid is None:
+            continue
+        try:
+            grocy.delete_product_group(gid)
+            logger.info(
+                "  → Deleted orphaned product group '%s' (ID %d).",
+                gname, gid,
+            )
+        except GrocyAPIError as exc:
+            logger.debug(
+                "Could not delete product group '%s': %s", gname, exc,
+            )
 
     if merged:
         logger.info("Deduplicated %d parent product(s).", merged)
