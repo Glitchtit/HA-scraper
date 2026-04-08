@@ -21,6 +21,7 @@ class GrocyScraperPanel extends HTMLElement {
     this._initialized = false;
     this._verbose = false;
     this._logSessions = [];  // [{label, logs}] – cumulative terminal history
+    this._heartbeatTimer = null;
   }
 
   set hass(hass) {
@@ -29,6 +30,14 @@ class GrocyScraperPanel extends HTMLElement {
       this._initialized = true;
       this._render();
       this._loadConfig();
+      this._startHeartbeat();
+    }
+  }
+
+  disconnectedCallback() {
+    if (this._heartbeatTimer) {
+      clearTimeout(this._heartbeatTimer);
+      this._heartbeatTimer = null;
     }
   }
 
@@ -225,11 +234,32 @@ class GrocyScraperPanel extends HTMLElement {
         }
         .badge.ok   { background:var(--success-color,#4caf50); }
         .badge.warn { background:var(--warning-color,#ff9800); }
+
+        /* ── Connection banner ── */
+        .disconnect-banner {
+          display:none; padding:12px 16px; margin-bottom:16px;
+          border-radius:12px; background:#d97706; color:#fff;
+          font-size:0.9rem; font-weight:500;
+          align-items:center; justify-content:space-between;
+        }
+        .disconnect-banner.show { display:flex; }
+        .disconnect-banner button {
+          background:rgba(255,255,255,.2); border:none; color:#fff;
+          padding:6px 14px; border-radius:8px; cursor:pointer;
+          font-size:0.8rem; font-weight:600;
+        }
+        .disconnect-banner button:hover { background:rgba(255,255,255,.3); }
       </style>
 
       <!-- Header -->
       <div class="header">
         <h1>🛒 Grocy Scraper</h1>
+      </div>
+
+      <!-- Connection lost banner -->
+      <div class="disconnect-banner" id="disconnect-banner">
+        <span>⚠️ Yhteys katkesi — lataa sivu uudelleen</span>
+        <button onclick="window.location.reload()">Lataa uudelleen</button>
       </div>
 
       <!-- Search card -->
@@ -530,6 +560,33 @@ class GrocyScraperPanel extends HTMLElement {
           </div>
         </div>`;
     }).join("");
+  }
+
+  // -------------------------------------------------------------------------
+  // Heartbeat keep-alive (prevents Cloudflare 524 timeout)
+  // -------------------------------------------------------------------------
+
+  _startHeartbeat() {
+    const ping = async () => {
+      const banner = this.shadowRoot.querySelector("#disconnect-banner");
+      try {
+        if (this._hass) {
+          await this._hass.callWS({ type: "grocy_scraper/get_config" });
+        }
+        if (banner) banner.classList.remove("show");
+      } catch {
+        if (banner) banner.classList.add("show");
+      }
+      this._heartbeatTimer = setTimeout(ping, 45000);
+    };
+    this._heartbeatTimer = setTimeout(ping, 45000);
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        clearTimeout(this._heartbeatTimer);
+        ping();
+      }
+    });
   }
 
   // -------------------------------------------------------------------------

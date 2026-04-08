@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.17.2
+
+- Add connection keep-alive heartbeat to sidebar panel to prevent Cloudflare 524 timeout when page is open for extended periods
+- Show reconnect banner with reload button when connection is lost
+
 ## 1.17.1
 
 - Fix ingress server blocking: switch to threaded HTTP server so long-running operations (discover/optimize) don't block health-check probes and UI requests
