@@ -1643,10 +1643,9 @@ def _discover_single_barcode(
             for entry in bbuddy.get_pending_barcodes():
                 if entry.barcode == barcode:
                     bbuddy.delete_barcode(entry.id)
-                    logger.info("Removed EAN %s from Barcode Buddy.", barcode)
-                    break
+                    logger.info("Removed EAN %s (id %s) from Barcode Buddy.", barcode, entry.id)
         except BarcodeBuddyError as exc:
-            logger.debug("Could not clean up Barcode Buddy for %s: %s", barcode, exc)
+            logger.warning("Could not clean up Barcode Buddy for %s: %s", barcode, exc)
 
     logger.info("Single-barcode discover complete for EAN %s.", barcode)
     return {

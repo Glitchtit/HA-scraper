@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.13.3
+
+- Improve Barcode Buddy cleanup: remove ALL matching entries for a barcode (not just the first), and log failures at WARNING level instead of DEBUG
+
 ## 1.13.2
 
 - Fix: single-barcode discover (from HA-grocy-stock scan) now removes the barcode from Barcode Buddy's unknown/pending list after a successful find
