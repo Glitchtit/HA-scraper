@@ -800,14 +800,6 @@ class TestDeduplicateParentProducts:
         g.get_all_products.return_value = products
         g.update_product.return_value = None
         g.delete_product.return_value = None
-        g.delete_product_group.return_value = None
-        g.get_product_groups.return_value = [
-            {"id": 70, "name": "Mausteet"},
-            {"id": 71, "name": "Mauste"},
-            {"id": 72, "name": "Mausteseos"},
-            {"id": 80, "name": "Leipä"},
-        ]
-        g.ensure_product_group.return_value = 70
         # Gemini maps all spice variants → "Mausteet", Leipä → itself.
         mock_gemini.return_value = (
             '{"Mausteet": "Mausteet", "Mauste": "Mausteet", '
@@ -817,15 +809,12 @@ class TestDeduplicateParentProducts:
         result = _deduplicate_parent_products(g, "gemini-key")
 
         assert result == (2, {"Mauste": "Mausteet", "Mausteseos": "Mausteet"})
-        # Children should be moved with product_group_id updated.
-        g.update_product.assert_any_call(101, parent_product_id=10, product_group_id=70)
-        g.update_product.assert_any_call(102, parent_product_id=10, product_group_id=70)
+        # Children of non-canonical parents should be moved.
+        g.update_product.assert_any_call(101, parent_product_id=10)
+        g.update_product.assert_any_call(102, parent_product_id=10)
         # Non-canonical parents should be deleted.
         g.delete_product.assert_any_call(11)
         g.delete_product.assert_any_call(12)
-        # Orphaned product groups should be deleted.
-        g.delete_product_group.assert_any_call(71)
-        g.delete_product_group.assert_any_call(72)
         # Canonical parent 10 ("Mausteet") should NOT be deleted.
         assert all(c.args != (10,) for c in g.delete_product.call_args_list)
 
@@ -894,12 +883,6 @@ class TestDeduplicateParentProducts:
         g.update_product.return_value = None
         g.delete_product.return_value = None
         g.delete_product_image.return_value = None
-        g.delete_product_group.return_value = None
-        g.get_product_groups.return_value = [
-            {"id": 70, "name": "Mausteet"},
-            {"id": 71, "name": "Mauste"},
-        ]
-        g.ensure_product_group.return_value = 70
         mock_gemini.return_value = '{"Mausteet": "Mausteet", "Mauste": "Mausteet"}'
 
         result = _deduplicate_parent_products(g, "gemini-key")
@@ -907,7 +890,6 @@ class TestDeduplicateParentProducts:
         assert result == (1, {"Mauste": "Mausteet"})
         g.delete_product_image.assert_called_once_with("mauste.jpg")
         g.delete_product.assert_called_once_with(11)
-        g.delete_product_group.assert_called_once_with(71)
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_redirect_map_used_by_group(self, mock_gemini):
@@ -922,8 +904,11 @@ class TestDeduplicateParentProducts:
         g.get_all_products.return_value = products
         g.update_product.return_value = None
         g.ensure_product_group.return_value = 60
-        # Gemini suggests "Karkki" (was merged into "Makeiset" by dedup).
-        mock_gemini.return_value = '{"50": "Karkki"}'
+        g.get_product_groups.return_value = []
+        # Gemini suggests "Karkki" parent (was merged into "Makeiset" by dedup).
+        mock_gemini.return_value = (
+            '{"50": {"parent": "Karkki", "category": "Makeiset"}}'
+        )
 
         with patch(
             "grocy_scraper_addon.main._deduplicate_parent_products",
@@ -952,6 +937,7 @@ class TestDeduplicateParentProducts:
         g.get_locations.return_value = locations
         g.update_product.return_value = None
         g.ensure_product_group.return_value = 60
+        g.get_product_groups.return_value = []
         g.get_product_stock_locations.return_value = []
         # Gemini suggests "Karkki" as group (was merged into "Makeiset").
         mock_gemini_json.return_value = {
@@ -959,6 +945,7 @@ class TestDeduplicateParentProducts:
                 "location_id": 1,
                 "best_before_days": 365,
                 "group_name": "Karkki",
+                "category": "Makeiset",
                 "pack_of": None,
                 "pack_count": None,
             },
@@ -983,18 +970,19 @@ class TestDeduplicateParentProducts:
 @patch("grocy_scraper_addon.main._deduplicate_parent_products", return_value=(0, {}))
 class TestAiGroupProducts:
     _GROUP_MASTER_ID = 50
-    _PARENT_GROUP_ID = 60
+    _CATEGORY_GROUP_ID = 60
 
     def _make_grocy(self, products):
         g = MagicMock(spec=GrocyClient)
         g.get_all_products.return_value = products
         g.update_product.return_value = None
         g.create_product.return_value = 100
-        # First call → "Group master"; subsequent calls → per-parent groups.
+        g.get_product_groups.return_value = []
+        # First call → "Group master"; subsequent calls → category groups.
         g.ensure_product_group.side_effect = (
             lambda name: self._GROUP_MASTER_ID
             if name == "Group master"
-            else self._PARENT_GROUP_ID
+            else self._CATEGORY_GROUP_ID
         )
         return g
 
@@ -1007,13 +995,17 @@ class TestAiGroupProducts:
             {"id": 3, "name": "Fazer ruisleipä"},
         ]
         grocy = self._make_grocy(products)
-        mock_gemini.return_value = '{"1": "Maito", "2": "Maito", "3": null}'
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}, '
+            '"2": {"parent": "Maito", "category": "Maitotaloustuotteet"}, '
+            '"3": null}'
+        )
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 2
-        # "Group master" and per-parent product groups should be ensured.
+        # "Group master" and category product groups should be ensured.
         grocy.ensure_product_group.assert_any_call("Group master")
-        grocy.ensure_product_group.assert_any_call("Maito")
+        grocy.ensure_product_group.assert_any_call("Maitotaloustuotteet")
         # Parent product "Maito" should be created (not in existing products).
         grocy.create_product.assert_called_once_with(
             "Maito", location_id=None, quantity_unit_id=None,
@@ -1027,12 +1019,12 @@ class TestAiGroupProducts:
             product_group_id=self._GROUP_MASTER_ID,
         )
         # Child products should be updated with parent_product_id and the
-        # per-parent product group.
+        # broad category product group.
         grocy.update_product.assert_any_call(
-            1, parent_product_id=100, product_group_id=self._PARENT_GROUP_ID,
+            1, parent_product_id=100, product_group_id=self._CATEGORY_GROUP_ID,
         )
         grocy.update_product.assert_any_call(
-            2, parent_product_id=100, product_group_id=self._PARENT_GROUP_ID,
+            2, parent_product_id=100, product_group_id=self._CATEGORY_GROUP_ID,
         )
 
     @patch("grocy_scraper_addon.main._call_gemini")
@@ -1043,15 +1035,17 @@ class TestAiGroupProducts:
             {"id": 11, "name": "Pirkka kevytmaito 1l"},
         ]
         grocy = self._make_grocy(products)
-        mock_gemini.return_value = '{"10": null, "11": "Maito"}'
+        mock_gemini.return_value = (
+            '{"10": null, "11": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 1
         # Should NOT create a new product — reuse existing "Maito".
         grocy.create_product.assert_not_called()
-        # Child should be assigned parent and per-parent product group.
+        # Child should be assigned parent and category product group.
         grocy.update_product.assert_any_call(
-            11, parent_product_id=10, product_group_id=self._PARENT_GROUP_ID,
+            11, parent_product_id=10, product_group_id=self._CATEGORY_GROUP_ID,
         )
         # Existing parent should still be updated with group / hide flags.
         grocy.update_product.assert_any_call(
@@ -1070,7 +1064,9 @@ class TestAiGroupProducts:
         ]
         grocy = self._make_grocy(products)
         # Only product 2 should be sent to Gemini (product 1 already has parent).
-        mock_gemini.return_value = '{"2": "Maito"}'
+        mock_gemini.return_value = (
+            '{"2": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 1
@@ -1116,7 +1112,9 @@ class TestAiGroupProducts:
         products = [{"id": 5, "name": "Maito"}]
         grocy = self._make_grocy(products)
         # Gemini says product 5 should be under "Maito", but that IS product 5.
-        mock_gemini.return_value = '{"5": "Maito"}'
+        mock_gemini.return_value = (
+            '{"5": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
 
         result = _ai_group_products(grocy, "key")
         assert result == 0
@@ -1130,7 +1128,9 @@ class TestAiGroupProducts:
         from grocy_scraper_addon.main import _ai_group_products
         products = [{"id": 1, "name": "Pirkka maito"}]
         grocy = self._make_grocy(products)
-        mock_gemini.return_value = '{"1": "Maito"}'
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
 
         _ai_group_products(grocy, "key", location_id=5, quantity_unit_id=3)
         grocy.create_product.assert_called_once_with(
@@ -1147,7 +1147,10 @@ class TestAiGroupProducts:
         ]
         grocy = self._make_grocy(products)
         grocy.ensure_product_group.side_effect = GrocyAPIError("fail")
-        mock_gemini.return_value = '{"1": "Maito", "2": "Maito"}'
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}, '
+            '"2": {"parent": "Maito", "category": "Maitotaloustuotteet"}}'
+        )
 
         result = _ai_group_products(grocy, "key")
         assert result == 2
@@ -1174,7 +1177,9 @@ class TestAiGroupProducts:
         ]
         grocy = self._make_grocy(products)
         # Gemini only sees product 20 (the only truly ungrouped candidate).
-        mock_gemini.return_value = '{"20": "Juustot"}'
+        mock_gemini.return_value = (
+            '{"20": {"parent": "Juustot", "category": "Maitotaloustuotteet"}}'
+        )
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 1
@@ -1197,7 +1202,9 @@ class TestAiGroupProducts:
         grocy = self._make_grocy(products)
         # Gemini says product 2 should be grouped under "Sipuli", but the
         # existing "Sipuli" (id 1) is already a child → must not reuse it.
-        mock_gemini.return_value = '{"2": "Sipuli"}'
+        mock_gemini.return_value = (
+            '{"2": {"parent": "Sipuli", "category": "Vihannekset"}}'
+        )
 
         result = _ai_group_products(grocy, "gemini-key")
         assert result == 0
@@ -2226,6 +2233,7 @@ class TestAiOptimizeProducts:
         g.update_barcode.return_value = None
         g.delete_product.return_value = None
         g.delete_product_image.return_value = None
+        g.get_product_groups.return_value = []
         return g
 
     @patch("grocy_scraper_addon.main._call_gemini")
@@ -2239,9 +2247,11 @@ class TestAiOptimizeProducts:
         grocy = self._make_grocy(products, locations)
         mock_gemini.return_value = (
             '{"1": {"location_id": 2, "best_before_days": 14, '
-            '"group_name": "Maito", "pack_of": null, "pack_count": null}, '
+            '"group_name": "Maito", "category": "Maitotaloustuotteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"2": {"location_id": 3, "best_before_days": 1095, '
-            '"group_name": null, "pack_of": null, "pack_count": null}}'
+            '"group_name": null, "category": "Siivous", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         result = _ai_optimize_products(grocy, "gemini-key")
@@ -2273,9 +2283,11 @@ class TestAiOptimizeProducts:
         ]
         mock_gemini.return_value = (
             '{"1": {"location_id": 2, "best_before_days": 365, '
-            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"group_name": null, "category": "Juomat", '
+            '"pack_of": null, "pack_count": null}, '
             '"2": {"location_id": 2, "best_before_days": 365, '
-            '"group_name": null, "pack_of": "Red Bull", "pack_count": 4}}'
+            '"group_name": null, "category": "Juomat", '
+            '"pack_of": "Red Bull", "pack_count": 4}}'
         )
 
         result = _ai_optimize_products(grocy, "gemini-key")
@@ -2305,7 +2317,8 @@ class TestAiOptimizeProducts:
         grocy = self._make_grocy(products, locations)
         mock_gemini.return_value = (
             '{"1": {"location_id": 2, "best_before_days": 14, '
-            '"group_name": null, "pack_of": null, "pack_count": null}}'
+            '"group_name": null, "category": "Maitotaloustuotteet", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         result = _ai_optimize_products(grocy, "gemini-key", product_ids=[1])
@@ -2340,18 +2353,27 @@ class TestAiOptimizeProducts:
         ]
         locations = [{"id": 2, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
+        # Also provide existing product groups to verify category hint.
+        grocy.get_product_groups.return_value = [
+            {"id": 1, "name": "Mausteet"},
+            {"id": 2, "name": "Group master"},
+        ]
         mock_gemini.return_value = (
             '{"10": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"group_name": null, "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"11": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "pack_of": null, "pack_count": null}, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"12": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "pack_of": null, "pack_count": null}}'
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         _ai_optimize_products(grocy, "gemini-key")
         prompt = mock_gemini.call_args[0][0]
-        assert "Existing product groups" in prompt
+        assert "Existing parent products" in prompt
+        assert "Existing product categories" in prompt
         assert '"Mausteet"' in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
@@ -2367,7 +2389,8 @@ class TestAiOptimizeProducts:
         grocy = self._make_grocy(products, locations)
         mock_gemini.return_value = (
             '{"12": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "pack_of": null, "pack_count": null}}'
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         _ai_optimize_products(grocy, "gemini-key", product_ids=[12])
@@ -2407,13 +2430,17 @@ class TestAiOptimizeProducts:
         ]
         mock_gemini.return_value = (
             '{"10": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"group_name": null, "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"20": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"group_name": null, "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"11": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "pack_of": null, "pack_count": null}, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"12": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "pack_of": null, "pack_count": null}}'
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         result = _ai_optimize_products(grocy, "gemini-key")
@@ -2453,9 +2480,11 @@ class TestAiOptimizeProducts:
         ]
         mock_gemini.return_value = (
             '{"50": {"location_id": 2, "best_before_days": 365, '
-            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"group_name": null, "category": "Muut", '
+            '"pack_of": null, "pack_count": null}, '
             '"51": {"location_id": 2, "best_before_days": 365, '
-            '"group_name": "NewParent", "pack_of": null, "pack_count": null}}'
+            '"group_name": "NewParent", "category": "Muut", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         _ai_optimize_products(grocy, "gemini-key")
@@ -2473,9 +2502,11 @@ class TestAiOptimizeProducts:
         grocy = self._make_grocy(products, locations)
         mock_gemini.return_value = (
             '{"10": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": null, "pack_of": null, "pack_count": null}, '
+            '"group_name": null, "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
             '"11": {"location_id": 2, "best_before_days": 730, '
-            '"group_name": "Mausteet", "pack_of": null, "pack_count": null}}'
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
         )
 
         _ai_optimize_products(grocy, "gemini-key")

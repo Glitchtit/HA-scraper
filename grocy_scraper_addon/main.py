@@ -852,21 +852,8 @@ def _deduplicate_parent_products(
         logger.debug("No duplicate parent groups detected by Gemini.")
         return 0, {}
 
-    # Build a name→group_id mapping from existing product groups so we can
-    # update children's product_group_id when moving them.
-    try:
-        all_groups = grocy.get_product_groups()
-    except GrocyAPIError:
-        all_groups = []
-    group_name_to_id: dict[str, int] = {}
-    for grp in all_groups:
-        gname = grp.get("name", "")
-        if gname:
-            group_name_to_id[gname] = int(grp["id"])
-
     merged = 0
     redirect_map: dict[str, str] = {}  # merged-away name → canonical name
-    merged_group_names: set[str] = set()  # track orphaned product group names
     for canonical_name, non_canonical_parents in canonical_groups.items():
         # Find the canonical parent product.
         canonical_parent = name_to_parent.get(canonical_name)
@@ -878,28 +865,16 @@ def _deduplicate_parent_products(
             continue
         canonical_id = int(canonical_parent["id"])
 
-        # Ensure a product group exists for the canonical name.
-        canonical_group_id: int | None = group_name_to_id.get(canonical_name)
-        if canonical_group_id is None:
-            try:
-                canonical_group_id = grocy.ensure_product_group(canonical_name)
-                group_name_to_id[canonical_name] = canonical_group_id
-            except GrocyAPIError:
-                pass
-
         for dup_parent in non_canonical_parents:
             dup_id = int(dup_parent["id"])
             dup_name = dup_parent.get("name", "?")
             dup_children = children_of.get(dup_id, [])
 
-            # Move children to canonical parent and update product group.
+            # Move children to canonical parent.
             for child in dup_children:
                 child_id = int(child["id"])
                 try:
-                    update_fields: dict = {"parent_product_id": canonical_id}
-                    if canonical_group_id is not None:
-                        update_fields["product_group_id"] = canonical_group_id
-                    grocy.update_product(child_id, **update_fields)
+                    grocy.update_product(child_id, parent_product_id=canonical_id)
                     logger.info(
                         "  → Moved '%s' (ID %d) from '%s' → '%s'.",
                         child.get("name", "?"), child_id,
@@ -926,28 +901,11 @@ def _deduplicate_parent_products(
                 )
                 merged += 1
                 redirect_map[dup_name] = canonical_name
-                merged_group_names.add(dup_name)
             except GrocyAPIError as exc:
                 logger.warning(
                     "Could not delete duplicate parent '%s': %s",
                     dup_name, exc,
                 )
-
-    # Clean up orphaned product groups that matched merged-away parent names.
-    for gname in merged_group_names:
-        gid = group_name_to_id.get(gname)
-        if gid is None:
-            continue
-        try:
-            grocy.delete_product_group(gid)
-            logger.info(
-                "  → Deleted orphaned product group '%s' (ID %d).",
-                gname, gid,
-            )
-        except GrocyAPIError as exc:
-            logger.debug(
-                "Could not delete product group '%s': %s", gname, exc,
-            )
 
     if merged:
         logger.info("Deduplicated %d parent product(s).", merged)
@@ -972,8 +930,14 @@ def _ai_group_products(
     ``cumulate_min_stock_amount_of_sub_products`` enabled.  Each parent is
     also assigned to the ``"Group master"`` product group and marked with
     ``hide_on_stock_overview`` so it does not clutter the stock overview.
-    A product group matching the parent name (e.g. ``"Maito"``) is created
-    for each group and assigned to every child product in that group.
+
+    Gemini returns two levels for each product:
+
+    * **parent** — a specific parent product name (e.g. ``"Mustapippuri"``)
+    * **category** — a broad product group (e.g. ``"Mausteet"``)
+
+    The parent is used for Grocy parent-product assignment (many, detailed).
+    The category is used for Grocy product-group assignment (few, general).
 
     When *product_ids* is given, only those products are considered for
     grouping instead of the entire Grocy catalogue.
@@ -1037,6 +1001,18 @@ def _ai_group_products(
     for p in products:
         name_to_product[p.get("name", "")] = p
 
+    # Collect existing product group names so Gemini can reuse categories.
+    existing_category_names: list[str] = []
+    try:
+        all_groups = grocy.get_product_groups()
+        existing_category_names = sorted({
+            g.get("name", "")
+            for g in all_groups
+            if g.get("name") and g.get("name") != "Group master"
+        })
+    except GrocyAPIError:
+        pass
+
     logger.info(
         "Asking Gemini to group %d product(s) …", len(ungrouped)
     )
@@ -1048,38 +1024,61 @@ def _ai_group_products(
             f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
         )
 
-        existing_groups_section = ""
+        existing_parents_section = ""
         if existing_parent_names:
-            existing_groups_lines = ", ".join(
+            existing_parents_lines = ", ".join(
                 f'"{n}"' for n in existing_parent_names
             )
-            existing_groups_section = (
-                "Existing product groups (you MUST reuse these names when "
-                "a product fits an existing group — do NOT create synonyms "
-                'or variants like "Mauste" when "Mausteet" already exists):\n'
-                f"  {existing_groups_lines}\n\n"
+            existing_parents_section = (
+                "Existing parent products (reuse these exact names when "
+                "a product fits — do NOT create synonyms or variants like "
+                '"Mauste" when "Mausteet" already exists):\n'
+                f"  {existing_parents_lines}\n\n"
+            )
+
+        existing_categories_section = ""
+        if existing_category_names:
+            existing_categories_lines = ", ".join(
+                f'"{n}"' for n in existing_category_names
+            )
+            existing_categories_section = (
+                "Existing product categories (reuse these exact names "
+                "when a product fits):\n"
+                f"  {existing_categories_lines}\n\n"
             )
 
         prompt = (
             "You are a grocery database expert helping to organise a product "
             "catalogue.\n\n"
-            f"{existing_groups_section}"
-            "For each product below, decide whether it belongs to a common "
-            "generic product group.  Group ALL grocery categories including "
+            f"{existing_parents_section}"
+            f"{existing_categories_section}"
+            "For each product below, return a JSON object with TWO levels of "
+            "grouping:\n\n"
+            '1. "parent" — a SPECIFIC parent product name in Finnish that '
+            "closely matches the product type. Be detailed: use separate "
+            'parents for each distinct product (e.g. "Mustapippuri" for '
+            'black pepper, "Oregano" for oregano, "Maito" for milk, '
+            '"Suklaa" for chocolate, "Sipsi" for chips). '
+            "If an existing parent product name fits, you MUST use that "
+            "exact name.\n\n"
+            '2. "category" — a BROAD product category in Finnish that covers '
+            "many related parents. Categories should be few and general "
+            '(e.g. "Mausteet" covers all spices like Mustapippuri, Oregano, '
+            'Timjami; "Makeiset" covers all candy and chocolate; '
+            '"Maitotaloustuotteet" covers milk, cream, yogurt; '
+            '"Juomat" covers all drinks). '
+            "If an existing category name fits, you MUST use that "
+            "exact name.\n\n"
+            "Group ALL grocery categories including "
             "dairy, eggs, bread, flour, butter, rice, pasta, cooking oil, "
             "canned goods, frozen vegetables, meat, snacks, candy, "
             "soft drinks, energy drinks, alcoholic beverages, etc.\n"
-            "If an existing product group name fits the product, you MUST "
-            "use that exact name.\n\n"
-            "If a product should be grouped, return the generic parent product "
-            "name in Finnish (e.g. \"Maito\" for all kinds of milk, "
-            "\"Kananmuna\" for eggs, \"Leipä\" for bread, "
-            "\"Energiajuoma\" for energy drinks, \"Sipsi\" for potato chips).\n"
             "If a product should NOT be grouped, map it to null.\n\n"
             "Return ONLY a JSON object mapping product IDs (as strings) to "
-            "parent product names (as strings) or null, e.g.\n"
-            '{\"1\": \"Maito\", \"2\": \"Maito\", \"5\": \"Kananmuna\", '
-            '\"7\": null}.\n\n'
+            "objects or null, e.g.\n"
+            '{"1": {"parent": "Maito", "category": "Maitotaloustuotteet"}, '
+            '"2": {"parent": "Mustapippuri", "category": "Mausteet"}, '
+            '"7": null}.\n\n'
             "Products:\n"
             f"{product_lines}"
         )
@@ -1092,35 +1091,38 @@ def _ai_group_products(
             )
             continue
 
-        # Collect unique parent names needed for this batch.
-        # Redirect merged-away names to their canonical replacements.
+        # Collect unique parent names and category names from this batch.
+        # Redirect merged-away parent names to their canonical replacements.
         parent_names: set[str] = set()
+        category_names: set[str] = set()
         for product in batch:
             pid = str(product["id"])
-            parent_name = mapping.get(pid)
+            entry = mapping.get(pid)
+            if not isinstance(entry, dict):
+                continue
+            parent_name = entry.get("parent")
             if parent_name:
                 parent_name = dedup_map.get(str(parent_name), str(parent_name))
-                mapping[pid] = parent_name
+                entry["parent"] = parent_name
                 parent_names.add(parent_name)
+            cat_name = entry.get("category")
+            if cat_name:
+                category_names.add(str(cat_name))
 
         # Ensure each parent product exists.
         parent_name_to_id: dict[str, int] = {}
-        parent_name_to_group_id: dict[str, int] = {}
         for parent_name in parent_names:
             existing = name_to_product.get(parent_name)
             if existing and not existing.get("parent_product_id"):
                 parent_id = int(existing["id"])
                 parent_name_to_id[parent_name] = parent_id
             elif existing:
-                # The existing product is already a child of another product;
-                # reusing it as a parent would create unsupported nesting.
                 logger.debug(
                     "Skipping '%s' as parent – already a child product.",
                     parent_name,
                 )
                 continue
             else:
-                # Create the parent product.
                 try:
                     parent_id = grocy.create_product(
                         parent_name,
@@ -1132,7 +1134,6 @@ def _ai_group_products(
                         parent_name, parent_id,
                     )
                     parent_name_to_id[parent_name] = parent_id
-                    # Track so we don't create duplicates in later batches.
                     name_to_product[parent_name] = {"id": parent_id, "name": parent_name}
                 except GrocyAPIError as exc:
                     logger.warning(
@@ -1140,18 +1141,6 @@ def _ai_group_products(
                         parent_name, exc,
                     )
                     continue
-
-            # Ensure a product group with the same name as the parent exists
-            # so child products can be assigned to it.
-            try:
-                parent_name_to_group_id[parent_name] = (
-                    grocy.ensure_product_group(parent_name)
-                )
-            except GrocyAPIError as exc:
-                logger.warning(
-                    "Could not ensure product group '%s': %s",
-                    parent_name, exc,
-                )
 
             # Configure the parent: accumulate sub-product stock, assign to
             # "Group master" product group, and hide from the stock overview.
@@ -1171,15 +1160,31 @@ def _ai_group_products(
                     parent_name, exc,
                 )
 
-        # Assign child products to their parents.
+        # Ensure each broad category product group exists.
+        category_name_to_group_id: dict[str, int] = {}
+        for cat_name in category_names:
+            try:
+                category_name_to_group_id[cat_name] = (
+                    grocy.ensure_product_group(cat_name)
+                )
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Could not ensure product group '%s': %s",
+                    cat_name, exc,
+                )
+
+        # Assign child products to their parents with broad category.
         for product in batch:
             pid = str(product["id"])
-            parent_name = mapping.get(pid)
-            if not parent_name:
+            entry = mapping.get(pid)
+            if not isinstance(entry, dict):
                 logger.debug(
                     "No group assigned for product %s ('%s').",
                     pid, product.get("name"),
                 )
+                continue
+            parent_name = entry.get("parent")
+            if not parent_name:
                 continue
             parent_id = parent_name_to_id.get(str(parent_name))
             if parent_id is None:
@@ -1188,9 +1193,11 @@ def _ai_group_products(
             if int(product["id"]) == parent_id:
                 continue
             child_update: dict = {"parent_product_id": parent_id}
-            child_group_id = parent_name_to_group_id.get(parent_name)
-            if child_group_id is not None:
-                child_update["product_group_id"] = child_group_id
+            cat_name = entry.get("category")
+            if cat_name:
+                child_group_id = category_name_to_group_id.get(str(cat_name))
+                if child_group_id is not None:
+                    child_update["product_group_id"] = child_group_id
             try:
                 grocy.update_product(int(product["id"]), **child_update)
                 logger.info(
@@ -1282,7 +1289,17 @@ def _ai_optimize_products(
         if int(p["id"]) in has_children and p.get("name")
     })
 
-    # Filter to requested product IDs if provided.
+    # Collect existing product group names so Gemini can reuse categories.
+    existing_category_names: list[str] = []
+    try:
+        all_groups = grocy.get_product_groups()
+        existing_category_names = sorted({
+            g.get("name", "")
+            for g in all_groups
+            if g.get("name") and g.get("name") != "Group master"
+        })
+    except GrocyAPIError:
+        pass
     if product_ids is not None:
         allowed = set(product_ids)
         products = [p for p in products if int(p["id"]) in allowed]
@@ -1315,31 +1332,52 @@ def _ai_optimize_products(
                 f"{location_lines}\n\n"
             )
 
-        existing_groups_section = ""
+        existing_parents_section = ""
         if existing_parent_names:
-            existing_groups_lines = ", ".join(
+            existing_parents_lines = ", ".join(
                 f'"{n}"' for n in existing_parent_names
             )
-            existing_groups_section = (
-                "Existing product groups (you MUST reuse these names when "
-                "a product fits an existing group — do NOT create synonyms "
-                'or variants like "Mauste" when "Mausteet" already exists):\n'
-                f"  {existing_groups_lines}\n\n"
+            existing_parents_section = (
+                "Existing parent products (reuse these exact names when "
+                "a product fits — do NOT create synonyms or variants like "
+                '"Mauste" when "Mausteet" already exists):\n'
+                f"  {existing_parents_lines}\n\n"
+            )
+
+        existing_categories_section = ""
+        if existing_category_names:
+            existing_categories_lines = ", ".join(
+                f'"{n}"' for n in existing_category_names
+            )
+            existing_categories_section = (
+                "Existing product categories (reuse these exact names "
+                "when a product fits):\n"
+                f"  {existing_categories_lines}\n\n"
             )
 
         prompt = (
             "You are a grocery database expert helping to organise a home pantry.\n\n"
             f"{location_section}"
-            f"{existing_groups_section}"
+            f"{existing_parents_section}"
+            f"{existing_categories_section}"
             "For each product below, return a JSON object mapping the product ID "
             "(as a string) to an object with these fields:\n"
             '  "location_id": (integer) the most appropriate storage location ID '
             "from the list above, or null if no locations are available.\n"
             '  "best_before_days": (integer) estimated days until best-before date '
             "for an unopened product under normal home storage.\n"
-            '  "group_name": (string) a generic Finnish parent product name '
-            '(e.g. "Maito" for milks, "Energiajuoma" for energy drinks) '
-            "if the product should be grouped, or null if it is unique.\n"
+            '  "group_name": (string) a SPECIFIC Finnish parent product name '
+            "that closely matches the product type. Be detailed: use separate "
+            'parents for each distinct product (e.g. "Mustapippuri" for '
+            'black pepper, "Oregano" for oregano, "Maito" for milk). '
+            "If an existing parent product name fits, you MUST use that "
+            "exact name. Null if the product is unique.\n"
+            '  "category": (string) a BROAD Finnish product category that covers '
+            "many related parent products. Categories should be few and general "
+            '(e.g. "Mausteet" for all spices, "Makeiset" for all candy, '
+            '"Maitotaloustuotteet" for all dairy, "Juomat" for all drinks). '
+            "If an existing category name fits, you MUST use that exact name. "
+            "Null if the product is unique.\n"
             '  "pack_of": (string) the base product name if this product is a '
             "multi-pack (e.g. for \"Red Bull 4-pack\" → \"Red Bull\"), or null "
             "if it is not a pack.\n"
@@ -1352,14 +1390,16 @@ def _ai_optimize_products(
             "hard cheese ≈ 180d; eggs ≈ 28d; bread ≈ 7d; canned ≈ 730d; "
             "dry pasta/rice ≈ 1095d; cooking oil ≈ 365d; frozen ≈ 730d; "
             "cleaning/laundry ≈ 1095d.\n"
-            "- Grouping: group ALL grocery categories.  If an existing product "
-            "group name fits the product, you MUST use that exact name.\n"
+            "- Grouping: group ALL grocery categories.  If an existing parent "
+            "product name fits, you MUST use that exact name.\n"
             "- Packs: detect multi-packs from names like '4-pack', '6x0.33l', "
             "'monipakkaus', '4 kpl', etc.\n\n"
             "Return ONLY valid JSON, for example:\n"
-            '{"1": {"location_id": 2, "best_before_days": 14, "group_name": "Maito", '
+            '{"1": {"location_id": 2, "best_before_days": 14, '
+            '"group_name": "Maito", "category": "Maitotaloustuotteet", '
             '"pack_of": null, "pack_count": null}, '
-            '"2": {"location_id": 3, "best_before_days": 730, "group_name": null, '
+            '"2": {"location_id": 3, "best_before_days": 730, '
+            '"group_name": null, "category": null, '
             '"pack_of": "Red Bull", "pack_count": 4}}\n\n'
             "Products:\n"
             f"{product_lines}"
@@ -1375,9 +1415,10 @@ def _ai_optimize_products(
             continue
 
         # --- Apply results -----------------------------------------------
-        # First pass: collect parent names and pack base names to pre-create.
+        # First pass: collect parent names, category names, and pack base names.
         # Redirect merged-away names to their canonical replacements.
         parent_names: set[str] = set()
+        category_names: set[str] = set()
         pack_base_names: set[str] = set()
         for product in batch:
             pid = str(product["id"])
@@ -1389,13 +1430,15 @@ def _ai_optimize_products(
                 gn = dedup_map.get(str(gn), str(gn))
                 info["group_name"] = gn
                 parent_names.add(gn)
+            cat = info.get("category")
+            if cat:
+                category_names.add(str(cat))
             po = info.get("pack_of")
             if po:
                 pack_base_names.add(str(po))
 
         # Ensure parent products exist (for grouping).
         parent_name_to_id: dict[str, int] = {}
-        parent_name_to_group_id: dict[str, int] = {}
         for parent_name in parent_names:
             existing = name_to_product.get(parent_name)
             if existing and not existing.get("parent_product_id"):
@@ -1417,11 +1460,6 @@ def _ai_optimize_products(
                     logger.warning("Could not create parent product '%s': %s", parent_name, exc)
                     continue
 
-            try:
-                parent_name_to_group_id[parent_name] = grocy.ensure_product_group(parent_name)
-            except GrocyAPIError as exc:
-                logger.warning("Could not ensure product group '%s': %s", parent_name, exc)
-
             parent_update: dict = {
                 "cumulate_min_stock_amount_of_sub_products": 1,
                 "hide_on_stock_overview": 1,
@@ -1432,6 +1470,16 @@ def _ai_optimize_products(
                 grocy.update_product(parent_name_to_id[parent_name], **parent_update)
             except GrocyAPIError as exc:
                 logger.warning("Could not update parent product '%s': %s", parent_name, exc)
+
+        # Ensure each broad category product group exists.
+        category_name_to_group_id: dict[str, int] = {}
+        for cat_name in category_names:
+            try:
+                category_name_to_group_id[cat_name] = (
+                    grocy.ensure_product_group(cat_name)
+                )
+            except GrocyAPIError as exc:
+                logger.warning("Could not ensure product group '%s': %s", cat_name, exc)
 
         # Ensure base products exist (for pack handling).
         pack_base_name_to_id: dict[str, int] = {}
@@ -1574,9 +1622,11 @@ def _ai_optimize_products(
                     and product_id not in has_children
                 ):
                     child_update: dict = {"parent_product_id": parent_id}
-                    child_group_id = parent_name_to_group_id.get(str(group_name))
-                    if child_group_id is not None:
-                        child_update["product_group_id"] = child_group_id
+                    cat_name = info.get("category")
+                    if cat_name:
+                        child_group_id = category_name_to_group_id.get(str(cat_name))
+                        if child_group_id is not None:
+                            child_update["product_group_id"] = child_group_id
                     try:
                         grocy.update_product(product_id, **child_update)
                         if current_parent_int:
