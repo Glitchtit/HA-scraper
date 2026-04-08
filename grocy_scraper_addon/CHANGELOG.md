@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.16.1
+
+- Protect user "keep in stock" choices: optimize and group skip parent assignment for products with min_stock_amount > 0, still applying product group (category)
+- Products deliberately detached from parents to enable min_stock are preserved across optimize runs
+
 ## 1.16.0
 
 - Clean-slate optimize: `--optimize` now strips ALL existing parent assignments and rebuilds the entire parent/group structure from scratch using AI

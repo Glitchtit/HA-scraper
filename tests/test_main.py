@@ -1276,6 +1276,31 @@ class TestAiGroupProducts:
             2, parent_product_id=1, product_group_id=self._CATEGORY_GROUP_ID,
         )
 
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_skips_parent_for_min_stock_product(self, mock_gemini, _mock_dedup):
+        """Full mode: products with min_stock_amount > 0 keep no parent but get category."""
+        from grocy_scraper_addon.main import _ai_group_products
+        products = [
+            {"id": 1, "name": "Mustapippuri 100g", "min_stock_amount": 1},
+            {"id": 2, "name": "Oregano 50g"},
+        ]
+        grocy = self._make_grocy(products)
+        mock_gemini.return_value = (
+            '{"1": {"parent": "Mausteet", "category": "Mausteet"}, '
+            '"2": {"parent": "Mausteet", "category": "Mausteet"}}'
+        )
+        _ai_group_products(grocy, "gemini-key")
+        # Product 1 should NOT get parent_product_id (min_stock > 0)
+        # but SHOULD get product_group_id.
+        calls = [str(c) for c in grocy.update_product.call_args_list]
+        parent_calls_for_1 = [c for c in grocy.update_product.call_args_list
+                              if c[0][0] == 1 and "parent_product_id" in (c[1] if len(c) > 1 else {})]
+        assert len(parent_calls_for_1) == 0, f"Product 1 should not get parent: {calls}"
+        # Product 1 should get product_group_id.
+        grocy.update_product.assert_any_call(1, product_group_id=self._CATEGORY_GROUP_ID)
+        # Product 2 gets parent normally.
+        grocy.update_product.assert_any_call(2, parent_product_id=100, product_group_id=self._CATEGORY_GROUP_ID)
+
     # -- Incremental-mode tests (product_ids=[...]) ------------------------
 
     @patch("grocy_scraper_addon.main._call_gemini")
@@ -2591,6 +2616,37 @@ class TestAiOptimizeProducts:
         prompt = mock_gemini.call_args[0][0]
         assert "Existing parent products" not in prompt
         assert "Existing product categories" not in prompt
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_full_mode_skips_parent_for_min_stock_product(self, mock_gemini, _mock_dedup):
+        """Full mode: products with min_stock_amount > 0 skip parent assignment."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Mustapippuri 100g", "min_stock_amount": 1},
+            {"id": 2, "name": "Oregano 50g"},
+        ]
+        locations = [{"id": 2, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        mock_gemini.return_value = (
+            '{"1": {"location_id": 2, "best_before_days": 730, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}, '
+            '"2": {"location_id": 2, "best_before_days": 730, '
+            '"group_name": "Mausteet", "category": "Mausteet", '
+            '"pack_of": null, "pack_count": null}}'
+        )
+        _ai_optimize_products(grocy, "gemini-key")
+        # Product 1 should NOT get parent_product_id (min_stock > 0)
+        calls = grocy.update_product.call_args_list
+        parent_calls_for_1 = [c for c in calls
+                              if c[0][0] == 1 and "parent_product_id" in (c[1] if len(c) > 1 else {})]
+        assert len(parent_calls_for_1) == 0, f"Product 1 should not get parent: {calls}"
+        # Product 1 SHOULD still get product_group_id.
+        grocy.update_product.assert_any_call(1, product_group_id=100)
+        # Product 2 gets parent normally.
+        grocy.update_product.assert_any_call(
+            2, parent_product_id=999, product_group_id=100,
+        )
 
     # -- Incremental-mode tests (product_ids=[...]) ------------------------
 

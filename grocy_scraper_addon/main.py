@@ -1228,6 +1228,30 @@ def _ai_group_products(
             # Don't set a product as its own parent.
             if int(product["id"]) == parent_id:
                 continue
+            # Don't re-parent products the user explicitly keeps in stock.
+            if float(product.get("min_stock_amount") or 0) > 0:
+                logger.info(
+                    "  ⊘ Skipping parent for '%s' (ID %s) — "
+                    "min_stock_amount > 0.",
+                    product.get("name"), pid,
+                )
+                # Still apply product group (category) if available.
+                cat_name = entry.get("category")
+                if cat_name:
+                    child_group_id = category_name_to_group_id.get(str(cat_name))
+                    if child_group_id is not None:
+                        try:
+                            grocy.update_product(
+                                int(product["id"]),
+                                product_group_id=child_group_id,
+                            )
+                            updated += 1
+                        except (GrocyAPIError, ValueError) as exc:
+                            logger.warning(
+                                "Could not set group for '%s': %s",
+                                product.get("name"), exc,
+                            )
+                continue
             child_update: dict = {"parent_product_id": parent_id}
             cat_name = entry.get("category")
             if cat_name:
@@ -1774,23 +1798,50 @@ def _ai_optimize_products(
             if group_name:
                 parent_id = parent_name_to_id.get(str(group_name))
                 if parent_id is not None and parent_id != product_id:
-                    child_update: dict = {"parent_product_id": parent_id}
-                    cat_name = info.get("category")
-                    if cat_name:
-                        child_group_id = category_name_to_group_id.get(str(cat_name))
-                        if child_group_id is not None:
-                            child_update["product_group_id"] = child_group_id
-                    try:
-                        grocy.update_product(product_id, **child_update)
+                    # Don't re-parent products the user explicitly keeps
+                    # in stock.
+                    if float(product.get("min_stock_amount") or 0) > 0:
                         logger.info(
-                            "  → Grouped '%s' (ID %s) under '%s'.",
-                            product.get("name"), pid, group_name,
+                            "  ⊘ Skipping parent for '%s' (ID %s) — "
+                            "min_stock_amount > 0.",
+                            product.get("name"), pid,
                         )
-                        updated += 1
-                    except (GrocyAPIError, ValueError) as exc:
-                        logger.warning(
-                            "Could not group '%s': %s", product.get("name"), exc,
-                        )
+                        # Still apply product group (category).
+                        cat_name = info.get("category")
+                        if cat_name:
+                            cg_id = category_name_to_group_id.get(
+                                str(cat_name)
+                            )
+                            if cg_id is not None:
+                                try:
+                                    grocy.update_product(
+                                        product_id,
+                                        product_group_id=cg_id,
+                                    )
+                                    updated += 1
+                                except (GrocyAPIError, ValueError) as exc:
+                                    logger.warning(
+                                        "Could not set group for '%s': %s",
+                                        product.get("name"), exc,
+                                    )
+                    else:
+                        child_update: dict = {"parent_product_id": parent_id}
+                        cat_name = info.get("category")
+                        if cat_name:
+                            child_group_id = category_name_to_group_id.get(str(cat_name))
+                            if child_group_id is not None:
+                                child_update["product_group_id"] = child_group_id
+                        try:
+                            grocy.update_product(product_id, **child_update)
+                            logger.info(
+                                "  → Grouped '%s' (ID %s) under '%s'.",
+                                product.get("name"), pid, group_name,
+                            )
+                            updated += 1
+                        except (GrocyAPIError, ValueError) as exc:
+                            logger.warning(
+                                "Could not group '%s': %s", product.get("name"), exc,
+                            )
 
     # --- Clean up old parent-only placeholder products -------------------
     if full_mode and old_parent_ids:
