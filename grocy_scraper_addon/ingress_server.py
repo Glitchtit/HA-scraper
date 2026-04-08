@@ -31,6 +31,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Any, Generator
 
 _PORT = int(os.environ.get("INGRESS_PORT", "8099"))
@@ -1084,6 +1085,12 @@ _POST_HANDLERS: dict[str, Any] = {
 class _Handler(BaseHTTPRequestHandler):
     """Route requests to the HTML page or JSON API endpoints."""
 
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except BrokenPipeError:
+            pass
+
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0].rstrip("/")
 
@@ -1159,8 +1166,13 @@ class _Handler(BaseHTTPRequestHandler):
         """Silence per-request access logs."""
 
 
+class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle each request in a new thread so long POST ops don't block GETs."""
+    daemon_threads = True
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    server = HTTPServer(("0.0.0.0", _PORT), _Handler)
+    server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
     print(f"Ingress server listening on port {_PORT}")
     server.serve_forever()
