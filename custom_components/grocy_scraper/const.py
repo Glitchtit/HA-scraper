@@ -24,6 +24,7 @@ CONF_UPLOAD_IMAGES = "upload_images"
 CONF_USE_GRAPHQL = "use_graphql"
 CONF_GEMINI_API_KEY = "gemini_api_key"
 CONF_GEMINI_MODEL = "gemini_model"
+CONF_GEMINI_MODEL_OPTIMIZE = "gemini_model_optimize"
 
 # Defaults
 DEFAULT_DISCOVER_INTERVAL = 60  # minutes

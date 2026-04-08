@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.17.0
+
+- Configurable AI model for optimize: add `gemini_model_optimize` option to use a stronger model for full optimize/group operations while keeping the lightweight model for discover and single-product tasks
+- Improved product category grouping: AI now creates practical, kitchen-shelf categories instead of overly broad industrial taxonomy (e.g. dairy splits into Maito, Voi, Juusto instead of one giant Maitotaloustuotteet)
+- When `gemini_model_optimize` is empty, falls back to the regular `gemini_model` (backward-compatible)
+
 ## 1.16.1
 
 - Protect user "keep in stock" choices: optimize and group skip parent assignment for products with min_stock_amount > 0, still applying product group (category)
