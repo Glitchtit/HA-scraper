@@ -804,6 +804,13 @@ def _ai_group_products(
         if ppid:
             has_children.add(int(ppid))
 
+    # Collect existing parent product names so Gemini can reuse them.
+    existing_parent_names: list[str] = sorted({
+        p.get("name", "")
+        for p in products
+        if int(p["id"]) in has_children and p.get("name")
+    })
+
     # Only consider products that do not already have a parent and are not
     # already parents of sub-products (assigning a parent to a product that
     # already has children would violate Grocy's single-level nesting limit).
@@ -833,14 +840,30 @@ def _ai_group_products(
         product_lines = "\n".join(
             f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
         )
+
+        existing_groups_section = ""
+        if existing_parent_names:
+            existing_groups_lines = ", ".join(
+                f'"{n}"' for n in existing_parent_names
+            )
+            existing_groups_section = (
+                "Existing product groups (you MUST reuse these names when "
+                "a product fits an existing group — do NOT create synonyms "
+                'or variants like "Mauste" when "Mausteet" already exists):\n'
+                f"  {existing_groups_lines}\n\n"
+            )
+
         prompt = (
             "You are a grocery database expert helping to organise a product "
             "catalogue.\n\n"
+            f"{existing_groups_section}"
             "For each product below, decide whether it belongs to a common "
             "generic product group.  Group ALL grocery categories including "
             "dairy, eggs, bread, flour, butter, rice, pasta, cooking oil, "
             "canned goods, frozen vegetables, meat, snacks, candy, "
-            "soft drinks, energy drinks, alcoholic beverages, etc.\n\n"
+            "soft drinks, energy drinks, alcoholic beverages, etc.\n"
+            "If an existing product group name fits the product, you MUST "
+            "use that exact name.\n\n"
             "If a product should be grouped, return the generic parent product "
             "name in Finnish (e.g. \"Maito\" for all kinds of milk, "
             "\"Kananmuna\" for eggs, \"Leipä\" for bread, "
@@ -1039,6 +1062,13 @@ def _ai_optimize_products(
         if ppid:
             has_children.add(int(ppid))
 
+    # Collect existing parent product names so Gemini can reuse them.
+    existing_parent_names: list[str] = sorted({
+        p.get("name", "")
+        for p in products
+        if int(p["id"]) in has_children and p.get("name")
+    })
+
     # Filter to requested product IDs if provided.
     if product_ids is not None:
         allowed = set(product_ids)
@@ -1058,6 +1088,7 @@ def _ai_optimize_products(
     logger.info("Asking Gemini to optimize %d product(s) …", len(products))
 
     updated = 0
+    deleted_ids: set[int] = set()
     for i in range(0, len(products), _GEMINI_OPTIMIZE_BATCH_SIZE):
         batch = products[i : i + _GEMINI_OPTIMIZE_BATCH_SIZE]
         product_lines = "\n".join(
@@ -1071,9 +1102,22 @@ def _ai_optimize_products(
                 f"{location_lines}\n\n"
             )
 
+        existing_groups_section = ""
+        if existing_parent_names:
+            existing_groups_lines = ", ".join(
+                f'"{n}"' for n in existing_parent_names
+            )
+            existing_groups_section = (
+                "Existing product groups (you MUST reuse these names when "
+                "a product fits an existing group — do NOT create synonyms "
+                'or variants like "Mauste" when "Mausteet" already exists):\n'
+                f"  {existing_groups_lines}\n\n"
+            )
+
         prompt = (
             "You are a grocery database expert helping to organise a home pantry.\n\n"
             f"{location_section}"
+            f"{existing_groups_section}"
             "For each product below, return a JSON object mapping the product ID "
             "(as a string) to an object with these fields:\n"
             '  "location_id": (integer) the most appropriate storage location ID '
@@ -1095,7 +1139,8 @@ def _ai_optimize_products(
             "hard cheese ≈ 180d; eggs ≈ 28d; bread ≈ 7d; canned ≈ 730d; "
             "dry pasta/rice ≈ 1095d; cooking oil ≈ 365d; frozen ≈ 730d; "
             "cleaning/laundry ≈ 1095d.\n"
-            "- Grouping: group ALL grocery categories.\n"
+            "- Grouping: group ALL grocery categories.  If an existing product "
+            "group name fits the product, you MUST use that exact name.\n"
             "- Packs: detect multi-packs from names like '4-pack', '6x0.33l', "
             "'monipakkaus', '4 kpl', etc.\n\n"
             "Return ONLY valid JSON, for example:\n"
@@ -1192,7 +1237,6 @@ def _ai_optimize_products(
                     logger.warning("Could not create base product '%s': %s", base_name, exc)
 
         # Second pass: apply sort, date, group, and pack for each product.
-        deleted_ids: set[int] = set()
         for product in batch:
             pid = str(product["id"])
             info = mapping.get(pid)
@@ -1294,6 +1338,7 @@ def _ai_optimize_products(
                         "  → Set %d best-before days for '%s' (ID %s).",
                         int(days), product.get("name"), pid,
                     )
+                    updated += 1
                 except (GrocyAPIError, ValueError) as exc:
                     logger.warning(
                         "Could not update due days for '%s': %s",
@@ -1304,10 +1349,12 @@ def _ai_optimize_products(
             group_name = info.get("group_name")
             if group_name:
                 parent_id = parent_name_to_id.get(str(group_name))
+                current_parent = product.get("parent_product_id")
+                current_parent_int = int(current_parent) if current_parent else None
                 if (
                     parent_id is not None
                     and parent_id != product_id
-                    and not product.get("parent_product_id")
+                    and parent_id != current_parent_int
                     and product_id not in has_children
                 ):
                     child_update: dict = {"parent_product_id": parent_id}
@@ -1316,14 +1363,66 @@ def _ai_optimize_products(
                         child_update["product_group_id"] = child_group_id
                     try:
                         grocy.update_product(product_id, **child_update)
-                        logger.info(
-                            "  → Grouped '%s' (ID %s) under '%s'.",
-                            product.get("name"), pid, group_name,
-                        )
+                        if current_parent_int:
+                            logger.info(
+                                "  → Re-grouped '%s' (ID %s) from parent %d → '%s'.",
+                                product.get("name"), pid,
+                                current_parent_int, group_name,
+                            )
+                        else:
+                            logger.info(
+                                "  → Grouped '%s' (ID %s) under '%s'.",
+                                product.get("name"), pid, group_name,
+                            )
+                        updated += 1
                     except (GrocyAPIError, ValueError) as exc:
                         logger.warning(
                             "Could not group '%s': %s", product.get("name"), exc,
                         )
+
+    # --- Clean up empty parent products ----------------------------------
+    # Re-scan products to find parents that now have zero children.
+    try:
+        all_products_after = grocy.get_all_products()
+    except GrocyAPIError:
+        all_products_after = []
+
+    if all_products_after:
+        children_of: dict[int, list] = {}
+        for p in all_products_after:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                children_of.setdefault(int(ppid), []).append(p)
+
+        for p in all_products_after:
+            pid_int = int(p["id"])
+            # A product is an empty parent if it was configured as a parent
+            # (cumulate sub-product stock + hidden from overview) but has no
+            # remaining children.
+            if (
+                pid_int not in children_of
+                and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
+                and p.get("hide_on_stock_overview") in (1, "1", True)
+                and pid_int not in deleted_ids
+            ):
+                try:
+                    picture = p.get("picture_file_name", "")
+                    if picture:
+                        try:
+                            grocy.delete_product_image(picture)
+                        except GrocyAPIError:
+                            pass
+                    grocy.delete_product(pid_int)
+                    logger.info(
+                        "  → Deleted empty parent '%s' (ID %d).",
+                        p.get("name"), pid_int,
+                    )
+                    updated += 1
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Could not delete empty parent '%s': %s",
+                        p.get("name"), exc,
+                    )
 
     logger.info("--optimize complete: %d product(s) updated.", updated)
     return updated

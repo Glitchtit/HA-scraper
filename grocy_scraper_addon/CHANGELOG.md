@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.14.0
+
+- Fix: optimize now includes existing parent product names in the Gemini prompt so that per-product optimize runs (e.g. after barcode scanning) reuse existing groups instead of creating duplicates like "Mauste", "Mausteet", "Mausteseos"
+- Fix: optimize can now re-group products that were previously assigned to a wrong parent — running `--optimize` on the full database corrects inconsistent groupings
+- Fix: empty parent products (zero children remaining) are automatically cleaned up after optimize
+- Fix: the `updated` counter now includes date and group changes (previously only counted location + pack updates)
+- The standalone `--group` command also includes existing parent names in its Gemini prompt for consistency
+
 ## 1.13.3
 
 - Improve Barcode Buddy cleanup: remove ALL matching entries for a barcode (not just the first), and log failures at WARNING level instead of DEBUG
