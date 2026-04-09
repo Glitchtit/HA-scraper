@@ -677,6 +677,49 @@ class GrocyClient:
             raise GrocyAPIError(f"Failed to delete QU {qu_id}: {exc}") from exc
 
     # ------------------------------------------------------------------
+    # Recipe helpers
+    # ------------------------------------------------------------------
+
+    def get_recipe_positions(self) -> list[dict]:
+        """Return all recipe ingredient positions from Grocy."""
+        url = self._url("/api/objects/recipes_pos")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to fetch recipe positions: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to fetch recipe positions: {exc}") from exc
+
+    def update_recipe_position(self, pos_id: int, **fields) -> None:
+        """Update fields on an existing recipe position (ingredient).
+
+        Parameters
+        ----------
+        pos_id:
+            The Grocy internal recipe position ID.
+        **fields:
+            Arbitrary fields to update (e.g. ``qu_id=7``).
+        """
+        url = self._url(f"/api/objects/recipes_pos/{pos_id}")
+        try:
+            resp = self._session.put(url, json=fields, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to update recipe position {pos_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to update recipe position {pos_id}: {exc}"
+            ) from exc
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

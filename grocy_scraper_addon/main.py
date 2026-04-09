@@ -674,7 +674,10 @@ def _ensure_units_and_conversions(grocy: GrocyClient) -> dict[str, int]:
         except GrocyAPIError as exc:
             logger.warning("Failed to create conversion %s→%s: %s", from_abbrev, to_abbrev, exc)
 
-    logger.info("Unit map: %s", {k: v for k, v in sorted(abbrev_to_id.items())})
+    logger.info(
+        "Unit map: %s",
+        ", ".join(f"{abbrev}={uid}" for abbrev, uid in sorted(abbrev_to_id.items())),
+    )
     return abbrev_to_id
 
 
@@ -689,9 +692,21 @@ def _consolidate_duplicate_units(
     references and conversions from the duplicate to the canonical ID, then
     delete the duplicate.
 
+    Before changing a product's ``qu_id_stock``, creates a product-specific
+    QU conversion (old → new, factor 1.0) so that Grocy's stock constraint
+    is satisfied for products that have been added to stock.
+
     Returns the (potentially updated) abbrev_to_id mapping.
     """
     existing_units = grocy.get_quantity_units()
+
+    # Build human-readable ID→name map for logging
+    id_to_name: dict[int, str] = {}
+    for u in existing_units:
+        uid = int(u["id"])
+        label = u.get("description") or u.get("name") or str(uid)
+        id_to_name[uid] = label
+
     # Build a map of duplicate QU IDs → canonical QU ID
     dup_to_canonical: dict[int, int] = {}
     for u in existing_units:
@@ -715,32 +730,81 @@ def _consolidate_duplicate_units(
     if not dup_to_canonical:
         return abbrev_to_id
 
+    dup_summary = ", ".join(
+        f'"{id_to_name.get(d, d)}" ({d}) → "{id_to_name.get(c, c)}" ({c})'
+        for d, c in dup_to_canonical.items()
+    )
     logger.info(
         "Found %d duplicate QU(s) to consolidate: %s",
         len(dup_to_canonical),
-        {d: c for d, c in dup_to_canonical.items()},
+        dup_summary,
     )
+
+    # Build set of existing product-specific conversions for idempotency
+    all_conversions = grocy.get_quantity_unit_conversions()
+    existing_prod_conv: set[tuple[int, int, int]] = set()
+    for c in all_conversions:
+        cpid = c.get("product_id")
+        if cpid is not None and cpid != "":
+            existing_prod_conv.add(
+                (int(cpid), int(c["from_qu_id"]), int(c["to_qu_id"]))
+            )
 
     # Reassign product QU references
     products = grocy.get_all_products()
     qu_fields = ("qu_id_stock", "qu_id_purchase", "qu_id_consume", "qu_id_price")
+    reassigned_count = 0
+    failed_count = 0
     for prod in products:
         updates: dict[str, int] = {}
         for field in qu_fields:
             val = prod.get(field)
             if val is not None and int(val) in dup_to_canonical:
                 updates[field] = dup_to_canonical[int(val)]
-        if updates:
-            try:
-                grocy.update_product(int(prod["id"]), **updates)
-                logger.info(
-                    "Reassigned QU refs for product '%s' (ID %d): %s",
-                    prod.get("name"), prod["id"], updates,
-                )
-            except GrocyAPIError as exc:
-                logger.warning(
-                    "Failed to reassign QU refs for '%s': %s", prod.get("name"), exc,
-                )
+        if not updates:
+            continue
+        pid = int(prod["id"])
+
+        # Create bridging conversions for each old→new pair so Grocy
+        # allows the qu_id_stock change on stocked products.
+        old_ids = set()
+        for field in qu_fields:
+            val = prod.get(field)
+            if val is not None and int(val) in dup_to_canonical:
+                old_ids.add(int(val))
+        for old_id in old_ids:
+            new_id = dup_to_canonical[old_id]
+            if (pid, old_id, new_id) not in existing_prod_conv:
+                try:
+                    grocy.create_quantity_unit_conversion(
+                        old_id, new_id, 1.0, product_id=pid,
+                    )
+                    existing_prod_conv.add((pid, old_id, new_id))
+                except GrocyAPIError:
+                    pass  # Already exists or other constraint — fine
+
+        try:
+            grocy.update_product(pid, **updates)
+            readable = {
+                k: id_to_name.get(v, str(v)) for k, v in updates.items()
+            }
+            logger.info(
+                "Reassigned QU refs for product '%s' (ID %d): %s",
+                prod.get("name"), pid, readable,
+            )
+            reassigned_count += 1
+        except GrocyAPIError as exc:
+            logger.warning(
+                "Failed to reassign QU refs for '%s' (ID %d): %s",
+                prod.get("name"), pid, exc,
+            )
+            failed_count += 1
+
+    if reassigned_count or failed_count:
+        logger.info(
+            "QU reassignment summary: %d succeeded, %d failed.",
+            reassigned_count, failed_count,
+        )
 
     # Reassign barcode QU references
     all_barcodes = grocy.get_all_barcodes()
@@ -754,6 +818,12 @@ def _consolidate_duplicate_units(
 
     # Reassign conversions: re-create with canonical IDs, delete old
     conversions = grocy.get_quantity_unit_conversions()
+    conv_set: set[tuple[int | None, int, int]] = set()
+    for c in conversions:
+        cpid = c.get("product_id")
+        cpid_val = int(cpid) if cpid is not None and cpid != "" else None
+        conv_set.add((cpid_val, int(c["from_qu_id"]), int(c["to_qu_id"])))
+
     for conv in conversions:
         from_id = int(conv["from_qu_id"])
         to_id = int(conv["to_qu_id"])
@@ -761,26 +831,119 @@ def _consolidate_duplicate_units(
         new_to = dup_to_canonical.get(to_id, to_id)
         if new_from == from_id and new_to == to_id:
             continue
-        # Delete the old conversion and create with canonical IDs
+        cpid = conv.get("product_id")
+        cpid_val = int(cpid) if cpid is not None and cpid != "" else None
+
+        # Skip if the target conversion already exists
+        if (cpid_val, new_from, new_to) in conv_set:
+            try:
+                grocy.delete_quantity_unit_conversion(int(conv["id"]))
+            except GrocyAPIError:
+                pass
+            continue
+
         try:
             grocy.delete_quantity_unit_conversion(int(conv["id"]))
-            pid = conv.get("product_id")
             grocy.create_quantity_unit_conversion(
                 new_from, new_to, float(conv["factor"]),
-                product_id=int(pid) if pid is not None and pid != "" else None,
+                product_id=cpid_val,
             )
+            conv_set.add((cpid_val, new_from, new_to))
         except GrocyAPIError as exc:
-            logger.warning("Failed to reassign conversion %s: %s", conv["id"], exc)
+            logger.debug("Conversion migration for conv %s: %s", conv["id"], exc)
 
     # Delete duplicate QUs
     for dup_id, canon_id in dup_to_canonical.items():
         try:
             grocy.delete_quantity_unit(dup_id)
-            logger.info("Deleted duplicate QU ID %d (merged into %d).", dup_id, canon_id)
+            logger.info(
+                "Deleted duplicate QU '%s' (ID %d, merged into '%s' ID %d).",
+                id_to_name.get(dup_id, str(dup_id)), dup_id,
+                id_to_name.get(canon_id, str(canon_id)), canon_id,
+            )
         except GrocyAPIError as exc:
             logger.warning("Could not delete duplicate QU %d: %s", dup_id, exc)
 
     return abbrev_to_id
+
+
+# Pattern to extract size info from Finnish product names
+_SIZE_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*"
+    r"(kg|g|l|dl|ml|cl)\b",
+    re.IGNORECASE,
+)
+
+
+def _fix_broken_product_units(
+    grocy: GrocyClient,
+    abbrev_to_id: dict[str, int],
+) -> int:
+    """Detect products with orphaned QU IDs and repair them.
+
+    Products whose ``qu_id_stock`` (or purchase/consume/price) reference a
+    non-existent quantity unit are broken.  This function sets a smart
+    default based on the product name:
+
+    * Name contains a weight (e.g. ``500g``, ``2kg``) → ``g`` or ``kg``
+    * Name contains a volume (e.g. ``1L``, ``2dl``) → ``l`` or ``dl``
+    * Otherwise (packaged items) → ``kpl``
+
+    Returns the number of products fixed.
+    """
+    existing_units = grocy.get_quantity_units()
+    valid_ids: set[int] = {int(u["id"]) for u in existing_units}
+
+    products = grocy.get_all_products()
+    qu_fields = ("qu_id_stock", "qu_id_purchase", "qu_id_consume", "qu_id_price")
+    kpl_id = abbrev_to_id.get("kpl")
+    fixed = 0
+
+    for prod in products:
+        orphaned_fields: list[str] = []
+        for field in qu_fields:
+            val = prod.get(field)
+            if val is not None and val != "" and int(val) not in valid_ids:
+                orphaned_fields.append(field)
+
+        if not orphaned_fields:
+            continue
+
+        # Determine smart default from product name
+        name = prod.get("name", "")
+        default_unit_id = kpl_id  # fallback for packaged items
+        default_label = "kpl"
+
+        match = _SIZE_RE.search(name)
+        if match:
+            unit_str = match.group(2).lower()
+            canonical = _canonical_unit(unit_str)
+            if canonical and canonical in abbrev_to_id:
+                default_unit_id = abbrev_to_id[canonical]
+                default_label = canonical
+
+        if default_unit_id is None:
+            continue
+
+        updates = {field: default_unit_id for field in orphaned_fields}
+        try:
+            grocy.update_product(int(prod["id"]), **updates)
+            logger.info(
+                "Fixed orphaned QU refs for '%s' (ID %d): set %s to '%s'.",
+                name, prod["id"],
+                ", ".join(orphaned_fields),
+                default_label,
+            )
+            fixed += 1
+        except GrocyAPIError as exc:
+            logger.warning(
+                "Failed to fix orphaned QU refs for '%s' (ID %d): %s",
+                name, prod["id"], exc,
+            )
+
+    if fixed:
+        logger.info("Fixed orphaned QU refs for %d product(s).", fixed)
+    return fixed
 
 
 def _ai_detect_package_sizes(
@@ -1015,6 +1178,135 @@ RULES:
     return created
 
 
+def _fix_recipe_units(
+    grocy: GrocyClient,
+    abbrev_to_id: dict[str, int],
+) -> int:
+    """Validate recipe ingredient units and fix missing conversions.
+
+    For each recipe ingredient (``recipes_pos``), checks that its ``qu_id``
+    can be converted to the product's ``qu_id_stock``.  If not:
+
+    * If both are standard units in the same domain (weight/volume),
+      the global conversion already handles it — this is a no-op.
+    * If the ingredient uses a measurable unit but the product's stock QU
+      is ``kpl`` (piece), we need a product-specific conversion.  If one
+      already exists from the package-size detection step, great.  If not,
+      fall back to updating the recipe ingredient to use the product's
+      stock QU so the recipe at least renders.
+    * If the ingredient's QU ID doesn't exist at all, fall back to the
+      product's stock QU.
+
+    Returns the number of recipe positions fixed.
+    """
+    try:
+        positions = grocy.get_recipe_positions()
+    except GrocyAPIError as exc:
+        logger.warning("Could not fetch recipe positions: %s", exc)
+        return 0
+
+    if not positions:
+        return 0
+
+    products = grocy.get_all_products()
+    prod_by_id: dict[int, dict] = {int(p["id"]): p for p in products}
+
+    existing_units = grocy.get_quantity_units()
+    valid_qu_ids: set[int] = {int(u["id"]) for u in existing_units}
+
+    # Build conversion graph: (product_id_or_None, from_qu, to_qu) exists
+    conversions = grocy.get_quantity_unit_conversions()
+    conv_set: set[tuple[int | None, int, int]] = set()
+    for c in conversions:
+        cpid = c.get("product_id")
+        cpid_val = int(cpid) if cpid is not None and cpid != "" else None
+        from_id = int(c["from_qu_id"])
+        to_id = int(c["to_qu_id"])
+        # Store both global and product-specific
+        conv_set.add((cpid_val, from_id, to_id))
+        conv_set.add((cpid_val, to_id, from_id))  # bidirectional
+
+    id_to_abbrev: dict[int, str] = {v: k for k, v in abbrev_to_id.items()}
+
+    fixed = 0
+    for pos in positions:
+        qu_id = pos.get("qu_id")
+        pid = pos.get("product_id")
+        if qu_id is None or pid is None:
+            continue
+        qu_id = int(qu_id)
+        pid = int(pid)
+
+        prod = prod_by_id.get(pid)
+        if prod is None:
+            continue
+
+        stock_qu = prod.get("qu_id_stock")
+        if stock_qu is None:
+            continue
+        stock_qu = int(stock_qu)
+
+        # Same unit — no conversion needed
+        if qu_id == stock_qu:
+            continue
+
+        # Check if qu_id is even valid
+        if qu_id not in valid_qu_ids:
+            try:
+                grocy.update_recipe_position(int(pos["id"]), qu_id=stock_qu)
+                logger.info(
+                    "Recipe pos %s: QU %d no longer exists, set to product stock QU '%s' (%d).",
+                    pos["id"], qu_id,
+                    id_to_abbrev.get(stock_qu, str(stock_qu)), stock_qu,
+                )
+                fixed += 1
+            except GrocyAPIError as exc:
+                logger.warning("Failed to fix recipe pos %s: %s", pos["id"], exc)
+            continue
+
+        # Check if a conversion path exists (global or product-specific)
+        has_conversion = (
+            (None, qu_id, stock_qu) in conv_set
+            or (pid, qu_id, stock_qu) in conv_set
+        )
+        if has_conversion:
+            continue
+
+        # Check for transitive path through a common intermediate
+        # e.g., recipe uses "g" → product stock is "kpl", but we have
+        # "g"→"kg" (global) and "kpl"→"kg" (product-specific)
+        qu_abbrev = id_to_abbrev.get(qu_id)
+        stock_abbrev = id_to_abbrev.get(stock_qu)
+
+        # If both are in the same domain (weight↔weight or volume↔volume),
+        # global conversions should chain.  Grocy handles this internally.
+        if qu_abbrev and stock_abbrev:
+            same_domain = (
+                (qu_abbrev in _WEIGHT_UNITS and stock_abbrev in _WEIGHT_UNITS)
+                or (qu_abbrev in _VOLUME_UNITS and stock_abbrev in _VOLUME_UNITS)
+            )
+            if same_domain:
+                continue
+
+        # No conversion path — fall back to product's stock QU
+        try:
+            grocy.update_recipe_position(int(pos["id"]), qu_id=stock_qu)
+            logger.info(
+                "Recipe pos %s (product '%s'): no conversion from '%s' to '%s', set to stock QU.",
+                pos["id"],
+                prod.get("name", pid),
+                id_to_abbrev.get(qu_id, str(qu_id)),
+                id_to_abbrev.get(stock_qu, str(stock_qu)),
+            )
+            fixed += 1
+        except GrocyAPIError as exc:
+            logger.warning("Failed to fix recipe pos %s: %s", pos["id"], exc)
+
+    if fixed:
+        logger.info("Fixed %d recipe position(s) with invalid units.", fixed)
+    return fixed
+
+
 def _optimize_units(
     grocy: GrocyClient,
     gemini_api_key: str,
@@ -1024,9 +1316,11 @@ def _optimize_units(
     """Run the full unit optimization pipeline.
 
     1. Ensure standard units and global conversions exist.
-    2. Consolidate duplicate/synonym units.
-    3. AI-detect package sizes and create Piece→unit conversions.
-    4. AI-detect density factors for cross-domain conversions.
+    2. Fix products with orphaned (non-existent) QU IDs.
+    3. Consolidate duplicate/synonym units.
+    4. AI-detect package sizes and create Piece→unit conversions.
+    5. AI-detect density factors for cross-domain conversions.
+    6. Fix recipe ingredients with invalid unit conversions.
 
     Returns the total number of conversions created.
     """
@@ -1039,13 +1333,19 @@ def _optimize_units(
         logger.error("Failed to ensure standard units: %s", exc)
         return 0
 
-    # Step 2: Consolidate duplicates
+    # Step 2: Fix broken products (before consolidation)
+    try:
+        _fix_broken_product_units(grocy, abbrev_to_id)
+    except GrocyAPIError as exc:
+        logger.warning("Failed to fix broken product units: %s", exc)
+
+    # Step 3: Consolidate duplicates
     try:
         abbrev_to_id = _consolidate_duplicate_units(grocy, abbrev_to_id)
     except GrocyAPIError as exc:
         logger.warning("Failed to consolidate duplicate units: %s", exc)
 
-    # Step 3: Fetch products if not provided
+    # Step 4: Fetch products if not provided
     if products is None:
         try:
             products = grocy.get_all_products()
@@ -1057,15 +1357,21 @@ def _optimize_units(
         logger.info("No products found — skipping unit optimization.")
         return 0
 
-    # Step 4: AI package size detection
+    # Step 5: AI package size detection
     pkg_count = _ai_detect_package_sizes(
         grocy, products, abbrev_to_id, gemini_api_key, model,
     )
 
-    # Step 5: AI density conversions
+    # Step 6: AI density conversions
     density_count = _ai_detect_density_conversions(
         grocy, products, abbrev_to_id, gemini_api_key, model,
     )
+
+    # Step 7: Fix recipe ingredient units
+    try:
+        _fix_recipe_units(grocy, abbrev_to_id)
+    except GrocyAPIError as exc:
+        logger.warning("Failed to fix recipe units: %s", exc)
 
     total = pkg_count + density_count
     logger.info("--- Unit optimization complete: %d conversion(s) created. ---", total)
