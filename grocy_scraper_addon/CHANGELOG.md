@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.19.1
+
+- Fix broken products with null/empty QU fields (not just deleted unit refs)
+- Clean up orphaned product-specific QU conversions referencing deleted units
+
 ## 1.19.0
 
 - Fix unit optimization: human-readable log output (unit names instead of numeric IDs)
