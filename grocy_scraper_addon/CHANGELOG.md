@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.20.0
+
+- Replace GrocyClient with StorageClient for HA-Storage REST API
+- Simplified unit handling: single unit_id per product instead of 4 QU fields
+- Updated field names: parent_product_id→parent_id, qu_id_stock→unit_id, picture_file_name→picture_filename
+- Removed grocy_url/grocy_api_key config options, added storage_url
+- Removed duplicate unit consolidation (Storage seeds units once)
+
 ## 1.19.10
 
 - Full QU repair for stocked products: delete stock entries, fix all 4 QU fields, then re-add stock

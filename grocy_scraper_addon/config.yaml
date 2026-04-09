@@ -1,5 +1,5 @@
 name: "Grocy Scraper"
-version: "1.19.10"
+version: "1.20.0"
 slug: "grocy_scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates a Grocy database. Integrates with Barcode Buddy for automated discovery."
 url: "https://github.com/Glitchtit/grocy_scraper"
@@ -20,8 +20,7 @@ panel_admin: false
 map:
   - config:ro
 options:
-  grocy_url: ""
-  grocy_api_key: ""
+  storage_url: "http://a0a9ed235_ha_storage:8099"
   store_id: "N110"
   location_id: 0
   quantity_unit_id: 0
@@ -38,8 +37,7 @@ options:
   gemini_model_optimize: ""
   searxng_url: ""
 schema:
-  grocy_url: str
-  grocy_api_key: str
+  storage_url: str
   store_id: str
   location_id: int
   quantity_unit_id: int
