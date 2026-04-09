@@ -3097,6 +3097,60 @@ class TestAiOptimizeProducts:
             2, 4, 58.0, product_id=1,
         )
 
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_pack_handling_transfers_image_to_base(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """Pack image is transferred to the base product when base has none."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Pirkka vapaan kanan muna"},
+            {"id": 2, "name": "Pirkka vapaan kanan munia 10 kpl",
+             "picture_file_name": "6410402016242.png"},
+        ]
+        locations = [{"id": 3, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
+        ]
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 3, "best_before_days": 28, '
+            '"group_name": "Kananmuna", "category": "Kananmunat", '
+            '"pack_of": "Pirkka vapaan kanan muna", "pack_count": 10}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # Image should be assigned to the base product, NOT deleted.
+        grocy.update_product.assert_any_call(1, picture_file_name="6410402016242.png")
+        grocy.delete_product_image.assert_not_called()
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_pack_handling_deletes_image_when_base_has_one(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """Pack image is deleted when the base product already has its own image."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Pirkka vapaan kanan muna",
+             "picture_file_name": "existing.png"},
+            {"id": 2, "name": "Pirkka vapaan kanan munia 10 kpl",
+             "picture_file_name": "6410402016242.png"},
+        ]
+        locations = [{"id": 3, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
+        ]
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 3, "best_before_days": 28, '
+            '"group_name": "Kananmuna", "category": "Kananmunat", '
+            '"pack_of": "Pirkka vapaan kanan muna", "pack_count": 10}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # Pack image should be deleted since base already has one.
+        grocy.delete_product_image.assert_called_once_with("6410402016242.png")
+
 
 class TestCreatePackWeightConversion:
     """Unit tests for _create_pack_weight_conversion helper."""

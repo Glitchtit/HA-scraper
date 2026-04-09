@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.19.8
+
+- Transfer product image from pack to base product during optimize (instead of deleting it)
+- If the base product already has an image, the pack's image is deleted as before
+
 ## 1.19.7
 
 - Fix pack handling: apply sort/date/group to base product after dissolving multi-packs (was skipped by `continue`)
