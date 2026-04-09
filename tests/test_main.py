@@ -2515,6 +2515,8 @@ class TestAiOptimizeProducts:
         assert result >= 1
         # Barcode moved to base product with amount=4
         grocy.update_barcode.assert_called_once_with(10, product_id=1, amount=4)
+        # Stock added to base product (1 pack = 4 units)
+        grocy.add_stock.assert_called_once_with(1, amount=4.0)
         # Pack product deleted
         grocy.delete_product.assert_called_once_with(2)
 
@@ -2924,10 +2926,36 @@ class TestAiOptimizeProducts:
         call_model = mock_gemini.call_args[0][2]
         assert call_model == "gemini-1.5-flash"
 
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_incremental_pack_targets_base_product_for_units(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """Incremental mode: unit optimization targets the base product, not the deleted pack."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Red Bull"},
+            {"id": 2, "name": "Red Bull 4-pack"},
+        ]
+        locations = [{"id": 2, "name": "Fridge"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "1234567890123", "product_id": 2, "amount": 1},
+        ]
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 2, "best_before_days": 365, '
+            '"group_name": null, "category": "Juomat", '
+            '"pack_of": "Red Bull", "pack_count": 4}}'
+        )
 
-# ---------------------------------------------------------------------------
-# Unit optimization tests
-# ---------------------------------------------------------------------------
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # Full _optimize_units not called in incremental mode.
+        _mock_opt.assert_not_called()
+        # Package detection should target the base product (1), not the deleted pack (2).
+        _mock_pkg.assert_called_once()
+        pkg_products = _mock_pkg.call_args[0][1]
+        ids_seen = {int(p["id"]) for p in pkg_products}
+        assert 2 not in ids_seen, "Deleted pack product should not be in unit optimization"
+        assert 1 in ids_seen, "Base product should be in unit optimization"
 
 
 class TestCanonicalUnit:

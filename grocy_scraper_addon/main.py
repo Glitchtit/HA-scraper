@@ -2491,6 +2491,7 @@ def _ai_optimize_products(
 
     updated = 0
     deleted_ids: set[int] = set()
+    pack_to_base: dict[int, int] = {}  # deleted pack ID → surviving base ID
     for i in range(0, len(products), _GEMINI_OPTIMIZE_BATCH_SIZE):
         batch = products[i : i + _GEMINI_OPTIMIZE_BATCH_SIZE]
         product_lines = "\n".join(
@@ -2709,6 +2710,19 @@ def _ai_optimize_products(
                                 pack_of,
                                 int(pack_count),
                             )
+                        # Add stock to the base product before deleting
+                        # the pack (1 pack scanned = pack_count base units).
+                        try:
+                            grocy.add_stock(base_id, amount=float(int(pack_count)))
+                            logger.info(
+                                "  → Added %d unit(s) to stock for '%s' (ID %d).",
+                                int(pack_count), pack_of, base_id,
+                            )
+                        except (GrocyAPIError, ValueError) as stock_exc:
+                            logger.warning(
+                                "Could not add stock for base product '%s': %s",
+                                pack_of, stock_exc,
+                            )
                         # Delete the pack product.
                         picture = product.get("picture_file_name", "")
                         if picture:
@@ -2722,6 +2736,7 @@ def _ai_optimize_products(
                             product.get("name"), pid,
                         )
                         deleted_ids.add(product_id)
+                        pack_to_base[product_id] = base_id
                         updated += 1
                         continue  # Skip sort/date/group for deleted product.
                     except GrocyAPIError as exc:
@@ -2956,14 +2971,24 @@ def _ai_optimize_products(
     else:
         # Incremental: only ensure standard units exist (fast/idempotent)
         # and detect package sizes for the newly discovered products.
+        # Replace deleted pack IDs with their surviving base product IDs.
+        effective_ids: set[int] = set()
+        for pid in product_ids:
+            effective_ids.add(pack_to_base.get(pid, pid))
+        effective_ids -= deleted_ids
         try:
             abbrev_to_id = _ensure_units_and_conversions(grocy)
-            new_products = [p for p in products if int(p["id"]) in set(product_ids)]
-            if new_products:
-                _ai_detect_package_sizes(
-                    grocy, new_products, abbrev_to_id,
-                    gemini_api_key, effective_model,
-                )
+            if effective_ids:
+                fresh_products = grocy.get_all_products()
+                new_products = [
+                    p for p in fresh_products
+                    if int(p["id"]) in effective_ids
+                ]
+                if new_products:
+                    _ai_detect_package_sizes(
+                        grocy, new_products, abbrev_to_id,
+                        gemini_api_key, effective_model,
+                    )
         except GrocyAPIError as exc:
             logger.warning("Incremental unit setup failed: %s", exc)
 
