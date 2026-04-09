@@ -1611,6 +1611,101 @@ def _fix_recipe_units(
     return fixed
 
 
+def _merge_recipe_stubs(grocy: GrocyClient) -> int:
+    """Merge recipe-created stub products into matching parent products.
+
+    When the recipe scraper creates a stub (e.g. "suola") and a later barcode
+    scan creates a real parent product (e.g. "Suola"), we need to:
+    1. Move all recipe positions from the stub to the parent
+    2. Delete the stub product
+
+    Returns the number of stubs merged.
+    """
+    products = grocy.get_all_products()
+    prod_by_id = {int(p["id"]): p for p in products}
+
+    # Identify stubs: products with "Auto-created by recipe scraper" description
+    stubs: list[dict] = []
+    for p in products:
+        desc = (p.get("description") or "").strip()
+        if "Auto-created by recipe scraper" in desc:
+            stubs.append(p)
+
+    if not stubs:
+        return 0
+
+    # Build case-insensitive name→product map for non-stub products
+    name_to_product: dict[str, list[dict]] = {}
+    for p in products:
+        desc = (p.get("description") or "").strip()
+        if "Auto-created by recipe scraper" in desc:
+            continue
+        name_to_product.setdefault(p["name"].lower().strip(), []).append(p)
+
+    merged = 0
+    positions = None  # lazy-load
+
+    for stub in stubs:
+        stub_name = stub["name"].lower().strip()
+        candidates = name_to_product.get(stub_name, [])
+        if not candidates:
+            continue
+
+        # Prefer a parent product (one that has children)
+        parent_ids = {
+            int(p["parent_product_id"])
+            for p in products
+            if p.get("parent_product_id")
+        }
+        target = None
+        for c in candidates:
+            if c["id"] in parent_ids:
+                target = c
+                break
+        if target is None:
+            target = candidates[0]
+
+        stub_id = int(stub["id"])
+        target_id = int(target["id"])
+
+        # Move recipe positions from stub to target
+        if positions is None:
+            try:
+                positions = grocy.get_recipe_positions()
+            except GrocyAPIError:
+                positions = []
+
+        moved = 0
+        for pos in positions:
+            if pos.get("product_id") is not None and int(pos["product_id"]) == stub_id:
+                try:
+                    grocy.update_recipe_position(int(pos["id"]), product_id=target_id)
+                    moved += 1
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Failed to move recipe position %d from stub '%s' to '%s': %s",
+                        pos["id"], stub["name"], target["name"], exc,
+                    )
+
+        # Delete the stub product
+        try:
+            grocy.delete_product(stub_id)
+            logger.info(
+                "Merged stub '%s' (ID %d) → '%s' (ID %d): %d recipe position(s) moved.",
+                stub["name"], stub_id, target["name"], target_id, moved,
+            )
+            merged += 1
+        except GrocyAPIError as exc:
+            logger.warning(
+                "Failed to delete stub product '%s' (ID %d): %s",
+                stub["name"], stub_id, exc,
+            )
+
+    if merged:
+        logger.info("Stub merge: %d stub product(s) merged.", merged)
+    return merged
+
+
 def _check_recipes_for_unit_gaps(
     grocy: GrocyClient,
     product_ids: set[int],
@@ -3263,6 +3358,8 @@ def _ai_optimize_products(
                         grocy, effective_ids, abbrev_to_id,
                         gemini_api_key, effective_model,
                     )
+            # Merge recipe stubs that now match real parent products
+            _merge_recipe_stubs(grocy)
         except GrocyAPIError as exc:
             logger.warning("Incremental unit setup failed: %s", exc)
 
