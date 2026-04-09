@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 import threading
+import time
 from io import BytesIO
 from pathlib import Path
 from types import ModuleType
@@ -799,7 +800,12 @@ class TestHTTPHandler:
     def test_post_search_empty(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "POST", "/api/search", body={})
         assert status == 200
-        assert body["success"] is False
+        assert body["status"] == "running"
+        task_id = body["task_id"]
+        time.sleep(0.1)
+        status2, result = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
+        assert status2 == 200
+        assert result["success"] is False
 
     def test_post_unknown_endpoint(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "POST", "/api/unknown", body={})
@@ -828,13 +834,23 @@ class TestHTTPHandler:
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             status, body = self._make_handler(ingress_mod, "POST", "/api/discover")
         assert status == 200
-        assert body["skipped"] is True
+        assert body["status"] == "running"
+        task_id = body["task_id"]
+        time.sleep(0.1)
+        status2, result = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
+        assert status2 == 200
+        assert result["skipped"] is True
 
     def test_post_add_products_no_body(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "POST", "/api/add_products", body={})
         assert status == 200
-        assert body["success"] is False
-        assert "No products" in body["error"]
+        assert body["status"] == "running"
+        task_id = body["task_id"]
+        time.sleep(0.1)
+        status2, result = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
+        assert status2 == 200
+        assert result["success"] is False
+        assert "No products" in result["error"]
 
 
 # ---------------------------------------------------------------------------
