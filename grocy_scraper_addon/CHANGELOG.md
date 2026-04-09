@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.9
+
+- Fix products losing default quantity units (stock/purchase/consume/price) when QU consolidation deletes duplicate units
+- Fix incremental optimize (single-barcode discover) not repairing orphaned QU fields
+- Set all 4 QU fields (stock, purchase, consume, price) when creating new products (was only setting stock + purchase)
+
 ## 1.19.8
 
 - Transfer product image from pack to base product during optimize (instead of deleting it)

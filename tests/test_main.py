@@ -920,10 +920,11 @@ class TestDeduplicateParentProducts:
         g.create_product.assert_not_called()
         g.update_product.assert_any_call(50, parent_product_id=10, product_group_id=60)
 
+    @patch("grocy_scraper_addon.main._fix_broken_product_units", return_value=0)
     @patch("grocy_scraper_addon.main._ai_detect_package_sizes", return_value=0)
     @patch("grocy_scraper_addon.main._ensure_units_and_conversions", return_value={"piece": 1})
     @patch("grocy_scraper_addon.main._call_gemini_json")
-    def test_incremental_optimize_skips_dedup(self, mock_gemini_json, _m_ens, _m_pkg):
+    def test_incremental_optimize_skips_dedup(self, mock_gemini_json, _m_ens, _m_pkg, _m_fix):
         """Incremental _ai_optimize_products skips heavy dedup."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2425,6 +2426,7 @@ class TestMainOptimizeMode:
         mock_optimize.assert_called_once()
 
 
+@patch("grocy_scraper_addon.main._fix_broken_product_units", return_value=0)
 @patch("grocy_scraper_addon.main._ai_detect_package_sizes", return_value=0)
 @patch("grocy_scraper_addon.main._ensure_units_and_conversions", return_value={"piece": 1})
 @patch("grocy_scraper_addon.main._optimize_units", return_value=0)
@@ -2453,7 +2455,7 @@ class TestAiOptimizeProducts:
     # -- Full-mode tests (product_ids=None, clean-slate) -------------------
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_sort_date_group_in_single_pass(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_sort_date_group_in_single_pass(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: sort, date, and group in one Gemini call."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2494,7 +2496,7 @@ class TestAiOptimizeProducts:
         )
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_pack_detection_moves_barcode_and_deletes(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_pack_detection_moves_barcode_and_deletes(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Red Bull"},
@@ -2524,7 +2526,7 @@ class TestAiOptimizeProducts:
         grocy.delete_product.assert_called_once_with(2)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_no_products_returns_zero(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_no_products_returns_zero(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         from grocy_scraper_addon.main import _ai_optimize_products
         grocy = self._make_grocy([], [])
         result = _ai_optimize_products(grocy, "gemini-key")
@@ -2532,7 +2534,7 @@ class TestAiOptimizeProducts:
         mock_gemini.assert_not_called()
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_gemini_failure_continues(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_gemini_failure_continues(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}]
@@ -2543,7 +2545,7 @@ class TestAiOptimizeProducts:
         assert result == 0
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_strips_parents_and_sends_all(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_strips_parents_and_sends_all(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: strips parent assignments and sends all leaf products."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2589,7 +2591,7 @@ class TestAiOptimizeProducts:
         assert "Mausteet" not in prompt.split("Products:")[-1]
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_deletes_old_parent_placeholders(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_deletes_old_parent_placeholders(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: old parent placeholders with no new children are deleted."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2632,7 +2634,7 @@ class TestAiOptimizeProducts:
         assert result >= 1
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_cleans_unused_product_groups(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_cleans_unused_product_groups(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: unused product groups are deleted after rebuild."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2658,7 +2660,7 @@ class TestAiOptimizeProducts:
         grocy.delete_product_group.assert_called_once_with(70)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_no_existing_hints_in_prompt(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_no_existing_hints_in_prompt(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: prompt does NOT include existing parent/category hints."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2682,7 +2684,7 @@ class TestAiOptimizeProducts:
         assert "Existing product categories" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_skips_parent_for_min_stock_product(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_skips_parent_for_min_stock_product(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: products with min_stock_amount > 0 skip parent assignment."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2715,7 +2717,7 @@ class TestAiOptimizeProducts:
     # -- Incremental-mode tests (product_ids=[...]) ------------------------
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_product_ids_filter(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_product_ids_filter(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Maito"},
@@ -2750,7 +2752,7 @@ class TestAiOptimizeProducts:
         assert "Ketsuppi" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_incremental_existing_parents_in_prompt(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_incremental_existing_parents_in_prompt(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Incremental mode: existing parent/category names appear in prompt."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2781,7 +2783,7 @@ class TestAiOptimizeProducts:
         assert "Existing product categories" in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_regroup_product_under_different_parent(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_regroup_product_under_different_parent(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: product re-grouped from old parent to new one."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2835,7 +2837,7 @@ class TestAiOptimizeProducts:
         assert result >= 1
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_cleanup_empty_parent_after_optimize(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_cleanup_empty_parent_after_optimize(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode: empty parent products are deleted after optimization."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2869,7 +2871,7 @@ class TestAiOptimizeProducts:
         grocy.delete_product.assert_any_call(50)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_uses_optimize_model(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_uses_optimize_model(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode uses optimize_model when provided."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2889,7 +2891,7 @@ class TestAiOptimizeProducts:
         assert call_model == "gemini-2.0-pro"
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_falls_back_to_regular_model(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_full_mode_falls_back_to_regular_model(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Full mode falls back to regular model when optimize_model is empty."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2909,7 +2911,7 @@ class TestAiOptimizeProducts:
         assert call_model == "gemini-1.5-flash"
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_incremental_mode_uses_regular_model(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg):
+    def test_incremental_mode_uses_regular_model(self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken):
         """Incremental mode always uses the regular model, not optimize_model."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2931,7 +2933,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_incremental_pack_targets_base_product_for_units(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """Incremental mode: unit optimization targets the base product, not the deleted pack."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -2962,7 +2964,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_pack_handling_applies_group_to_base_product(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """Pack handling applies group/location/date to the surviving base product."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -2993,7 +2995,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_pack_of_equals_group_name_unhides_product(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """When pack_of == group_name, the base-parent product is un-hidden."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -3026,7 +3028,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_empty_parent_check_skips_pack_base_products(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """Incremental: parent products that are pack bases are not deleted."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -3067,7 +3069,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_pack_handling_creates_weight_conversion(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """Pack handling creates per-unit weight conversion from pack name."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -3099,7 +3101,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_pack_handling_transfers_image_to_base(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """Pack image is transferred to the base product when base has none."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -3126,7 +3128,7 @@ class TestAiOptimizeProducts:
 
     @patch("grocy_scraper_addon.main._call_gemini")
     def test_pack_handling_deletes_image_when_base_has_one(
-        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg, _mock_fix_broken,
     ):
         """Pack image is deleted when the base product already has its own image."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -3561,11 +3563,27 @@ class TestOptimizeUnits:
         _optimize_units(grocy, "key", "model")
 
         mock_ensure.assert_called_once_with(grocy)
-        mock_fix_broken.assert_called_once()
         mock_consolidate.assert_called_once()
+        mock_fix_broken.assert_called_once()
         mock_pkg.assert_called_once()
         mock_density.assert_called_once()
         mock_fix_recipes.assert_called_once()
+
+    def test_fix_broken_runs_after_consolidate(self, mock_ensure, mock_fix_broken,
+                                                mock_consolidate, mock_pkg, mock_density,
+                                                mock_fix_recipes):
+        """_fix_broken_product_units must run AFTER _consolidate_duplicate_units."""
+        from grocy_scraper_addon.main import _optimize_units
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.return_value = [{"id": 1, "name": "Maito"}]
+        mock_ensure.return_value = {"g": 1}
+        mock_consolidate.return_value = {"g": 1}
+        call_order = []
+        mock_consolidate.side_effect = lambda *a, **kw: (call_order.append("consolidate"), {"g": 1})[1]
+        mock_fix_broken.side_effect = lambda *a, **kw: (call_order.append("fix_broken"), 0)[1]
+
+        _optimize_units(grocy, "key", "model")
+        assert call_order == ["consolidate", "fix_broken"]
 
     def test_stops_on_ensure_failure(self, mock_ensure, mock_fix_broken,
                                       mock_consolidate, mock_pkg, mock_density,
@@ -4089,9 +4107,10 @@ class TestIncrementalDensityAndRecipeCheck:
     @patch("grocy_scraper_addon.main._check_recipes_for_unit_gaps")
     @patch("grocy_scraper_addon.main._ai_detect_density_conversions")
     @patch("grocy_scraper_addon.main._ai_detect_package_sizes")
+    @patch("grocy_scraper_addon.main._fix_broken_product_units", return_value=0)
     @patch("grocy_scraper_addon.main._ensure_units_and_conversions")
     def test_incremental_calls_density_and_recipe_check(
-        self, mock_ensure, mock_pkg, mock_density, mock_recipe_check,
+        self, mock_ensure, mock_fix_broken, mock_pkg, mock_density, mock_recipe_check,
     ):
         """After package sizes, incremental should call density + recipe check."""
         from grocy_scraper_addon.main import _ai_optimize_products
@@ -4118,7 +4137,8 @@ class TestIncrementalDensityAndRecipeCheck:
             product_ids=[10],
         )
 
-        # All three should be called
+        # All should be called
+        mock_fix_broken.assert_called_once()
         mock_pkg.assert_called_once()
         mock_density.assert_called_once()
         mock_recipe_check.assert_called_once()
