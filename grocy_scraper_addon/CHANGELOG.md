@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.19.7
+
+- Fix pack handling: apply sort/date/group to base product after dissolving multi-packs (was skipped by `continue`)
+- Fix pack_of == group_name edge case: un-hide base product when it doubles as the parent
+- Fix empty parent deletion incorrectly removing pack base products that have stock and barcodes
+- Create per-unit weight QU conversions from pack names (e.g. "580g / 10 kpl" → 58g per piece)
+
 ## 1.19.6
 
 - Propagate density conversions from parent products to all child products (Grocy does not inherit product-specific conversions)
