@@ -10,6 +10,7 @@ API endpoints
 -------------
 GET  /                  Serve the HTML UI
 GET  /api/config        Return current add-on configuration summary
+GET  /api/task/{id}     Poll background task status/result
 POST /api/search        Search products on K-Ruoka
 POST /api/discover      Run discover pipeline.  Optionally accepts {"barcode": "..."} for
                         single-barcode mode (bypasses Barcode Buddy).
@@ -19,6 +20,9 @@ POST /api/date          Run Gemini AI best-before date assignment
 POST /api/group         Run Gemini AI product grouping (parent-product assignment)
 POST /api/update        Update existing products from K-Ruoka
 POST /api/add_products  Add selected products to the Grocy database
+
+All POST endpoints return ``{"task_id": "...", "status": "running"}`` immediately.
+The frontend polls ``GET /api/task/{id}`` until the task completes.
 """
 
 from __future__ import annotations
@@ -44,6 +48,32 @@ if _APP_DIR not in sys.path:
 
 # Serialise long-running operations so only one runs at a time.
 _op_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Background task tracking (fire-and-poll to avoid Cloudflare timeouts)
+# ---------------------------------------------------------------------------
+
+_tasks: dict[str, dict[str, Any]] = {}
+_task_counter = 0
+_task_lock = threading.Lock()
+_MAX_TASKS = 20
+
+
+def _next_task_id() -> str:
+    """Return a unique task ID and prune old completed tasks."""
+    global _task_counter
+    with _task_lock:
+        _task_counter += 1
+        tid = str(_task_counter)
+        # Prune oldest completed tasks beyond _MAX_TASKS.
+        if len(_tasks) > _MAX_TASKS:
+            done = [
+                k for k, v in _tasks.items()
+                if v.get("status") in ("done", "error")
+            ]
+            for k in done[: len(done) - _MAX_TASKS // 2]:
+                _tasks.pop(k, None)
+        return tid
 
 logger = logging.getLogger(__name__)
 
@@ -840,7 +870,32 @@ _HTML = """\
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
-    return fetch(path, opts).then(function (resp) { return resp.json(); });
+    return fetch(path, opts).then(function (resp) {
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      return resp.json();
+    });
+  }
+
+  function pollTask(taskId) {
+    return new Promise(function (resolve, reject) {
+      var iv = setInterval(function () {
+        fetch("api/task/" + taskId)
+          .then(function (r) {
+            if (!r.ok) throw new Error("HTTP " + r.status);
+            return r.json();
+          })
+          .then(function (data) {
+            if (data.status && data.status !== "running") {
+              clearInterval(iv);
+              resolve(data);
+            }
+          })
+          .catch(function (err) {
+            clearInterval(iv);
+            reject(err);
+          });
+      }, 3000);
+    });
   }
 
   // ── Terminal helpers ──────────────────────────────────────────────────────
@@ -877,6 +932,7 @@ _HTML = """\
     resultsDiv.innerHTML = "";
 
     api("POST", "api/search", { query: q, max_products: max })
+      .then(function (resp) { return pollTask(resp.task_id); })
       .then(function (data) {
         if (!data.success) {
           searchStat.innerHTML = '<span class="error">Error: ' + esc(data.error) + "</span>";
@@ -962,6 +1018,7 @@ _HTML = """\
     addStatus.innerHTML = '<span class="loader"></span>Adding ' + selected.length + ' product(s) \\u2026';
 
     api("POST", "api/add_products", { products: selected })
+      .then(function (resp) { return pollTask(resp.task_id); })
       .then(function (data) {
         if (data.logs && data.logs.length) appendLogs("Add Products", data.logs);
         if (data.success) {
@@ -989,6 +1046,7 @@ _HTML = """\
     actionStat.innerHTML = '<span class="loader"></span>Running ' + esc(label) + ' \\u2026';
 
     api("POST", "api/" + endpoint)
+      .then(function (resp) { return pollTask(resp.task_id); })
       .then(function (data) {
         if (data.logs && data.logs.length) appendLogs(label, data.logs);
 
@@ -1098,6 +1156,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._json_response(_handle_config())
             return
 
+        # Task polling endpoint: GET /api/task/{id}
+        norm = path if path.startswith("/") else "/" + path
+        if norm.startswith("/api/task/"):
+            task_id = norm[len("/api/task/"):]
+            task = _tasks.get(task_id)
+            if task is None:
+                self._json_response({"error": "Unknown task"}, status=404)
+            else:
+                self._json_response(task)
+            return
+
         # Everything else serves the HTML UI.
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1139,18 +1208,28 @@ class _Handler(BaseHTTPRequestHandler):
             )
             return
 
-        try:
-            if handler is _handle_search or handler is _handle_add_products or handler is _handle_discover:
-                result = handler(body)
-            else:
-                result = handler()
-        except Exception as exc:
-            logger.exception("API handler %s failed", path)
-            result = {"success": False, "error": str(exc)}
-        finally:
-            _op_lock.release()
+        # Fire-and-poll: run handler in a background thread, return task_id
+        # immediately so Cloudflare never times out.
+        task_id = _next_task_id()
+        _tasks[task_id] = {"status": "running"}
 
-        self._json_response(result)
+        def _run() -> None:
+            try:
+                if handler is _handle_search or handler is _handle_add_products or handler is _handle_discover:
+                    result = handler(body)
+                else:
+                    result = handler()
+            except Exception as exc:
+                logger.exception("API handler %s failed", path)
+                result = {"success": False, "error": str(exc)}
+            finally:
+                _op_lock.release()
+            result["status"] = "done"
+            _tasks[task_id] = result
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        self._json_response({"task_id": task_id, "status": "running"})
 
     # Helpers ─────────────────────────────────────────────────────────────────
 

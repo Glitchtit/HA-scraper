@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.18.2
+
+- Fix Cloudflare timeout on long-running operations (discover, optimize, sort, date, group, update, search)
+- All POST endpoints now return immediately with a task ID; frontend polls for results every 3 seconds
+- Add GET `/api/task/{id}` polling endpoint to ingress server
+- Fix `api()` JS function to check HTTP status before parsing JSON
+
 ## 1.18.1
 
 - Fix single-barcode scan running heavy global optimization: skip parent deduplication and full unit optimization in incremental mode (single product scan)
