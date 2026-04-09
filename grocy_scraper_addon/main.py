@@ -879,15 +879,18 @@ def _fix_broken_product_units(
     grocy: GrocyClient,
     abbrev_to_id: dict[str, int],
 ) -> int:
-    """Detect products with orphaned QU IDs and repair them.
+    """Detect products with orphaned/empty QU IDs and repair them.
 
     Products whose ``qu_id_stock`` (or purchase/consume/price) reference a
-    non-existent quantity unit are broken.  This function sets a smart
-    default based on the product name:
+    non-existent quantity unit — or are null/empty — are broken.  This
+    function sets a smart default based on the product name:
 
     * Name contains a weight (e.g. ``500g``, ``2kg``) → ``g`` or ``kg``
     * Name contains a volume (e.g. ``1L``, ``2dl``) → ``l`` or ``dl``
     * Otherwise (packaged items) → ``kpl``
+
+    Also cleans up orphaned product-specific QU conversions that reference
+    deleted units.
 
     Returns the number of products fixed.
     """
@@ -899,11 +902,35 @@ def _fix_broken_product_units(
     kpl_id = abbrev_to_id.get("kpl")
     fixed = 0
 
+    # --- Clean up orphaned product-specific conversions ---
+    conversions = grocy.get_quantity_unit_conversions()
+    orphaned_convs = [
+        c for c in conversions
+        if int(c["from_qu_id"]) not in valid_ids
+        or int(c["to_qu_id"]) not in valid_ids
+    ]
+    if orphaned_convs:
+        deleted_count = 0
+        for conv in orphaned_convs:
+            try:
+                grocy.delete_quantity_unit_conversion(int(conv["id"]))
+                deleted_count += 1
+            except GrocyAPIError:
+                pass
+        if deleted_count:
+            logger.info(
+                "Cleaned up %d orphaned QU conversion(s) referencing deleted units.",
+                deleted_count,
+            )
+
+    # --- Fix products with broken/empty QU fields ---
     for prod in products:
         orphaned_fields: list[str] = []
         for field in qu_fields:
             val = prod.get(field)
-            if val is not None and val != "" and int(val) not in valid_ids:
+            if val is None or val == "" or val == 0:
+                orphaned_fields.append(field)
+            elif int(val) not in valid_ids:
                 orphaned_fields.append(field)
 
         if not orphaned_fields:

@@ -3266,10 +3266,11 @@ class TestOptimizeUnits:
 
 
 class TestFixBrokenProductUnits:
-    def _make_grocy(self, units, products):
+    def _make_grocy(self, units, products, conversions=None):
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_quantity_units.return_value = units
         grocy.get_all_products.return_value = products
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
         return grocy
 
     def test_fixes_orphaned_weight_product(self):
@@ -3342,6 +3343,52 @@ class TestFixBrokenProductUnits:
         abbrev = {"kpl": 10}
         fixed = _fix_broken_product_units(grocy, abbrev)
         assert fixed == 0
+
+    def test_fixes_null_empty_qu_fields(self):
+        """Products with null/empty QU fields should also be repaired."""
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 10, "name": "Kappale", "description": "kpl"}]
+        products = [
+            {"id": 1, "name": "Tuote", "qu_id_stock": None,
+             "qu_id_purchase": "", "qu_id_consume": 0, "qu_id_price": None},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"kpl": 10}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        call_kwargs = grocy.update_product.call_args[1]
+        assert call_kwargs["qu_id_stock"] == 10
+        assert call_kwargs["qu_id_purchase"] == 10
+        assert call_kwargs["qu_id_consume"] == 10
+        assert call_kwargs["qu_id_price"] == 10
+
+    def test_cleans_orphaned_conversions(self):
+        """Conversions referencing deleted units should be removed."""
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 5, "name": "Kappale", "description": "kpl"}]
+        # Conversion references deleted unit 999
+        conversions = [
+            {"id": 100, "from_qu_id": 999, "to_qu_id": 5, "factor": 1,
+             "product_id": 1},
+            {"id": 101, "from_qu_id": 5, "to_qu_id": 999, "factor": 1,
+             "product_id": 1},
+            {"id": 102, "from_qu_id": 5, "to_qu_id": 5, "factor": 1,
+             "product_id": None},  # valid, should not be deleted
+        ]
+        products = [
+            {"id": 1, "name": "Tuote", "qu_id_stock": 5,
+             "qu_id_purchase": 5, "qu_id_consume": 5, "qu_id_price": 5},
+        ]
+        grocy = self._make_grocy(units, products, conversions)
+        abbrev = {"kpl": 5}
+        _fix_broken_product_units(grocy, abbrev)
+        # Should delete the 2 orphaned conversions
+        assert grocy.delete_quantity_unit_conversion.call_count == 2
+        deleted_ids = {
+            call.args[0]
+            for call in grocy.delete_quantity_unit_conversion.call_args_list
+        }
+        assert deleted_ids == {100, 101}
 
 
 class TestFixRecipeUnits:
