@@ -2445,6 +2445,9 @@ class TestAiOptimizeProducts:
         g.delete_product_image.return_value = None
         g.get_product_groups.return_value = []
         g.delete_product_group.return_value = None
+        g.get_quantity_units.return_value = []
+        g.get_quantity_unit_conversions.return_value = []
+        g.create_quantity_unit_conversion.return_value = None
         return g
 
     # -- Full-mode tests (product_ids=None, clean-slate) -------------------
@@ -2956,6 +2959,221 @@ class TestAiOptimizeProducts:
         ids_seen = {int(p["id"]) for p in pkg_products}
         assert 2 not in ids_seen, "Deleted pack product should not be in unit optimization"
         assert 1 in ids_seen, "Base product should be in unit optimization"
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_pack_handling_applies_group_to_base_product(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """Pack handling applies group/location/date to the surviving base product."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Pirkka vapaan kanan muna"},
+            {"id": 2, "name": "Pirkka vapaan kanan munia 10 kpl / 580g"},
+        ]
+        locations = [{"id": 3, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
+        ]
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 3, "best_before_days": 28, '
+            '"group_name": "Kananmuna", "category": "Kananmunat", '
+            '"pack_of": "Pirkka vapaan kanan muna", "pack_count": 10}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # Base product should be linked to parent with category.
+        grocy.update_product.assert_any_call(
+            1,
+            location_id=3,
+            default_best_before_days=28,
+            parent_product_id=999,
+            product_group_id=100,
+        )
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_pack_of_equals_group_name_unhides_product(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """When pack_of == group_name, the base-parent product is un-hidden."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 2, "name": "Pirkka vapaan kanan munia 10 kpl / 580g"},
+        ]
+        locations = [{"id": 3, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
+        ]
+        # Gemini returns same name for pack_of and group_name.
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 3, "best_before_days": 28, '
+            '"group_name": "Kananmuna", "category": "Kananmunat", '
+            '"pack_of": "Kananmuna", "pack_count": 10}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # The base product IS the parent (ID 999 from create_product).
+        # It should be un-hidden and get category group.
+        grocy.update_product.assert_any_call(
+            999,
+            location_id=3,
+            default_best_before_days=28,
+            cumulate_min_stock_amount_of_sub_products=0,
+            hide_on_stock_overview=0,
+            product_group_id=100,
+        )
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_empty_parent_check_skips_pack_base_products(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """Incremental: parent products that are pack bases are not deleted."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 2, "name": "Pirkka vapaan kanan munia 10 kpl / 580g"},
+        ]
+        locations = [{"id": 3, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
+        ]
+        # pack_of == group_name: base IS the parent.
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 3, "best_before_days": 28, '
+            '"group_name": "Kananmuna", "category": "Kananmunat", '
+            '"pack_of": "Kananmuna", "pack_count": 10}}'
+        )
+        # After optimization the parent "Kananmuna" (999) still exists
+        # with cumulate/hide flags; the empty-parent check must NOT
+        # delete it because it's a pack base product.
+        after_products = [
+            {"id": 999, "name": "Kananmuna",
+             "cumulate_min_stock_amount_of_sub_products": 0,
+             "hide_on_stock_overview": 0},
+        ]
+        grocy.get_all_products.side_effect = [
+            products,       # Initial fetch.
+            after_products,  # Empty-parent check fetch.
+            after_products,  # Incremental unit setup fetch.
+            after_products,  # _merge_recipe_stubs fetch.
+        ]
+
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # Ensure the pack product (2) is deleted but parent (999) is NOT.
+        deleted = [c[0][0] for c in grocy.delete_product.call_args_list]
+        assert 2 in deleted
+        assert 999 not in deleted
+
+    @patch("grocy_scraper_addon.main._call_gemini")
+    def test_pack_handling_creates_weight_conversion(
+        self, mock_gemini, _mock_dedup, _mock_opt, _mock_ens, _mock_pkg,
+    ):
+        """Pack handling creates per-unit weight conversion from pack name."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+        products = [
+            {"id": 1, "name": "Pirkka vapaan kanan muna"},
+            {"id": 2, "name": "Pirkka vapaan kanan munia 10 kpl / 580g"},
+        ]
+        locations = [{"id": 3, "name": "Pantry"}]
+        grocy = self._make_grocy(products, locations)
+        grocy.get_product_barcodes.return_value = [
+            {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
+        ]
+        grocy.get_quantity_units.return_value = [
+            {"id": 2, "name": "Piece", "description": "piece"},
+            {"id": 4, "name": "Gramma", "description": "g"},
+        ]
+        grocy.get_quantity_unit_conversions.return_value = []
+        mock_gemini.return_value = (
+            '{"2": {"location_id": 3, "best_before_days": 28, '
+            '"group_name": "Kananmuna", "category": "Kananmunat", '
+            '"pack_of": "Pirkka vapaan kanan muna", "pack_count": 10}}'
+        )
+
+        _ai_optimize_products(grocy, "gemini-key", product_ids=[2])
+        # Should create conversion: 1 piece = 58 g (580g / 10) on base product 1.
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            2, 4, 58.0, product_id=1,
+        )
+
+
+class TestCreatePackWeightConversion:
+    """Unit tests for _create_pack_weight_conversion helper."""
+
+    def _make_grocy(self):
+        g = MagicMock(spec=GrocyClient)
+        g.get_quantity_units.return_value = [
+            {"id": 2, "name": "Piece", "description": "piece"},
+            {"id": 4, "name": "Gramma", "description": "g"},
+            {"id": 6, "name": "Millilitra", "description": "ml"},
+        ]
+        g.get_quantity_unit_conversions.return_value = []
+        g.create_quantity_unit_conversion.return_value = None
+        return g
+
+    def test_parses_grams(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 1, "Munia 10 kpl / 580g", 10)
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            2, 4, 58.0, product_id=1,
+        )
+
+    def test_parses_kg(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 5, "Jauhot 2kg pack", 4)
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            2, 4, 500.0, product_id=5,
+        )
+
+    def test_parses_ml(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 3, "Red Bull 4x250ml", 4)
+        # "4x250ml" → NxSize pattern, 250ml per unit (no division).
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            2, 6, 250.0, product_id=3,
+        )
+
+    def test_parses_liters(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 7, "Maito 6x1l", 6)
+        # "6x1l" → NxSize pattern, 1l = 1000ml per unit (no division).
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            2, 6, 1000.0, product_id=7,
+        )
+
+    def test_no_weight_in_name_is_noop(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 1, "Kananmuna 10 kpl", 10)
+        grocy.create_quantity_unit_conversion.assert_not_called()
+
+    def test_skips_existing_conversion(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        grocy.get_quantity_unit_conversions.return_value = [
+            {"id": 99, "product_id": 1, "from_qu_id": 2, "to_qu_id": 4, "factor": 58.0},
+        ]
+        _create_pack_weight_conversion(grocy, 1, "Munia 10 kpl / 580g", 10)
+        grocy.create_quantity_unit_conversion.assert_not_called()
+
+    def test_zero_pack_count_is_noop(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 1, "Something 580g", 0)
+        grocy.create_quantity_unit_conversion.assert_not_called()
+
+    def test_comma_decimal_separator(self):
+        from grocy_scraper_addon.main import _create_pack_weight_conversion
+        grocy = self._make_grocy()
+        _create_pack_weight_conversion(grocy, 1, "Ruoka 1,5kg", 3)
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            2, 4, 500.0, product_id=1,
+        )
 
 
 class TestCanonicalUnit:

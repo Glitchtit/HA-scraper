@@ -2695,6 +2695,117 @@ def _ai_group_products(
     return updated
 
 
+# Regex for extracting weight/volume from Finnish pack product names.
+# Matches patterns like "580g", "1.5L", "200ml", "2kg", "33cl", "2dl".
+_PACK_WEIGHT_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(g|kg|ml|dl|cl|l)\b", re.IGNORECASE,
+)
+
+# "NxSize" pattern: "4x250ml", "6x1l", "12 x 33cl" → per-unit weight.
+_NxW_RE = re.compile(
+    r"\d+\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(g|kg|ml|dl|cl|l)\b", re.IGNORECASE,
+)
+
+# Mapping from unit abbreviation to canonical unit + factor to grams/ml.
+_UNIT_TO_CANONICAL: dict[str, tuple[str, float]] = {
+    "g": ("g", 1.0),
+    "kg": ("g", 1000.0),
+    "ml": ("ml", 1.0),
+    "dl": ("ml", 100.0),
+    "cl": ("ml", 10.0),
+    "l": ("ml", 1000.0),
+}
+
+
+def _create_pack_weight_conversion(
+    grocy: GrocyClient,
+    base_product_id: int,
+    pack_name: str,
+    pack_count: int,
+) -> None:
+    """Parse weight from a pack product name and create a per-unit conversion.
+
+    For example, "Pirkka vapaan kanan munia 10 kpl / 580g" with pack_count=10
+    creates: 1 piece = 58 g  (product-specific conversion on the base product).
+
+    Handles two conventions:
+    - "NxSize" (e.g. "4x250ml") → 250 ml is already per-unit.
+    - Total weight (e.g. "580g") → divide by pack_count.
+    """
+    if pack_count <= 0:
+        return
+
+    # Try "NxSize" pattern first (per-unit amount, no division needed).
+    nxw = _NxW_RE.search(pack_name)
+    if nxw:
+        raw_amount = float(nxw.group(1).replace(",", "."))
+        unit_str = nxw.group(2).lower()
+        canonical_unit, factor = _UNIT_TO_CANONICAL.get(unit_str, (unit_str, 1.0))
+        per_unit = raw_amount * factor
+    else:
+        match = _PACK_WEIGHT_RE.search(pack_name)
+        if not match:
+            return
+        raw_amount = float(match.group(1).replace(",", "."))
+        unit_str = match.group(2).lower()
+        canonical_unit, factor = _UNIT_TO_CANONICAL.get(unit_str, (unit_str, 1.0))
+        total = raw_amount * factor
+        per_unit = total / pack_count
+
+    if per_unit <= 0:
+        return
+
+    # Find the QU IDs we need.  _ensure_units_and_conversions has not run
+    # yet at this point (it runs later), so look up units from what Grocy
+    # already has.
+    try:
+        all_units = grocy.get_quantity_units()
+    except GrocyAPIError:
+        return
+
+    piece_id: int | None = None
+    target_id: int | None = None
+    for u in all_units:
+        name_lower = (u.get("name") or "").lower().strip()
+        desc_lower = (u.get("description") or "").lower().strip()
+        if name_lower in ("piece", "pack", "stück") or desc_lower == "piece":
+            piece_id = int(u["id"])
+        if desc_lower == canonical_unit or name_lower == canonical_unit:
+            target_id = int(u["id"])
+
+    if piece_id is None or target_id is None or piece_id == target_id:
+        return
+
+    # Check for existing conversion to avoid duplicates.
+    try:
+        existing = grocy.get_quantity_unit_conversions()
+        for c in existing:
+            if (
+                c.get("product_id") is not None
+                and c.get("product_id") != ""
+                and int(c["product_id"]) == base_product_id
+                and int(c["from_qu_id"]) == piece_id
+                and int(c["to_qu_id"]) == target_id
+            ):
+                return  # Already exists.
+    except GrocyAPIError:
+        pass  # Proceed anyway; create will fail if duplicate.
+
+    try:
+        grocy.create_quantity_unit_conversion(
+            piece_id, target_id, per_unit, product_id=base_product_id,
+        )
+        logger.info(
+            "  → Created conversion for '%s': 1 piece = %.4g %s.",
+            pack_name, per_unit, canonical_unit,
+        )
+    except GrocyAPIError as exc:
+        logger.warning(
+            "Could not create weight conversion for base product %d: %s",
+            base_product_id, exc,
+        )
+
+
 def _ai_optimize_products(
     grocy: GrocyClient,
     gemini_api_key: str,
@@ -3098,6 +3209,74 @@ def _ai_optimize_products(
                         deleted_ids.add(product_id)
                         pack_to_base[product_id] = base_id
                         updated += 1
+
+                        # --- Apply sort/date/group to the surviving
+                        # base product (the pack product is gone, so its
+                        # Gemini-suggested attributes must land on the
+                        # base instead). ---------------------------------
+                        base_update: dict = {}
+                        loc_id = info.get("location_id")
+                        if loc_id is not None and locations:
+                            base_update["location_id"] = int(loc_id)
+                        days = info.get("best_before_days")
+                        if days is not None:
+                            base_update["default_best_before_days"] = int(days)
+
+                        group_name = info.get("group_name")
+                        parent_id = (
+                            parent_name_to_id.get(str(group_name))
+                            if group_name else None
+                        )
+                        if parent_id is not None and parent_id != base_id:
+                            # Normal case: base product becomes a child of
+                            # the parent.
+                            base_update["parent_product_id"] = parent_id
+                            cat_name = info.get("category")
+                            if cat_name:
+                                cg_id = category_name_to_group_id.get(
+                                    str(cat_name)
+                                )
+                                if cg_id is not None:
+                                    base_update["product_group_id"] = cg_id
+                        elif parent_id is not None and parent_id == base_id:
+                            # Edge case: pack_of == group_name — the base
+                            # product IS the parent.  Un-hide it so it is
+                            # treated as a real product, not a placeholder.
+                            base_update[
+                                "cumulate_min_stock_amount_of_sub_products"
+                            ] = 0
+                            base_update["hide_on_stock_overview"] = 0
+                            cat_name = info.get("category")
+                            if cat_name:
+                                cg_id = category_name_to_group_id.get(
+                                    str(cat_name)
+                                )
+                                if cg_id is not None:
+                                    base_update["product_group_id"] = cg_id
+
+                        if base_update:
+                            try:
+                                grocy.update_product(base_id, **base_update)
+                                logger.info(
+                                    "  → Applied attributes to base "
+                                    "product '%s' (ID %d).",
+                                    pack_of, base_id,
+                                )
+                            except (GrocyAPIError, ValueError) as exc:
+                                logger.warning(
+                                    "Could not update base product "
+                                    "'%s': %s", pack_of, exc,
+                                )
+
+                        # --- Create per-unit weight conversion from
+                        # the original pack name (e.g. "580g / 10 kpl"
+                        # → 1 piece = 58 g). ----------------------------
+                        _create_pack_weight_conversion(
+                            grocy, base_id,
+                            product.get("name", ""),
+                            int(pack_count),
+                        )
+
                         continue  # Skip sort/date/group for deleted product.
                     except GrocyAPIError as exc:
                         logger.warning(
@@ -3268,6 +3447,10 @@ def _ai_optimize_products(
                 if ppid:
                     children_of.setdefault(int(ppid), []).append(p)
 
+            # Products that received barcodes/stock from pack handling
+            # must not be deleted even if they currently have no children.
+            pack_base_ids = set(pack_to_base.values())
+
             for p in all_products_after:
                 pid_int = int(p["id"])
                 if (
@@ -3275,6 +3458,7 @@ def _ai_optimize_products(
                     and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
                     and p.get("hide_on_stock_overview") in (1, "1", True)
                     and pid_int not in deleted_ids
+                    and pid_int not in pack_base_ids
                 ):
                     try:
                         picture = p.get("picture_file_name", "")
