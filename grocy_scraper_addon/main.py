@@ -1328,6 +1328,8 @@ RULES:
 def _fix_recipe_units(
     grocy: GrocyClient,
     abbrev_to_id: dict[str, int],
+    gemini_api_key: str | None = None,
+    model: str | None = None,
 ) -> int:
     """Validate recipe ingredient units and fix missing conversions.
 
@@ -1336,6 +1338,8 @@ def _fix_recipe_units(
 
     * If both are standard units in the same domain (weight/volume),
       the global conversion already handles it — this is a no-op.
+    * If the units are cross-domain (weight vs volume), attempt to create
+      a density conversion via Gemini AI before falling back.
     * If the ingredient uses a measurable unit but the product's stock QU
       is ``kpl`` (piece), we need a product-specific conversion.  If one
       already exists from the package-size detection step, great.  If not,
@@ -1375,7 +1379,13 @@ def _fix_recipe_units(
 
     id_to_abbrev: dict[int, str] = {v: k for k, v in abbrev_to_id.items()}
 
+    # Collect products needing density conversions (cross-domain gaps)
+    density_candidates: list[dict] = []
+    density_candidate_pids: set[int] = set()
+
     fixed = 0
+    fallback_positions: list[tuple[dict, dict, int]] = []  # (pos, prod, stock_qu)
+
     for pos in positions:
         qu_id = pos.get("qu_id")
         pid = pos.get("product_id")
@@ -1419,9 +1429,6 @@ def _fix_recipe_units(
         if has_conversion:
             continue
 
-        # Check for transitive path through a common intermediate
-        # e.g., recipe uses "g" → product stock is "kpl", but we have
-        # "g"→"kg" (global) and "kpl"→"kg" (product-specific)
         qu_abbrev = id_to_abbrev.get(qu_id)
         stock_abbrev = id_to_abbrev.get(stock_qu)
 
@@ -1433,6 +1440,52 @@ def _fix_recipe_units(
                 or (qu_abbrev in _VOLUME_UNITS and stock_abbrev in _VOLUME_UNITS)
             )
             if same_domain:
+                continue
+
+        # Cross-domain gap — collect for density creation
+        if qu_abbrev and stock_abbrev:
+            is_cross_domain = (
+                (qu_abbrev in _WEIGHT_UNITS and stock_abbrev in _VOLUME_UNITS)
+                or (qu_abbrev in _VOLUME_UNITS and stock_abbrev in _WEIGHT_UNITS)
+            )
+            if is_cross_domain and pid not in density_candidate_pids:
+                existing_domain = "weight" if stock_abbrev in _WEIGHT_UNITS else "volume"
+                density_candidates.append({
+                    "product_id": pid,
+                    "name": prod.get("name", ""),
+                    "has_domain": existing_domain,
+                })
+                density_candidate_pids.add(pid)
+                # Defer the fallback — try density creation first
+                fallback_positions.append((pos, prod, stock_qu))
+                continue
+
+        # Also check if recipe unit is weight/volume but stock is kpl/piece
+        # These need a density→piece chain; collect for density if product
+        # has package-size conversions in one domain only
+        if qu_abbrev and (qu_abbrev in _WEIGHT_UNITS or qu_abbrev in _VOLUME_UNITS):
+            # Check what domains the product already has
+            prod_conv_abbrevs: set[str] = set()
+            for c in conversions:
+                cpid = c.get("product_id")
+                if cpid is not None and cpid != "" and int(cpid) == pid:
+                    for qf in ("from_qu_id", "to_qu_id"):
+                        a = id_to_abbrev.get(int(c[qf]))
+                        if a:
+                            prod_conv_abbrevs.add(a)
+            has_w = bool(prod_conv_abbrevs & _WEIGHT_UNITS)
+            has_v = bool(prod_conv_abbrevs & _VOLUME_UNITS)
+            if (has_w and not has_v and qu_abbrev in _VOLUME_UNITS) or \
+               (has_v and not has_w and qu_abbrev in _WEIGHT_UNITS):
+                if pid not in density_candidate_pids:
+                    existing_domain = "weight" if has_w else "volume"
+                    density_candidates.append({
+                        "product_id": pid,
+                        "name": prod.get("name", ""),
+                        "has_domain": existing_domain,
+                    })
+                    density_candidate_pids.add(pid)
+                fallback_positions.append((pos, prod, stock_qu))
                 continue
 
         # No conversion path — fall back to product's stock QU
@@ -1449,9 +1502,169 @@ def _fix_recipe_units(
         except GrocyAPIError as exc:
             logger.warning("Failed to fix recipe pos %s: %s", pos["id"], exc)
 
+    # Attempt density creation for cross-domain gaps
+    if density_candidates and gemini_api_key and model:
+        density_products = [
+            prod_by_id[d["product_id"]]
+            for d in density_candidates
+            if d["product_id"] in prod_by_id
+        ]
+        if density_products:
+            created = _ai_detect_density_conversions(
+                grocy, density_products, abbrev_to_id,
+                gemini_api_key, model,
+            )
+            if created:
+                logger.info(
+                    "Created %d density conversion(s) to fix recipe unit gaps.", created,
+                )
+                # Re-check: refresh conversion set and see if fallbacks are still needed
+                conversions = grocy.get_quantity_unit_conversions()
+                conv_set = set()
+                for c in conversions:
+                    cpid = c.get("product_id")
+                    cpid_val = int(cpid) if cpid is not None and cpid != "" else None
+                    from_id = int(c["from_qu_id"])
+                    to_id = int(c["to_qu_id"])
+                    conv_set.add((cpid_val, from_id, to_id))
+                    conv_set.add((cpid_val, to_id, from_id))
+
+    # Process deferred fallback positions
+    for pos, prod, stock_qu in fallback_positions:
+        qu_id = int(pos["qu_id"])
+        pid = int(pos["product_id"])
+        # Re-check if density creation resolved it
+        has_conversion = (
+            (None, qu_id, stock_qu) in conv_set
+            or (pid, qu_id, stock_qu) in conv_set
+        )
+        if has_conversion:
+            continue
+        # Still no path — fall back to stock QU
+        try:
+            grocy.update_recipe_position(int(pos["id"]), qu_id=stock_qu)
+            logger.info(
+                "Recipe pos %s (product '%s'): no conversion from '%s' to '%s', set to stock QU.",
+                pos["id"],
+                prod.get("name", pid),
+                id_to_abbrev.get(qu_id, str(qu_id)),
+                id_to_abbrev.get(stock_qu, str(stock_qu)),
+            )
+            fixed += 1
+        except GrocyAPIError as exc:
+            logger.warning("Failed to fix recipe pos %s: %s", pos["id"], exc)
+
     if fixed:
         logger.info("Fixed %d recipe position(s) with invalid units.", fixed)
     return fixed
+
+
+def _check_recipes_for_unit_gaps(
+    grocy: GrocyClient,
+    product_ids: set[int],
+    abbrev_to_id: dict[str, int],
+    gemini_api_key: str,
+    model: str,
+) -> int:
+    """Check existing recipes for unit gaps with specific products.
+
+    After a product is discovered/optimized, scan existing recipes to see if
+    any ingredients reference the product with a unit that lacks a conversion
+    path. If a cross-domain gap is found, trigger density conversion creation.
+
+    Returns the number of conversions created.
+    """
+    try:
+        positions = grocy.get_recipe_positions()
+    except GrocyAPIError as exc:
+        logger.warning("Could not fetch recipe positions for gap check: %s", exc)
+        return 0
+
+    if not positions:
+        return 0
+
+    # Filter to positions referencing the target products
+    relevant = [
+        p for p in positions
+        if p.get("product_id") is not None and int(p["product_id"]) in product_ids
+    ]
+    if not relevant:
+        return 0
+
+    products = grocy.get_all_products()
+    prod_by_id: dict[int, dict] = {int(p["id"]): p for p in products}
+    id_to_abbrev: dict[int, str] = {v: k for k, v in abbrev_to_id.items()}
+
+    conversions = grocy.get_quantity_unit_conversions()
+    product_conv_units: dict[int, set[str]] = {}
+    for c in conversions:
+        cpid = c.get("product_id")
+        if cpid is None or cpid == "":
+            continue
+        pid = int(cpid)
+        for qu_field in ("from_qu_id", "to_qu_id"):
+            abbrev = id_to_abbrev.get(int(c[qu_field]))
+            if abbrev:
+                product_conv_units.setdefault(pid, set()).add(abbrev)
+
+    # Find products with cross-domain gaps relative to recipe units
+    need_density: list[dict] = []
+    seen: set[int] = set()
+
+    for pos in relevant:
+        pid = int(pos["product_id"])
+        qu_id = pos.get("qu_id")
+        if pid in seen or qu_id is None:
+            continue
+
+        recipe_abbrev = id_to_abbrev.get(int(qu_id))
+        if not recipe_abbrev or recipe_abbrev == "kpl":
+            continue
+
+        if recipe_abbrev in _WEIGHT_UNITS:
+            recipe_domain = "weight"
+        elif recipe_abbrev in _VOLUME_UNITS:
+            recipe_domain = "volume"
+        else:
+            continue
+
+        prod_units = product_conv_units.get(pid, set())
+        has_weight = bool(prod_units & _WEIGHT_UNITS)
+        has_volume = bool(prod_units & _VOLUME_UNITS)
+
+        if has_weight and has_volume:
+            continue  # already cross-domain
+
+        if recipe_domain == "volume" and has_weight and not has_volume:
+            existing_domain = "weight"
+        elif recipe_domain == "weight" and has_volume and not has_weight:
+            existing_domain = "volume"
+        else:
+            continue
+
+        prod = prod_by_id.get(pid)
+        if prod:
+            need_density.append({
+                "product_id": pid,
+                "name": prod.get("name", ""),
+                "has_domain": existing_domain,
+            })
+            seen.add(pid)
+
+    if not need_density:
+        return 0
+
+    logger.info(
+        "Found %d product(s) with cross-domain unit gaps in recipes.",
+        len(need_density),
+    )
+    return _ai_detect_density_conversions(
+        grocy,
+        [prod_by_id[d["product_id"]] for d in need_density if d["product_id"] in prod_by_id],
+        abbrev_to_id,
+        gemini_api_key,
+        model,
+    )
 
 
 def _optimize_units(
@@ -1514,9 +1727,9 @@ def _optimize_units(
         grocy, products, abbrev_to_id, gemini_api_key, model,
     )
 
-    # Step 7: Fix recipe ingredient units
+    # Step 7: Fix recipe ingredient units (with density creation for gaps)
     try:
-        _fix_recipe_units(grocy, abbrev_to_id)
+        _fix_recipe_units(grocy, abbrev_to_id, gemini_api_key, model)
     except GrocyAPIError as exc:
         logger.warning("Failed to fix recipe units: %s", exc)
 
@@ -2969,8 +3182,9 @@ def _ai_optimize_products(
     if full_mode:
         _optimize_units(grocy, gemini_api_key, effective_model)
     else:
-        # Incremental: only ensure standard units exist (fast/idempotent)
-        # and detect package sizes for the newly discovered products.
+        # Incremental: ensure standard units, detect package sizes and
+        # density conversions for newly discovered products, then check
+        # existing recipes for unit gaps with these products.
         # Replace deleted pack IDs with their surviving base product IDs.
         effective_ids: set[int] = set()
         for pid in product_ids:
@@ -2987,6 +3201,14 @@ def _ai_optimize_products(
                 if new_products:
                     _ai_detect_package_sizes(
                         grocy, new_products, abbrev_to_id,
+                        gemini_api_key, effective_model,
+                    )
+                    _ai_detect_density_conversions(
+                        grocy, new_products, abbrev_to_id,
+                        gemini_api_key, effective_model,
+                    )
+                    _check_recipes_for_unit_gaps(
+                        grocy, effective_ids, abbrev_to_id,
                         gemini_api_key, effective_model,
                     )
         except GrocyAPIError as exc:
