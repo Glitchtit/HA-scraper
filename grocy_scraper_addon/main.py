@@ -1321,6 +1321,58 @@ RULES:
                 except GrocyAPIError:
                     pass  # likely already exists
 
+    # Propagate density conversions from parent products to their children.
+    # Grocy does NOT inherit product-specific conversions from parents.
+    if created:
+        all_convs = grocy.get_quantity_unit_conversions()
+        children_of: dict[int, list[int]] = {}
+        all_products = grocy.get_all_products()
+        all_by_id = {int(p["id"]): p for p in all_products}
+        for p in all_products:
+            ppid = p.get("parent_product_id")
+            if ppid:
+                children_of.setdefault(int(ppid), []).append(int(p["id"]))
+        processed_pids = {item["product_id"] for item in need_density}
+        for pid in processed_pids:
+            child_ids = children_of.get(pid, [])
+            if not child_ids:
+                continue
+            parent_density = [
+                c for c in all_convs
+                if c.get("product_id") is not None
+                and c["product_id"] != ""
+                and int(c["product_id"]) == pid
+                and id_to_abbrev.get(int(c["from_qu_id"])) in (_WEIGHT_UNITS | _VOLUME_UNITS)
+                and id_to_abbrev.get(int(c["to_qu_id"])) in (_WEIGHT_UNITS | _VOLUME_UNITS)
+            ]
+            if not parent_density:
+                continue
+            for cid in child_ids:
+                child_existing = {
+                    (int(c["from_qu_id"]), int(c["to_qu_id"]))
+                    for c in all_convs
+                    if c.get("product_id") is not None
+                    and c["product_id"] != ""
+                    and int(c["product_id"]) == cid
+                }
+                propagated = 0
+                for pc in parent_density:
+                    pair = (int(pc["from_qu_id"]), int(pc["to_qu_id"]))
+                    if pair in child_existing:
+                        continue
+                    try:
+                        grocy.create_quantity_unit_conversion(
+                            pair[0], pair[1], float(pc["factor"]), product_id=cid,
+                        )
+                        created += 1
+                        propagated += 1
+                    except GrocyAPIError:
+                        pass
+                if propagated:
+                    child_name = all_by_id.get(cid, {}).get("name", str(cid))
+                    logger.info("Propagated %d density conversion(s) to child product %d (%s).",
+                                propagated, cid, child_name)
+
     logger.info("Density conversion detection: %d conversion(s) created.", created)
     return created
 
