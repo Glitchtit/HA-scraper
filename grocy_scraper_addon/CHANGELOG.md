@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.18.1
+
+- Fix single-barcode scan running heavy global optimization: skip parent deduplication and full unit optimization in incremental mode (single product scan)
+- Incremental mode now only ensures standard units exist and detects package size for the new product
+
 ## 1.18.0
 
 - Add unit optimization to `--optimize`: automatically ensures standard quantity units (g, kg, ml, dl, l, tl, rkl, rs, kpl) and global conversions exist in Grocy

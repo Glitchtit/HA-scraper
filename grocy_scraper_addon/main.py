@@ -1935,12 +1935,8 @@ def _ai_optimize_products(
             f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
         )
 
-    # --- Incremental mode: deduplicate parents first ----------------------
+    # --- Incremental mode: skip heavy dedup (runs on full --optimize) -----
     dedup_map: dict[str, str] = {}
-    if not full_mode:
-        _dedup_count, dedup_map = _deduplicate_parent_products(
-            grocy, gemini_api_key, model,
-        )
 
     # --- Fetch products --------------------------------------------------
     try:
@@ -2502,7 +2498,21 @@ def _ai_optimize_products(
                         )
 
     # --- Unit optimization -----------------------------------------------
-    _optimize_units(grocy, gemini_api_key, effective_model)
+    if full_mode:
+        _optimize_units(grocy, gemini_api_key, effective_model)
+    else:
+        # Incremental: only ensure standard units exist (fast/idempotent)
+        # and detect package sizes for the newly discovered products.
+        try:
+            abbrev_to_id = _ensure_units_and_conversions(grocy)
+            new_products = [p for p in products if int(p["id"]) in set(product_ids)]
+            if new_products:
+                _ai_detect_package_sizes(
+                    grocy, new_products, abbrev_to_id,
+                    gemini_api_key, effective_model,
+                )
+        except GrocyAPIError as exc:
+            logger.warning("Incremental unit setup failed: %s", exc)
 
     logger.info("--optimize complete: %d product(s) updated.", updated)
     return updated
