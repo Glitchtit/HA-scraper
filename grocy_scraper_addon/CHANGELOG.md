@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.4
+
+- Fix pack handling: add stock to base product when dissolving multi-packs (1 scan = pack_count units)
+- Fix incremental unit optimization targeting deleted pack product IDs instead of surviving base products
+- Fix wrong conversion factor (e.g. 3l instead of 1.5l) by re-fetching products after pack dissolution
+
 ## 1.19.3
 
 - Fix 226 stocked products with deleted QU refs by repairing stock entries first
