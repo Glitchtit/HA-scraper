@@ -3755,6 +3755,82 @@ class TestFixBrokenProductUnits:
         assert fixed == 1
         grocy.update_stock_entry.assert_called_once_with(50, qu_id=10)
 
+    def test_stock_reset_when_entry_qu_valid_but_product_orphaned(self):
+        """When stock entries have valid QU but product qu_id_stock is orphaned,
+        delete stock, fix product, re-add stock."""
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 17, "name": "Litra", "description": "l"}]
+        products = [
+            {"id": 50, "name": "Keiju rypsiöljy 0,5l", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+        ]
+        grocy = self._make_grocy(units, products)
+        # First update fails (stock constraint), stock entries have VALID qu_id
+        grocy.update_product.side_effect = [
+            GrocyAPIError("stock constraint"),  # first attempt
+            None,                               # succeeds after stock deleted
+        ]
+        grocy.get_stock_entries.return_value = [
+            {"id": 80, "product_id": 50, "amount": 0.5, "qu_id": 17},
+            {"id": 81, "product_id": 50, "amount": 0.3, "qu_id": 17},
+        ]
+        abbrev = {"l": 17, "kpl": 21}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        # Stock entries should have been deleted
+        assert grocy.delete_stock_entry.call_count == 2
+        deleted_ids = {c.args[0] for c in grocy.delete_stock_entry.call_args_list}
+        assert deleted_ids == {80, 81}
+        # Product should have been updated with all 4 fields
+        update_call = grocy.update_product.call_args_list[1]
+        assert update_call[1]["qu_id_stock"] == 17
+        assert update_call[1]["qu_id_price"] == 17
+        # Stock should be re-added (0.5 + 0.3 = 0.8)
+        grocy.add_stock.assert_called_once_with(50, 0.8)
+
+    def test_parent_inherits_unit_from_children(self):
+        """Parent product with no size hint should inherit QU from children."""
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [
+            {"id": 17, "name": "Litra", "description": "l"},
+            {"id": 21, "name": "Kappale", "description": "kpl"},
+        ]
+        products = [
+            # Parent with orphaned QU — name has no size hint
+            {"id": 51, "name": "Rypsiöljy", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+            # Child uses litra
+            {"id": 50, "name": "Keiju rypsiöljy 0,5l",
+             "qu_id_stock": 17, "qu_id_purchase": 17,
+             "qu_id_consume": 17, "qu_id_price": 17,
+             "parent_product_id": 51},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"l": 17, "kpl": 21}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        call_kwargs = grocy.update_product.call_args[1]
+        # Should inherit 'l' from child, not default to 'kpl'
+        assert call_kwargs["qu_id_stock"] == 17
+
+    def test_parent_falls_back_to_kpl_without_children(self):
+        """Parent product with no children and no size hint defaults to kpl."""
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [
+            {"id": 17, "name": "Litra", "description": "l"},
+            {"id": 21, "name": "Kappale", "description": "kpl"},
+        ]
+        products = [
+            {"id": 51, "name": "Rypsiöljy", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"l": 17, "kpl": 21}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        call_kwargs = grocy.update_product.call_args[1]
+        assert call_kwargs["qu_id_stock"] == 21  # kpl fallback
+
 
 class TestFixRecipeUnits:
     def _make_grocy(self, positions, products, units, conversions=None):

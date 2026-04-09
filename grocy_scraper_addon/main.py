@@ -887,7 +887,12 @@ def _fix_broken_product_units(
 
     * Name contains a weight (e.g. ``500g``, ``2kg``) → ``g`` or ``kg``
     * Name contains a volume (e.g. ``1L``, ``2dl``) → ``l`` or ``dl``
+    * Parent products with no size hint → inherit unit from children
     * Otherwise (packaged items) → ``kpl``
+
+    If a stocked product's ``qu_id_stock`` cannot be changed (Grocy refuses
+    because the old QU is deleted), all stock entries are removed, the product
+    is updated, and stock is re-added with the correct total amount.
 
     Also cleans up orphaned product-specific QU conversions that reference
     deleted units.
@@ -901,6 +906,16 @@ def _fix_broken_product_units(
     qu_fields = ("qu_id_stock", "qu_id_purchase", "qu_id_consume", "qu_id_price")
     kpl_id = abbrev_to_id.get("kpl")
     fixed = 0
+
+    # Build reverse map: QU ID → abbreviation
+    id_to_abbrev: dict[int, str] = {v: k for k, v in abbrev_to_id.items()}
+
+    # Build child → parent and parent → children maps for unit inheritance
+    children_by_parent: dict[int, list[dict]] = {}
+    for p in products:
+        ppid = p.get("parent_product_id")
+        if ppid is not None and ppid != "" and ppid != 0:
+            children_by_parent.setdefault(int(ppid), []).append(p)
 
     # --- Clean up orphaned product-specific conversions ---
     conversions = grocy.get_quantity_unit_conversions()
@@ -941,6 +956,7 @@ def _fix_broken_product_units(
 
         # Determine smart default from product name
         name = prod.get("name", "")
+        pid = int(prod["id"])
         default_unit_id = kpl_id  # fallback for packaged items
         default_label = "kpl"
 
@@ -951,11 +967,24 @@ def _fix_broken_product_units(
             if canonical and canonical in abbrev_to_id:
                 default_unit_id = abbrev_to_id[canonical]
                 default_label = canonical
+        elif pid in children_by_parent:
+            # Parent product with no size hint: inherit unit from children
+            child_units: dict[int, int] = {}
+            for child in children_by_parent[pid]:
+                for field in qu_fields:
+                    cval = child.get(field)
+                    if cval is not None and cval != "" and int(cval) in valid_ids:
+                        child_units[int(cval)] = child_units.get(int(cval), 0) + 1
+            if child_units:
+                # Pick the most common valid non-kpl unit; fall back to kpl
+                best_id = max(child_units, key=child_units.get)
+                if best_id != kpl_id or len(child_units) == 1:
+                    default_unit_id = best_id
+                    default_label = id_to_abbrev.get(best_id, str(best_id))
 
         if default_unit_id is None:
             continue
 
-        pid = int(prod["id"])
         updates = {field: default_unit_id for field in orphaned_fields}
         try:
             grocy.update_product(pid, **updates)
@@ -999,27 +1028,57 @@ def _fix_broken_product_units(
                 except GrocyAPIError:
                     pass
 
-            # Last resort: try each field individually (non-stock fields may work)
-            any_fixed = False
-            for field in orphaned_fields:
-                if field == "qu_id_stock":
-                    continue  # skip the problematic one
+            # Last resort: delete all stock, fix product, re-add stock.
+            if "qu_id_stock" in orphaned_fields:
                 try:
-                    grocy.update_product(pid, **{field: default_unit_id})
-                    any_fixed = True
-                except GrocyAPIError:
-                    pass
-            if any_fixed:
-                logger.info(
-                    "Partially fixed orphaned QU refs for '%s' (ID %d): set non-stock fields to '%s'.",
-                    name, pid, default_label,
-                )
-                fixed += 1
+                    entries = grocy.get_stock_entries(product_id=pid)
+                    total_amount = sum(
+                        float(e.get("amount", 0)) for e in entries
+                    )
+                    for entry in entries:
+                        grocy.delete_stock_entry(int(entry["id"]))
+                    # No stock left — product update should succeed
+                    grocy.update_product(pid, **updates)
+                    if total_amount > 0:
+                        grocy.add_stock(pid, total_amount)
+                    logger.info(
+                        "Fixed orphaned QU refs for '%s' (ID %d) via stock reset: "
+                        "set %s to '%s' (re-added %.4g unit(s)).",
+                        name, pid,
+                        ", ".join(orphaned_fields),
+                        default_label,
+                        total_amount,
+                    )
+                    fixed += 1
+                    continue
+                except GrocyAPIError as exc:
+                    logger.warning(
+                        "Failed to fix orphaned QU refs for '%s' (ID %d) "
+                        "via stock reset: %s",
+                        name, pid, exc,
+                    )
             else:
-                logger.warning(
-                    "Failed to fix orphaned QU refs for '%s' (ID %d).",
-                    name, pid,
-                )
+                # qu_id_stock is fine, only non-stock fields need fixing
+                any_fixed = False
+                for field in orphaned_fields:
+                    try:
+                        grocy.update_product(pid, **{field: default_unit_id})
+                        any_fixed = True
+                    except GrocyAPIError:
+                        pass
+                if any_fixed:
+                    logger.info(
+                        "Fixed orphaned QU refs for '%s' (ID %d): set %s to '%s'.",
+                        name, pid,
+                        ", ".join(f for f in orphaned_fields if f != "qu_id_stock"),
+                        default_label,
+                    )
+                    fixed += 1
+                else:
+                    logger.warning(
+                        "Failed to fix orphaned QU refs for '%s' (ID %d).",
+                        name, pid,
+                    )
 
     if fixed:
         logger.info("Fixed orphaned QU refs for %d product(s).", fixed)

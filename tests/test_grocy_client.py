@@ -695,3 +695,18 @@ class TestUpdateStockEntry:
         session.put.return_value = _mock_response(raise_for=http_err, status_code=400)
         with pytest.raises(GrocyAPIError, match="stock entry"):
             client.update_stock_entry(1, qu_id=7)
+
+
+class TestDeleteStockEntry:
+    def test_deletes_entry(self):
+        client, session = _make_client()
+        session.delete.return_value = _mock_response(status_code=204)
+        client.delete_stock_entry(42)
+        assert "/api/objects/stock/42" in session.delete.call_args[0][0]
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=404, text=""))
+        session.delete.return_value = _mock_response(raise_for=http_err, status_code=404)
+        with pytest.raises(GrocyAPIError, match="stock entry"):
+            client.delete_stock_entry(42)
