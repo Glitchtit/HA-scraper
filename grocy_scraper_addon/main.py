@@ -926,12 +926,15 @@ def _fix_broken_product_units(
     # --- Fix products with broken/empty QU fields ---
     for prod in products:
         orphaned_fields: list[str] = []
+        old_qu_ids: dict[str, int | None] = {}
         for field in qu_fields:
             val = prod.get(field)
             if val is None or val == "" or val == 0:
                 orphaned_fields.append(field)
+                old_qu_ids[field] = None
             elif int(val) not in valid_ids:
                 orphaned_fields.append(field)
+                old_qu_ids[field] = int(val)
 
         if not orphaned_fields:
             continue
@@ -952,21 +955,65 @@ def _fix_broken_product_units(
         if default_unit_id is None:
             continue
 
+        pid = int(prod["id"])
         updates = {field: default_unit_id for field in orphaned_fields}
         try:
-            grocy.update_product(int(prod["id"]), **updates)
+            grocy.update_product(pid, **updates)
             logger.info(
                 "Fixed orphaned QU refs for '%s' (ID %d): set %s to '%s'.",
-                name, prod["id"],
+                name, pid,
                 ", ".join(orphaned_fields),
                 default_label,
             )
             fixed += 1
-        except GrocyAPIError as exc:
-            logger.warning(
-                "Failed to fix orphaned QU refs for '%s' (ID %d): %s",
-                name, prod["id"], exc,
-            )
+        except GrocyAPIError:
+            # Likely a stocked product — Grocy refuses qu_id_stock change
+            # without old→new conversion.  Try creating bridging conversions
+            # for each orphaned old QU ID, then retry.
+            bridged = False
+            for field in orphaned_fields:
+                old_id = old_qu_ids.get(field)
+                if old_id is not None and old_id != default_unit_id:
+                    try:
+                        grocy.create_quantity_unit_conversion(
+                            old_id, default_unit_id, 1.0, product_id=pid,
+                        )
+                        bridged = True
+                    except GrocyAPIError:
+                        pass
+            if bridged:
+                try:
+                    grocy.update_product(pid, **updates)
+                    logger.info(
+                        "Fixed orphaned QU refs for '%s' (ID %d) via bridging: set %s to '%s'.",
+                        name, pid,
+                        ", ".join(orphaned_fields),
+                        default_label,
+                    )
+                    fixed += 1
+                    continue
+                except GrocyAPIError:
+                    pass
+
+            # Last resort: try each field individually
+            any_fixed = False
+            for field in orphaned_fields:
+                try:
+                    grocy.update_product(pid, **{field: default_unit_id})
+                    any_fixed = True
+                except GrocyAPIError:
+                    pass
+            if any_fixed:
+                logger.info(
+                    "Partially fixed orphaned QU refs for '%s' (ID %d): set some fields to '%s'.",
+                    name, pid, default_label,
+                )
+                fixed += 1
+            else:
+                logger.warning(
+                    "Failed to fix orphaned QU refs for '%s' (ID %d).",
+                    name, pid,
+                )
 
     if fixed:
         logger.info("Fixed orphaned QU refs for %d product(s).", fixed)
@@ -1086,6 +1133,56 @@ RULES:
     return created
 
 
+# Weight↔volume conversion factors relative to kg and l
+_WEIGHT_FACTORS = {"kg": 1.0, "g": 1000.0}  # 1 kg = 1000 g
+_VOLUME_FACTORS = {"l": 1.0, "dl": 10.0, "ml": 1000.0}  # 1 l = 10 dl = 1000 ml
+
+
+def _derive_density_conversions(
+    from_unit: str, to_unit: str, factor: float,
+) -> list[tuple[str, str, float]]:
+    """Compute all cross-domain weight↔volume pairs from one primary density conversion.
+
+    Given e.g. ``("kg", "l", 1.67)`` → produces pairs like
+    ``("kg", "dl", 16.7)``, ``("g", "l", 0.00167)``, etc.
+    Excludes the primary pair itself.
+    """
+    # Determine which is weight and which is volume
+    if from_unit in _WEIGHT_FACTORS and to_unit in _VOLUME_FACTORS:
+        w_unit, v_unit = from_unit, to_unit
+        # factor means: 1 <w_unit> = <factor> <v_unit>
+        # Normalise to: 1 kg = X l
+        kg_to_l = factor * _VOLUME_FACTORS[v_unit] / _WEIGHT_FACTORS[w_unit]
+        # e.g., if 1 kg = 1.67 l → kg_to_l = 1.67
+        # if 1 g = 0.001 l → kg_to_l = 0.001 * 1 / (1/1000) = 1.0... wait
+        # Let's be precise: factor = w_factor_from_kg * kg_to_l / v_factor_from_l
+        # 1 kg = 1.67 l → 1 g = 1.67/1000 l
+        # normalise: 1 kg = factor * (VOLUME_FACTORS[v_unit]) / (WEIGHT_FACTORS[w_unit]) ... no
+        # Actually: 1 w_unit = factor v_units
+        # 1 kg = W_FACTORS[w_unit] w_units → 1 w_unit = 1/W[w] kg
+        # factor v_units = factor/V[v] l
+        # So 1/W[w] kg = factor/V[v] l → 1 kg = factor * W[w] / V[v] l
+        kg_to_l = factor * _WEIGHT_FACTORS[w_unit] / _VOLUME_FACTORS[v_unit]
+    elif from_unit in _VOLUME_FACTORS and to_unit in _WEIGHT_FACTORS:
+        v_unit, w_unit = from_unit, to_unit
+        # factor means: 1 <v_unit> = <factor> <w_unit>
+        # Normalise: 1 l = X kg → 1 kg = 1/X l → kg_to_l = V[v] / (factor * W[w])
+        kg_to_l = _VOLUME_FACTORS[v_unit] / (factor * _WEIGHT_FACTORS[w_unit])
+    else:
+        return []
+
+    derived: list[tuple[str, str, float]] = []
+    for w, w_f in _WEIGHT_FACTORS.items():
+        for v, v_f in _VOLUME_FACTORS.items():
+            if w == from_unit and v == to_unit:
+                continue  # skip the primary pair
+            # 1 w = (kg_to_l * v_f / w_f) v
+            d_factor = round(kg_to_l * v_f / w_f, 6)
+            if d_factor > 0:
+                derived.append((w, v, d_factor))
+    return derived
+
+
 def _ai_detect_density_conversions(
     grocy: GrocyClient,
     products: list[dict],
@@ -1200,6 +1297,23 @@ RULES:
                 created += 1
             except GrocyAPIError as exc:
                 logger.warning("Failed to create density conversion for product %d: %s", pid, exc)
+                continue
+
+            # Create derived cross-domain conversions so Grocy can resolve
+            # recipe units without needing to chain product + global conversions.
+            derived = _derive_density_conversions(from_unit, to_unit, float(factor))
+            for d_from, d_to, d_factor in derived:
+                d_from_id = abbrev_to_id.get(d_from)
+                d_to_id = abbrev_to_id.get(d_to)
+                if d_from_id is None or d_to_id is None:
+                    continue
+                try:
+                    grocy.create_quantity_unit_conversion(
+                        d_from_id, d_to_id, d_factor, product_id=int(pid),
+                    )
+                    created += 1
+                except GrocyAPIError:
+                    pass  # likely already exists
 
     logger.info("Density conversion detection: %d conversion(s) created.", created)
     return created

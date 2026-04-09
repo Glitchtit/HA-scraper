@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.2
+
+- Fix stocked products with broken units via bridging conversions + per-field fallback
+- Create derived cross-domain conversions (kg↔dl, kg↔ml, g↔l, g↔dl, g↔ml) when density conversion is created
+- Ensures recipes using dl/ml units can resolve to products stocked in kg/g
+
 ## 1.19.1
 
 - Fix broken products with null/empty QU fields (not just deleted unit refs)
