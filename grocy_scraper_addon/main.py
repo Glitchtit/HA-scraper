@@ -472,6 +472,58 @@ def _image_extension(content_type: str, url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Quantity unit management
+# ---------------------------------------------------------------------------
+
+# Standard recipe units with Finnish names — kept in sync with HA-grocy-recipes
+_STANDARD_UNITS = [
+    {"name": "Gramma", "name_plural": "Grammaa", "description": "g"},
+    {"name": "Kilogramma", "name_plural": "Kilogrammaa", "description": "kg"},
+    {"name": "Millilitra", "name_plural": "Millilitraa", "description": "ml"},
+    {"name": "Desilitra", "name_plural": "Desilitraa", "description": "dl"},
+    {"name": "Litra", "name_plural": "Litraa", "description": "l"},
+    {"name": "Teelusikka", "name_plural": "Teelusikkaa", "description": "tl"},
+    {"name": "Ruokalusikka", "name_plural": "Ruokalusikkaa", "description": "rkl"},
+    {"name": "Ripaus", "name_plural": "Ripausta", "description": "rs"},
+    {"name": "Kappale", "name_plural": "Kappaletta", "description": "kpl"},
+]
+
+# Global conversions: (from_abbrev, to_abbrev, factor)  "1 <from> = <factor> <to>"
+_GLOBAL_CONVERSIONS = [
+    ("kg", "g", 1000),
+    ("l", "dl", 10),
+    ("l", "ml", 1000),
+    ("dl", "ml", 100),
+    ("rkl", "ml", 15),
+    ("tl", "ml", 5),
+]
+
+# Map common unit string variations to canonical abbreviation
+_UNIT_ALIASES: dict[str, str] = {
+    "g": "g", "gr": "g", "gram": "g", "gramma": "g", "grammaa": "g",
+    "kg": "kg", "kilo": "kg", "kilogramma": "kg", "kilogrammaa": "kg",
+    "ml": "ml", "millilitra": "ml", "millilitraa": "ml",
+    "dl": "dl", "desilitra": "dl", "desilitraa": "dl",
+    "l": "l", "litra": "l", "litraa": "l",
+    "tl": "tl", "teelusikka": "tl", "teelusikkaa": "tl",
+    "rkl": "rkl", "ruokalusikka": "rkl", "ruokalusikkaa": "rkl",
+    "rs": "rs", "ripaus": "rs", "ripausta": "rs",
+    "kpl": "kpl", "kappale": "kpl", "kappaletta": "kpl",
+    "pcs": "kpl", "piece": "kpl", "pieces": "kpl", "st": "kpl",
+    "stück": "kpl", "pack": "kpl",
+}
+
+# Canonical abbreviations grouped by measurement domain
+_WEIGHT_UNITS = {"g", "kg"}
+_VOLUME_UNITS = {"ml", "dl", "l", "tl", "rkl"}
+
+
+def _canonical_unit(name: str) -> str | None:
+    """Normalise a unit name/description to its canonical abbreviation."""
+    return _UNIT_ALIASES.get(name.lower().strip())
+
+
+# ---------------------------------------------------------------------------
 # Gemini AI helpers
 # ---------------------------------------------------------------------------
 
@@ -554,6 +606,470 @@ def _call_gemini_json(
                 )
                 time.sleep(delay)
     raise last_exc  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Unit optimization helpers
+# ---------------------------------------------------------------------------
+
+
+def _ensure_units_and_conversions(grocy: GrocyClient) -> dict[str, int]:
+    """Ensure standard recipe units and global conversions exist in Grocy.
+
+    Returns a mapping of canonical abbreviation → Grocy QU ID.
+    Idempotent — skips units/conversions that already exist.
+    """
+    existing_units = grocy.get_quantity_units()
+    existing_by_desc: dict[str, int] = {}
+    existing_by_name: dict[str, int] = {}
+    for u in existing_units:
+        if u.get("description"):
+            existing_by_desc[u["description"].lower().strip()] = int(u["id"])
+        if u.get("name"):
+            existing_by_name[u["name"].lower().strip()] = int(u["id"])
+
+    abbrev_to_id: dict[str, int] = {}
+
+    for unit_def in _STANDARD_UNITS:
+        abbrev = unit_def["description"]
+        uid = existing_by_desc.get(abbrev.lower())
+        if uid is None:
+            uid = existing_by_name.get(unit_def["name"].lower())
+        if uid is None:
+            try:
+                uid = grocy.create_quantity_unit(
+                    unit_def["name"], unit_def["name_plural"], unit_def["description"],
+                )
+                logger.info("Created QU '%s' (ID %d).", unit_def["name"], uid)
+            except GrocyAPIError as exc:
+                logger.warning("Failed to create QU '%s': %s", unit_def["name"], exc)
+                continue
+        abbrev_to_id[abbrev] = uid
+
+    # Also map the built-in "Piece"/"Pack" defaults if present
+    for u in existing_units:
+        name_lower = (u.get("name") or "").lower().strip()
+        if name_lower in ("piece", "pack", "stück"):
+            abbrev_to_id.setdefault("piece", int(u["id"]))
+
+    # Create global conversions
+    existing_conversions = grocy.get_quantity_unit_conversions()
+    conv_set: set[tuple[int, int]] = set()
+    for c in existing_conversions:
+        if c.get("product_id") is None or c.get("product_id") == "":
+            conv_set.add((int(c["from_qu_id"]), int(c["to_qu_id"])))
+
+    for from_abbrev, to_abbrev, factor in _GLOBAL_CONVERSIONS:
+        from_id = abbrev_to_id.get(from_abbrev)
+        to_id = abbrev_to_id.get(to_abbrev)
+        if from_id is None or to_id is None:
+            continue
+        if (from_id, to_id) in conv_set:
+            continue
+        try:
+            grocy.create_quantity_unit_conversion(from_id, to_id, factor)
+            logger.info(
+                "Created global conversion: 1 %s = %s %s", from_abbrev, factor, to_abbrev,
+            )
+        except GrocyAPIError as exc:
+            logger.warning("Failed to create conversion %s→%s: %s", from_abbrev, to_abbrev, exc)
+
+    logger.info("Unit map: %s", {k: v for k, v in sorted(abbrev_to_id.items())})
+    return abbrev_to_id
+
+
+def _consolidate_duplicate_units(
+    grocy: GrocyClient,
+    abbrev_to_id: dict[str, int],
+) -> dict[str, int]:
+    """Find duplicate/synonym QUs and merge them into canonical units.
+
+    For each existing Grocy QU whose name or description maps to a canonical
+    abbreviation that already has a different QU ID, reassign all product
+    references and conversions from the duplicate to the canonical ID, then
+    delete the duplicate.
+
+    Returns the (potentially updated) abbrev_to_id mapping.
+    """
+    existing_units = grocy.get_quantity_units()
+    # Build a map of duplicate QU IDs → canonical QU ID
+    dup_to_canonical: dict[int, int] = {}
+    for u in existing_units:
+        uid = int(u["id"])
+        # Try to match this unit to a canonical abbreviation
+        canonical = None
+        for field in ("description", "name", "name_plural"):
+            val = u.get(field, "")
+            if val:
+                canonical = _canonical_unit(val)
+                if canonical:
+                    break
+        if canonical is None:
+            continue
+        canonical_id = abbrev_to_id.get(canonical)
+        if canonical_id is None or canonical_id == uid:
+            continue
+        # This unit is a duplicate of the canonical one
+        dup_to_canonical[uid] = canonical_id
+
+    if not dup_to_canonical:
+        return abbrev_to_id
+
+    logger.info(
+        "Found %d duplicate QU(s) to consolidate: %s",
+        len(dup_to_canonical),
+        {d: c for d, c in dup_to_canonical.items()},
+    )
+
+    # Reassign product QU references
+    products = grocy.get_all_products()
+    qu_fields = ("qu_id_stock", "qu_id_purchase", "qu_id_consume", "qu_id_price")
+    for prod in products:
+        updates: dict[str, int] = {}
+        for field in qu_fields:
+            val = prod.get(field)
+            if val is not None and int(val) in dup_to_canonical:
+                updates[field] = dup_to_canonical[int(val)]
+        if updates:
+            try:
+                grocy.update_product(int(prod["id"]), **updates)
+                logger.info(
+                    "Reassigned QU refs for product '%s' (ID %d): %s",
+                    prod.get("name"), prod["id"], updates,
+                )
+            except GrocyAPIError as exc:
+                logger.warning(
+                    "Failed to reassign QU refs for '%s': %s", prod.get("name"), exc,
+                )
+
+    # Reassign barcode QU references
+    all_barcodes = grocy.get_all_barcodes()
+    for bc in all_barcodes:
+        bc_qu = bc.get("qu_id")
+        if bc_qu is not None and bc_qu != "" and int(bc_qu) in dup_to_canonical:
+            try:
+                grocy.update_barcode(int(bc["id"]), qu_id=dup_to_canonical[int(bc_qu)])
+            except GrocyAPIError as exc:
+                logger.warning("Failed to reassign barcode %s QU: %s", bc["id"], exc)
+
+    # Reassign conversions: re-create with canonical IDs, delete old
+    conversions = grocy.get_quantity_unit_conversions()
+    for conv in conversions:
+        from_id = int(conv["from_qu_id"])
+        to_id = int(conv["to_qu_id"])
+        new_from = dup_to_canonical.get(from_id, from_id)
+        new_to = dup_to_canonical.get(to_id, to_id)
+        if new_from == from_id and new_to == to_id:
+            continue
+        # Delete the old conversion and create with canonical IDs
+        try:
+            grocy.delete_quantity_unit_conversion(int(conv["id"]))
+            pid = conv.get("product_id")
+            grocy.create_quantity_unit_conversion(
+                new_from, new_to, float(conv["factor"]),
+                product_id=int(pid) if pid is not None and pid != "" else None,
+            )
+        except GrocyAPIError as exc:
+            logger.warning("Failed to reassign conversion %s: %s", conv["id"], exc)
+
+    # Delete duplicate QUs
+    for dup_id, canon_id in dup_to_canonical.items():
+        try:
+            grocy.delete_quantity_unit(dup_id)
+            logger.info("Deleted duplicate QU ID %d (merged into %d).", dup_id, canon_id)
+        except GrocyAPIError as exc:
+            logger.warning("Could not delete duplicate QU %d: %s", dup_id, exc)
+
+    return abbrev_to_id
+
+
+def _ai_detect_package_sizes(
+    grocy: GrocyClient,
+    products: list[dict],
+    abbrev_to_id: dict[str, int],
+    gemini_api_key: str,
+    model: str,
+) -> int:
+    """Use Gemini AI to extract package sizes from product names and create
+    product-specific Piece→unit conversions.
+
+    Returns the number of conversions created.
+    """
+    # Find the Piece unit ID (the stock QU for most products)
+    piece_id = abbrev_to_id.get("piece") or abbrev_to_id.get("kpl")
+    if piece_id is None:
+        # Fall back: find the most common qu_id_stock
+        qu_counts: dict[int, int] = {}
+        for p in products:
+            qid = p.get("qu_id_stock")
+            if qid is not None:
+                qu_counts[int(qid)] = qu_counts.get(int(qid), 0) + 1
+        if qu_counts:
+            piece_id = max(qu_counts, key=qu_counts.get)  # type: ignore[arg-type]
+    if piece_id is None:
+        logger.warning("Cannot detect package sizes — no Piece unit found.")
+        return 0
+
+    # Skip products that already have product-specific conversions
+    existing_conversions = grocy.get_quantity_unit_conversions()
+    products_with_conv: set[int] = set()
+    for c in existing_conversions:
+        cpid = c.get("product_id")
+        if cpid is not None and cpid != "":
+            products_with_conv.add(int(cpid))
+
+    # Skip parent-only placeholders
+    candidates = [
+        p for p in products
+        if int(p["id"]) not in products_with_conv
+        and not (
+            p.get("hide_on_stock_overview") in (1, "1", True)
+            and p.get("cumulate_min_stock_amount_of_sub_products") in (1, "1", True)
+        )
+    ]
+    if not candidates:
+        logger.info("All products already have conversions — skipping package size detection.")
+        return 0
+
+    created = 0
+    for i in range(0, len(candidates), _GEMINI_OPTIMIZE_BATCH_SIZE):
+        batch = candidates[i:i + _GEMINI_OPTIMIZE_BATCH_SIZE]
+        product_list = json.dumps(
+            [{"product_id": int(p["id"]), "name": p.get("name", "")} for p in batch],
+            ensure_ascii=False,
+        )
+
+        prompt = f"""Analyse these Finnish grocery product names and determine the package size for each.
+
+Products:
+{product_list}
+
+For each product, determine:
+1. The quantity in the package (e.g. "Arla Kevytmaito 1L" → amount: 1, unit: "l")
+2. The unit of measurement (g, kg, ml, dl, l)
+
+Return a JSON array:
+[{{"product_id": <id>, "amount": <number>, "unit": "g"|"kg"|"ml"|"dl"|"l"|null}}]
+
+RULES:
+- Look for size indicators in the product name (e.g. "1L", "500g", "2kg", "200ml")
+- Finnish products commonly use: g, kg, dl, l, ml
+- If the name contains NO size information, return unit: null
+- Common Finnish package sizes: milk 1L, flour 2kg, butter 500g, cream 2dl
+- "tölkki" / "tlk" usually means a can (330ml for drinks, 400ml/400g for canned goods)
+- Be precise — "500g" means amount: 500, unit: "g" — NOT amount: 0.5, unit: "kg"
+- If multiple sizes appear, use the LAST/most specific one"""
+
+        try:
+            result = _call_gemini_json(prompt, gemini_api_key, model)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("Gemini package size batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
+            continue
+
+        if not isinstance(result, list):
+            continue
+
+        for item in result:
+            pid = item.get("product_id")
+            amount = item.get("amount")
+            unit_abbrev = item.get("unit")
+            if pid is None or amount is None or unit_abbrev is None:
+                continue
+
+            to_qu_id = abbrev_to_id.get(unit_abbrev)
+            if to_qu_id is None:
+                continue
+
+            try:
+                grocy.create_quantity_unit_conversion(
+                    piece_id, to_qu_id, float(amount), product_id=int(pid),
+                )
+                logger.info(
+                    "Created conversion for product %d: 1 piece = %s %s",
+                    pid, amount, unit_abbrev,
+                )
+                created += 1
+            except GrocyAPIError as exc:
+                logger.warning("Failed to create conversion for product %d: %s", pid, exc)
+
+    logger.info("Package size detection: %d conversion(s) created.", created)
+    return created
+
+
+def _ai_detect_density_conversions(
+    grocy: GrocyClient,
+    products: list[dict],
+    abbrev_to_id: dict[str, int],
+    gemini_api_key: str,
+    model: str,
+) -> int:
+    """Use Gemini AI to determine weight↔volume density factors for products.
+
+    For products that have a package-size conversion in one domain (weight or
+    volume), ask Gemini for the approximate density so we can create a cross-
+    domain conversion. E.g. 1 kg flour ≈ 1.67 L → create kg↔l conversion.
+
+    Returns the number of conversions created.
+    """
+    # Gather per-product conversions to see what domain each product has
+    conversions = grocy.get_quantity_unit_conversions()
+    id_to_abbrev: dict[int, str] = {v: k for k, v in abbrev_to_id.items()}
+
+    product_conv_units: dict[int, set[str]] = {}
+    for c in conversions:
+        cpid = c.get("product_id")
+        if cpid is None or cpid == "":
+            continue
+        pid = int(cpid)
+        for qu_field in ("from_qu_id", "to_qu_id"):
+            qid = int(c[qu_field])
+            abbrev = id_to_abbrev.get(qid)
+            if abbrev:
+                product_conv_units.setdefault(pid, set()).add(abbrev)
+
+    # Find products that have weight but no volume, or volume but no weight
+    prod_by_id = {int(p["id"]): p for p in products}
+    need_density: list[dict] = []
+    for pid, units in product_conv_units.items():
+        has_weight = bool(units & _WEIGHT_UNITS)
+        has_volume = bool(units & _VOLUME_UNITS)
+        if has_weight and not has_volume or has_volume and not has_weight:
+            prod = prod_by_id.get(pid)
+            if prod:
+                domain = "weight" if has_weight else "volume"
+                need_density.append({
+                    "product_id": pid,
+                    "name": prod.get("name", ""),
+                    "has_domain": domain,
+                })
+
+    if not need_density:
+        logger.info("No products need cross-domain density conversions.")
+        return 0
+
+    created = 0
+    for i in range(0, len(need_density), _GEMINI_OPTIMIZE_BATCH_SIZE):
+        batch = need_density[i:i + _GEMINI_OPTIMIZE_BATCH_SIZE]
+        product_list = json.dumps(batch, ensure_ascii=False)
+
+        prompt = f"""For each Finnish grocery product below, estimate the density conversion
+between weight and volume units. Products already have a size in one domain
+(weight or volume) — provide the conversion to the OTHER domain.
+
+Products:
+{product_list}
+
+Return a JSON array:
+[{{"product_id": <id>, "from_unit": "kg"|"g"|"l"|"dl"|"ml", "to_unit": "kg"|"g"|"l"|"dl"|"ml", "factor": <number>}}]
+
+RULES:
+- For products with weight, provide a volume equivalent (e.g. 1 kg flour → factor: 1.67, from_unit: "kg", to_unit: "l")
+- For products with volume, provide a weight equivalent (e.g. 1 l milk → factor: 1.03, from_unit: "l", to_unit: "kg")
+- Use common grocery densities:
+  - Milk/cream/juice: ~1.03 kg/l
+  - Flour (vehnäjauho): ~0.6 kg/l (1 kg ≈ 1.67 l)
+  - Sugar (sokeri): ~0.85 kg/l
+  - Rice (riisi): ~0.85 kg/l
+  - Oil (öljy): ~0.92 kg/l
+  - Butter (voi): ~0.91 kg/l (911 g/l)
+  - Honey (hunaja): ~1.4 kg/l
+  - Salt (suola): ~1.2 kg/l
+- If you cannot reasonably estimate the density, return null for factor
+- Use the SIMPLEST conversion (prefer kg↔l over g↔ml)"""
+
+        try:
+            result = _call_gemini_json(prompt, gemini_api_key, model)
+        except (GrocyAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.warning("Gemini density batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
+            continue
+
+        if not isinstance(result, list):
+            continue
+
+        for item in result:
+            pid = item.get("product_id")
+            factor = item.get("factor")
+            from_unit = item.get("from_unit")
+            to_unit = item.get("to_unit")
+            if pid is None or factor is None or from_unit is None or to_unit is None:
+                continue
+
+            from_id = abbrev_to_id.get(from_unit)
+            to_id = abbrev_to_id.get(to_unit)
+            if from_id is None or to_id is None:
+                continue
+
+            try:
+                grocy.create_quantity_unit_conversion(
+                    from_id, to_id, float(factor), product_id=int(pid),
+                )
+                logger.info(
+                    "Created density conversion for product %d: 1 %s = %s %s",
+                    pid, from_unit, factor, to_unit,
+                )
+                created += 1
+            except GrocyAPIError as exc:
+                logger.warning("Failed to create density conversion for product %d: %s", pid, exc)
+
+    logger.info("Density conversion detection: %d conversion(s) created.", created)
+    return created
+
+
+def _optimize_units(
+    grocy: GrocyClient,
+    gemini_api_key: str,
+    model: str,
+    products: list[dict] | None = None,
+) -> int:
+    """Run the full unit optimization pipeline.
+
+    1. Ensure standard units and global conversions exist.
+    2. Consolidate duplicate/synonym units.
+    3. AI-detect package sizes and create Piece→unit conversions.
+    4. AI-detect density factors for cross-domain conversions.
+
+    Returns the total number of conversions created.
+    """
+    logger.info("--- Unit optimization ---")
+
+    # Step 1: Ensure standard units
+    try:
+        abbrev_to_id = _ensure_units_and_conversions(grocy)
+    except GrocyAPIError as exc:
+        logger.error("Failed to ensure standard units: %s", exc)
+        return 0
+
+    # Step 2: Consolidate duplicates
+    try:
+        abbrev_to_id = _consolidate_duplicate_units(grocy, abbrev_to_id)
+    except GrocyAPIError as exc:
+        logger.warning("Failed to consolidate duplicate units: %s", exc)
+
+    # Step 3: Fetch products if not provided
+    if products is None:
+        try:
+            products = grocy.get_all_products()
+        except GrocyAPIError as exc:
+            logger.error("Failed to fetch products for unit optimization: %s", exc)
+            return 0
+
+    if not products:
+        logger.info("No products found — skipping unit optimization.")
+        return 0
+
+    # Step 4: AI package size detection
+    pkg_count = _ai_detect_package_sizes(
+        grocy, products, abbrev_to_id, gemini_api_key, model,
+    )
+
+    # Step 5: AI density conversions
+    density_count = _ai_detect_density_conversions(
+        grocy, products, abbrev_to_id, gemini_api_key, model,
+    )
+
+    total = pkg_count + density_count
+    logger.info("--- Unit optimization complete: %d conversion(s) created. ---", total)
+    return total
 
 
 def _ai_sort_products(grocy: GrocyClient, gemini_api_key: str, model: str = _GEMINI_DEFAULT_MODEL, *, product_ids: list[int] | None = None) -> int:
@@ -1984,6 +2500,9 @@ def _ai_optimize_products(
                             "Could not delete product group '%s': %s",
                             grp_name, exc,
                         )
+
+    # --- Unit optimization -----------------------------------------------
+    _optimize_units(grocy, gemini_api_key, effective_model)
 
     logger.info("--optimize complete: %d product(s) updated.", updated)
     return updated

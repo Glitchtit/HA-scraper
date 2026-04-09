@@ -2427,6 +2427,7 @@ class TestMainOptimizeMode:
         mock_optimize.assert_called_once()
 
 
+@patch("grocy_scraper_addon.main._optimize_units", return_value=0)
 @patch("grocy_scraper_addon.main._deduplicate_parent_products", return_value=(0, {}))
 class TestAiOptimizeProducts:
     def _make_grocy(self, products, locations):
@@ -2449,7 +2450,7 @@ class TestAiOptimizeProducts:
     # -- Full-mode tests (product_ids=None, clean-slate) -------------------
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_sort_date_group_in_single_pass(self, mock_gemini, _mock_dedup):
+    def test_sort_date_group_in_single_pass(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: sort, date, and group in one Gemini call."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2485,7 +2486,7 @@ class TestAiOptimizeProducts:
         )
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_pack_detection_moves_barcode_and_deletes(self, mock_gemini, _mock_dedup):
+    def test_pack_detection_moves_barcode_and_deletes(self, mock_gemini, _mock_dedup, _mock_opt):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Red Bull"},
@@ -2513,7 +2514,7 @@ class TestAiOptimizeProducts:
         grocy.delete_product.assert_called_once_with(2)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_no_products_returns_zero(self, mock_gemini, _mock_dedup):
+    def test_no_products_returns_zero(self, mock_gemini, _mock_dedup, _mock_opt):
         from grocy_scraper_addon.main import _ai_optimize_products
         grocy = self._make_grocy([], [])
         result = _ai_optimize_products(grocy, "gemini-key")
@@ -2521,7 +2522,7 @@ class TestAiOptimizeProducts:
         mock_gemini.assert_not_called()
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_gemini_failure_continues(self, mock_gemini, _mock_dedup):
+    def test_gemini_failure_continues(self, mock_gemini, _mock_dedup, _mock_opt):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
         locations = [{"id": 2, "name": "Fridge"}]
@@ -2532,7 +2533,7 @@ class TestAiOptimizeProducts:
         assert result == 0
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_strips_parents_and_sends_all(self, mock_gemini, _mock_dedup):
+    def test_full_mode_strips_parents_and_sends_all(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: strips parent assignments and sends all leaf products."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2578,7 +2579,7 @@ class TestAiOptimizeProducts:
         assert "Mausteet" not in prompt.split("Products:")[-1]
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_deletes_old_parent_placeholders(self, mock_gemini, _mock_dedup):
+    def test_full_mode_deletes_old_parent_placeholders(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: old parent placeholders with no new children are deleted."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2621,7 +2622,7 @@ class TestAiOptimizeProducts:
         assert result >= 1
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_cleans_unused_product_groups(self, mock_gemini, _mock_dedup):
+    def test_full_mode_cleans_unused_product_groups(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: unused product groups are deleted after rebuild."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2647,7 +2648,7 @@ class TestAiOptimizeProducts:
         grocy.delete_product_group.assert_called_once_with(70)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_no_existing_hints_in_prompt(self, mock_gemini, _mock_dedup):
+    def test_full_mode_no_existing_hints_in_prompt(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: prompt does NOT include existing parent/category hints."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2671,7 +2672,7 @@ class TestAiOptimizeProducts:
         assert "Existing product categories" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_skips_parent_for_min_stock_product(self, mock_gemini, _mock_dedup):
+    def test_full_mode_skips_parent_for_min_stock_product(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: products with min_stock_amount > 0 skip parent assignment."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2704,7 +2705,7 @@ class TestAiOptimizeProducts:
     # -- Incremental-mode tests (product_ids=[...]) ------------------------
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_product_ids_filter(self, mock_gemini, _mock_dedup):
+    def test_product_ids_filter(self, mock_gemini, _mock_dedup, _mock_opt):
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
             {"id": 1, "name": "Maito"},
@@ -2730,7 +2731,7 @@ class TestAiOptimizeProducts:
         assert "Ketsuppi" not in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_incremental_existing_parents_in_prompt(self, mock_gemini, _mock_dedup):
+    def test_incremental_existing_parents_in_prompt(self, mock_gemini, _mock_dedup, _mock_opt):
         """Incremental mode: existing parent/category names appear in prompt."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2761,7 +2762,7 @@ class TestAiOptimizeProducts:
         assert "Existing product categories" in prompt
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_regroup_product_under_different_parent(self, mock_gemini, _mock_dedup):
+    def test_regroup_product_under_different_parent(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: product re-grouped from old parent to new one."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2815,7 +2816,7 @@ class TestAiOptimizeProducts:
         assert result >= 1
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_cleanup_empty_parent_after_optimize(self, mock_gemini, _mock_dedup):
+    def test_cleanup_empty_parent_after_optimize(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode: empty parent products are deleted after optimization."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [
@@ -2849,7 +2850,7 @@ class TestAiOptimizeProducts:
         grocy.delete_product.assert_any_call(50)
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_uses_optimize_model(self, mock_gemini, _mock_dedup):
+    def test_full_mode_uses_optimize_model(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode uses optimize_model when provided."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2869,7 +2870,7 @@ class TestAiOptimizeProducts:
         assert call_model == "gemini-2.0-pro"
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_full_mode_falls_back_to_regular_model(self, mock_gemini, _mock_dedup):
+    def test_full_mode_falls_back_to_regular_model(self, mock_gemini, _mock_dedup, _mock_opt):
         """Full mode falls back to regular model when optimize_model is empty."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2889,7 +2890,7 @@ class TestAiOptimizeProducts:
         assert call_model == "gemini-1.5-flash"
 
     @patch("grocy_scraper_addon.main._call_gemini")
-    def test_incremental_mode_uses_regular_model(self, mock_gemini, _mock_dedup):
+    def test_incremental_mode_uses_regular_model(self, mock_gemini, _mock_dedup, _mock_opt):
         """Incremental mode always uses the regular model, not optimize_model."""
         from grocy_scraper_addon.main import _ai_optimize_products
         products = [{"id": 1, "name": "Maito"}]
@@ -2908,3 +2909,335 @@ class TestAiOptimizeProducts:
         )
         call_model = mock_gemini.call_args[0][2]
         assert call_model == "gemini-1.5-flash"
+
+
+# ---------------------------------------------------------------------------
+# Unit optimization tests
+# ---------------------------------------------------------------------------
+
+
+class TestCanonicalUnit:
+    def test_standard_abbreviations(self):
+        from grocy_scraper_addon.main import _canonical_unit
+        assert _canonical_unit("g") == "g"
+        assert _canonical_unit("kg") == "kg"
+        assert _canonical_unit("ml") == "ml"
+        assert _canonical_unit("dl") == "dl"
+        assert _canonical_unit("l") == "l"
+
+    def test_finnish_names(self):
+        from grocy_scraper_addon.main import _canonical_unit
+        assert _canonical_unit("gramma") == "g"
+        assert _canonical_unit("kilogramma") == "kg"
+        assert _canonical_unit("litra") == "l"
+        assert _canonical_unit("desilitra") == "dl"
+
+    def test_case_insensitive(self):
+        from grocy_scraper_addon.main import _canonical_unit
+        assert _canonical_unit("G") == "g"
+        assert _canonical_unit("KG") == "kg"
+        assert _canonical_unit("Litra") == "l"
+
+    def test_unknown_returns_none(self):
+        from grocy_scraper_addon.main import _canonical_unit
+        assert _canonical_unit("unknown") is None
+        assert _canonical_unit("") is None
+
+    def test_piece_aliases(self):
+        from grocy_scraper_addon.main import _canonical_unit
+        assert _canonical_unit("kpl") == "kpl"
+        assert _canonical_unit("pcs") == "kpl"
+        assert _canonical_unit("piece") == "kpl"
+        assert _canonical_unit("st") == "kpl"
+
+
+class TestEnsureUnitsAndConversions:
+    def _make_grocy(self, existing_units=None, existing_conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_quantity_units.return_value = existing_units or []
+        grocy.get_quantity_unit_conversions.return_value = existing_conversions or []
+        grocy.create_quantity_unit.side_effect = lambda name, *a, **kw: (
+            100 + len([c for c in grocy.create_quantity_unit.call_args_list])
+        )
+        grocy.create_quantity_unit_conversion.return_value = 200
+        return grocy
+
+    def test_creates_missing_units(self):
+        from grocy_scraper_addon.main import _ensure_units_and_conversions
+        grocy = self._make_grocy()
+        result = _ensure_units_and_conversions(grocy)
+        # Should have created all 9 standard units
+        assert grocy.create_quantity_unit.call_count == len(
+            [u for u in result if u != "piece"]
+        )
+        assert "g" in result
+        assert "kg" in result
+        assert "l" in result
+
+    def test_skips_existing_units_by_description(self):
+        from grocy_scraper_addon.main import _ensure_units_and_conversions
+        existing = [{"id": 5, "name": "Gramma", "description": "g"}]
+        grocy = self._make_grocy(existing_units=existing)
+        result = _ensure_units_and_conversions(grocy)
+        assert result["g"] == 5
+        # Should not have created "g" again
+        create_names = [c.args[0] for c in grocy.create_quantity_unit.call_args_list]
+        assert "Gramma" not in create_names
+
+    def test_skips_existing_units_by_name(self):
+        from grocy_scraper_addon.main import _ensure_units_and_conversions
+        existing = [{"id": 7, "name": "Gramma", "description": ""}]
+        grocy = self._make_grocy(existing_units=existing)
+        result = _ensure_units_and_conversions(grocy)
+        assert result["g"] == 7
+
+    def test_creates_global_conversions(self):
+        from grocy_scraper_addon.main import _ensure_units_and_conversions, _GLOBAL_CONVERSIONS
+        grocy = self._make_grocy()
+        _ensure_units_and_conversions(grocy)
+        assert grocy.create_quantity_unit_conversion.call_count == len(_GLOBAL_CONVERSIONS)
+
+    def test_skips_existing_conversions(self):
+        from grocy_scraper_addon.main import _ensure_units_and_conversions
+        existing_units = [
+            {"id": 1, "name": "Kilogramma", "description": "kg"},
+            {"id": 2, "name": "Gramma", "description": "g"},
+        ]
+        existing_convs = [
+            {"id": 10, "from_qu_id": 1, "to_qu_id": 2, "factor": 1000, "product_id": None},
+        ]
+        grocy = self._make_grocy(existing_units=existing_units, existing_conversions=existing_convs)
+        _ensure_units_and_conversions(grocy)
+        # The kg→g conversion should be skipped
+        for call in grocy.create_quantity_unit_conversion.call_args_list:
+            assert not (call.args[0] == 1 and call.args[1] == 2)
+
+    def test_maps_piece_unit(self):
+        from grocy_scraper_addon.main import _ensure_units_and_conversions
+        existing = [{"id": 1, "name": "Piece", "description": ""}]
+        grocy = self._make_grocy(existing_units=existing)
+        result = _ensure_units_and_conversions(grocy)
+        assert result.get("piece") == 1
+
+
+class TestConsolidateDuplicateUnits:
+    def _make_grocy(self, units, products=None, barcodes=None, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_quantity_units.return_value = units
+        grocy.get_all_products.return_value = products or []
+        grocy.get_all_barcodes.return_value = barcodes or []
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        return grocy
+
+    def test_merges_duplicate_by_name(self):
+        from grocy_scraper_addon.main import _consolidate_duplicate_units
+        units = [
+            {"id": 5, "name": "Gramma", "description": "g", "name_plural": "Grammaa"},
+            {"id": 99, "name": "gram", "description": "", "name_plural": ""},
+        ]
+        products = [
+            {"id": 1, "name": "Maito", "qu_id_stock": 99, "qu_id_purchase": 99,
+             "qu_id_consume": 99, "qu_id_price": 99},
+        ]
+        grocy = self._make_grocy(units, products=products)
+        abbrev = {"g": 5}
+        _consolidate_duplicate_units(grocy, abbrev)
+        # Product should be reassigned
+        grocy.update_product.assert_called_once()
+        update_kwargs = grocy.update_product.call_args[1]
+        assert update_kwargs["qu_id_stock"] == 5
+        # Duplicate should be deleted
+        grocy.delete_quantity_unit.assert_called_once_with(99)
+
+    def test_no_duplicates_is_noop(self):
+        from grocy_scraper_addon.main import _consolidate_duplicate_units
+        units = [
+            {"id": 5, "name": "Gramma", "description": "g", "name_plural": "Grammaa"},
+        ]
+        grocy = self._make_grocy(units)
+        abbrev = {"g": 5}
+        _consolidate_duplicate_units(grocy, abbrev)
+        grocy.update_product.assert_not_called()
+        grocy.delete_quantity_unit.assert_not_called()
+
+    def test_reassigns_conversions(self):
+        from grocy_scraper_addon.main import _consolidate_duplicate_units
+        units = [
+            {"id": 5, "name": "Gramma", "description": "g", "name_plural": ""},
+            {"id": 99, "name": "gram", "description": "", "name_plural": ""},
+        ]
+        conversions = [
+            {"id": 50, "from_qu_id": 99, "to_qu_id": 10, "factor": 1.0, "product_id": 1},
+        ]
+        grocy = self._make_grocy(units, conversions=conversions)
+        abbrev = {"g": 5}
+        _consolidate_duplicate_units(grocy, abbrev)
+        grocy.delete_quantity_unit_conversion.assert_called_once_with(50)
+        grocy.create_quantity_unit_conversion.assert_called_once()
+        args = grocy.create_quantity_unit_conversion.call_args
+        assert args.args[0] == 5  # from_id reassigned from 99 to 5
+
+
+@patch("grocy_scraper_addon.main._call_gemini_json")
+class TestAiDetectPackageSizes:
+    def _make_grocy(self, products=None, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        grocy.create_quantity_unit_conversion.return_value = 100
+        return grocy
+
+    def test_creates_conversion_for_product_with_size(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_package_sizes
+        mock_gemini.return_value = [
+            {"product_id": 1, "amount": 1, "unit": "l"},
+        ]
+        products = [{"id": 1, "name": "Arla Kevytmaito 1L",
+                     "hide_on_stock_overview": 0,
+                     "cumulate_min_stock_amount_of_sub_products": 0}]
+        abbrev = {"piece": 10, "l": 20, "g": 30}
+        grocy = self._make_grocy(products)
+        count = _ai_detect_package_sizes(grocy, products, abbrev, "key", "model")
+        assert count == 1
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            10, 20, 1.0, product_id=1,
+        )
+
+    def test_skips_products_with_existing_conversions(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_package_sizes
+        products = [{"id": 1, "name": "Maito 1L",
+                     "hide_on_stock_overview": 0,
+                     "cumulate_min_stock_amount_of_sub_products": 0}]
+        existing_convs = [{"id": 50, "from_qu_id": 10, "to_qu_id": 20,
+                          "factor": 1.0, "product_id": 1}]
+        grocy = self._make_grocy(products, conversions=existing_convs)
+        abbrev = {"piece": 10, "l": 20}
+        count = _ai_detect_package_sizes(grocy, products, abbrev, "key", "model")
+        assert count == 0
+        mock_gemini.assert_not_called()
+
+    def test_skips_null_unit_from_gemini(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_package_sizes
+        mock_gemini.return_value = [
+            {"product_id": 1, "amount": None, "unit": None},
+        ]
+        products = [{"id": 1, "name": "Tuorejuusto",
+                     "hide_on_stock_overview": 0,
+                     "cumulate_min_stock_amount_of_sub_products": 0}]
+        abbrev = {"piece": 10, "g": 30}
+        grocy = self._make_grocy(products)
+        count = _ai_detect_package_sizes(grocy, products, abbrev, "key", "model")
+        assert count == 0
+
+    def test_no_piece_unit_returns_zero(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_package_sizes
+        products = [{"id": 1, "name": "Test", "qu_id_stock": None,
+                     "hide_on_stock_overview": 0,
+                     "cumulate_min_stock_amount_of_sub_products": 0}]
+        abbrev = {"g": 30}  # No "piece" or "kpl"
+        grocy = self._make_grocy(products)
+        count = _ai_detect_package_sizes(grocy, products, abbrev, "key", "model")
+        assert count == 0
+        mock_gemini.assert_not_called()
+
+    def test_skips_parent_placeholders(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_package_sizes
+        mock_gemini.return_value = []
+        products = [{"id": 1, "name": "Maito",
+                     "hide_on_stock_overview": 1,
+                     "cumulate_min_stock_amount_of_sub_products": 1}]
+        abbrev = {"piece": 10, "l": 20}
+        grocy = self._make_grocy(products)
+        count = _ai_detect_package_sizes(grocy, products, abbrev, "key", "model")
+        assert count == 0
+
+
+@patch("grocy_scraper_addon.main._call_gemini_json")
+class TestAiDetectDensityConversions:
+    def _make_grocy(self, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        grocy.create_quantity_unit_conversion.return_value = 100
+        return grocy
+
+    def test_creates_density_for_weight_only_product(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_density_conversions
+        mock_gemini.return_value = [
+            {"product_id": 1, "from_unit": "kg", "to_unit": "l", "factor": 1.67},
+        ]
+        conversions = [
+            {"id": 50, "from_qu_id": 10, "to_qu_id": 30, "factor": 1.0, "product_id": 1},
+        ]
+        products = [{"id": 1, "name": "Vehnäjauho 2kg"}]
+        abbrev = {"piece": 10, "g": 20, "kg": 30, "l": 40, "dl": 50}
+        grocy = self._make_grocy(conversions=conversions)
+        count = _ai_detect_density_conversions(grocy, products, abbrev, "key", "model")
+        assert count == 1
+        grocy.create_quantity_unit_conversion.assert_called_once_with(
+            30, 40, 1.67, product_id=1,
+        )
+
+    def test_skips_product_with_both_domains(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_density_conversions
+        # Product has both weight and volume conversions already
+        conversions = [
+            {"id": 50, "from_qu_id": 10, "to_qu_id": 30, "factor": 2.0, "product_id": 1},  # piece→kg
+            {"id": 51, "from_qu_id": 10, "to_qu_id": 40, "factor": 3.0, "product_id": 1},  # piece→l
+        ]
+        products = [{"id": 1, "name": "Maito"}]
+        abbrev = {"piece": 10, "kg": 30, "l": 40}
+        grocy = self._make_grocy(conversions=conversions)
+        count = _ai_detect_density_conversions(grocy, products, abbrev, "key", "model")
+        assert count == 0
+        mock_gemini.assert_not_called()
+
+    def test_no_candidates_is_noop(self, mock_gemini):
+        from grocy_scraper_addon.main import _ai_detect_density_conversions
+        products = [{"id": 1, "name": "Maito"}]
+        abbrev = {"piece": 10, "l": 40}
+        grocy = self._make_grocy()
+        count = _ai_detect_density_conversions(grocy, products, abbrev, "key", "model")
+        assert count == 0
+        mock_gemini.assert_not_called()
+
+
+@patch("grocy_scraper_addon.main._ai_detect_density_conversions", return_value=0)
+@patch("grocy_scraper_addon.main._ai_detect_package_sizes", return_value=0)
+@patch("grocy_scraper_addon.main._consolidate_duplicate_units")
+@patch("grocy_scraper_addon.main._ensure_units_and_conversions")
+class TestOptimizeUnits:
+    def test_calls_pipeline_steps(self, mock_ensure, mock_consolidate,
+                                   mock_pkg, mock_density):
+        from grocy_scraper_addon.main import _optimize_units
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.return_value = [{"id": 1, "name": "Maito"}]
+        mock_ensure.return_value = {"g": 1, "l": 2}
+        mock_consolidate.return_value = {"g": 1, "l": 2}
+
+        _optimize_units(grocy, "key", "model")
+
+        mock_ensure.assert_called_once_with(grocy)
+        mock_consolidate.assert_called_once()
+        mock_pkg.assert_called_once()
+        mock_density.assert_called_once()
+
+    def test_stops_on_ensure_failure(self, mock_ensure, mock_consolidate,
+                                      mock_pkg, mock_density):
+        from grocy_scraper_addon.main import _optimize_units
+        grocy = MagicMock(spec=GrocyClient)
+        mock_ensure.side_effect = GrocyAPIError("fail")
+
+        result = _optimize_units(grocy, "key", "model")
+        assert result == 0
+        mock_consolidate.assert_not_called()
+
+    def test_no_products_skips_ai(self, mock_ensure, mock_consolidate,
+                                   mock_pkg, mock_density):
+        from grocy_scraper_addon.main import _optimize_units
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.return_value = []
+        mock_ensure.return_value = {"g": 1}
+        mock_consolidate.return_value = {"g": 1}
+
+        _optimize_units(grocy, "key", "model")
+        mock_pkg.assert_not_called()
+        mock_density.assert_not_called()
