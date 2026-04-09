@@ -3418,8 +3418,8 @@ class TestFixBrokenProductUnits:
         }
         assert deleted_ids == {100, 101}
 
-    def test_fixes_stocked_product_via_bridging(self):
-        """Stocked product where first update_product fails, bridging fixes it."""
+    def test_fixes_stocked_product_via_stock_repair(self):
+        """Stocked product where first update_product fails, stock entry fix resolves it."""
         from grocy_scraper_addon.main import _fix_broken_product_units
         units = [{"id": 10, "name": "Kilogramma", "description": "kg"}]
         products = [
@@ -3427,13 +3427,15 @@ class TestFixBrokenProductUnits:
              "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
         ]
         grocy = self._make_grocy(units, products)
-        # First call fails (stocked product), second succeeds (after bridging)
+        # First update fails (stocked product), second succeeds (after stock fix)
         grocy.update_product.side_effect = [GrocyAPIError("stock constraint"), None]
+        grocy.get_stock_entries.return_value = [
+            {"id": 50, "product_id": 1, "qu_id": 999},
+        ]
         abbrev = {"kg": 10, "kpl": 20}
         fixed = _fix_broken_product_units(grocy, abbrev)
         assert fixed == 1
-        # Bridging conversion should have been created
-        grocy.create_quantity_unit_conversion.assert_called()
+        grocy.update_stock_entry.assert_called_once_with(50, qu_id=10)
 
 
 class TestFixRecipeUnits:

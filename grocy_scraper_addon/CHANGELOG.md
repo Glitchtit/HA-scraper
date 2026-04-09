@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.3
+
+- Fix 226 stocked products with deleted QU refs by repairing stock entries first
+- Add get_stock_entries() and update_stock_entry() to Grocy API client
+- When product QU update fails (stock constraint), fix stock entry qu_id directly, then retry
+
 ## 1.19.2
 
 - Fix stocked products with broken units via bridging conversions + per-field fallback
