@@ -150,8 +150,7 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
     """Build an ``argparse.Namespace`` from add-on options."""
     ns = argparse.Namespace(
         store=opts.get("store_id", ""),
-        grocy_url=opts.get("grocy_url", ""),
-        grocy_key=opts.get("grocy_api_key", ""),
+        storage_url=opts.get("storage_url", ""),
         location_id=opts.get("location_id", 0),
         quantity_unit_id=opts.get("quantity_unit_id", 0),
         bbuddy_url=opts.get("bbuddy_url", ""),
@@ -185,7 +184,7 @@ def _handle_config() -> dict[str, Any]:
         opts.get("bbuddy_url") and opts.get("bbuddy_user") and opts.get("bbuddy_password")
     )
     return {
-        "configured": bool(opts.get("grocy_url")),
+        "configured": bool(opts.get("storage_url")),
         "store_id": opts.get("store_id", ""),
         "discover_interval": opts.get("discover_interval", 60),
         "bbuddy_configured": bbuddy_configured,
@@ -268,11 +267,10 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
             grocy_id = result.get("grocy_id")
             gemini_key = opts.get("gemini_api_key", "")
             if result.get("success") and gemini_key and grocy_id and not result.get("already_existed"):
-                from grocy_scraper.grocy_client import GrocyClient as _GC
+                from grocy_scraper.storage_client import StorageClient as _SC
 
-                grocy = _GC(
-                    base_url=opts.get("grocy_url", ""),
-                    api_key=opts.get("grocy_api_key", ""),
+                grocy = _SC(
+                    base_url=opts.get("storage_url", ""),
                 )
                 model = opts.get("gemini_model", "gemini-1.5-flash")
                 location_id = int(opts.get("location_id", 0)) or None
@@ -303,7 +301,7 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
             ],
         }
 
-    from grocy_scraper.grocy_client import GrocyClient
+    from grocy_scraper.storage_client import StorageClient
     import main as _main
 
     args = _build_args(opts)
@@ -312,9 +310,8 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
         # Chain AI optimize when Gemini key is available.
         gemini_key = opts.get("gemini_api_key", "")
         if result_code == 0 and gemini_key and discovered_ids:
-            grocy = GrocyClient(
-                base_url=opts.get("grocy_url", ""),
-                api_key=opts.get("grocy_api_key", ""),
+            grocy = StorageClient(
+                base_url=opts.get("storage_url", ""),
             )
             model = opts.get("gemini_model", "gemini-1.5-flash")
             location_id = int(opts.get("location_id", 0)) or None
@@ -348,12 +345,11 @@ def _handle_optimize() -> dict[str, Any]:
             ],
         }
 
-    from grocy_scraper.grocy_client import GrocyClient
+    from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = GrocyClient(
-        base_url=opts.get("grocy_url", ""),
-        api_key=opts.get("grocy_api_key", ""),
+    grocy = StorageClient(
+        base_url=opts.get("storage_url", ""),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     optimize_model = opts.get("gemini_model_optimize", "")
@@ -389,12 +385,11 @@ def _handle_sort() -> dict[str, Any]:
             ],
         }
 
-    from grocy_scraper.grocy_client import GrocyClient
+    from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = GrocyClient(
-        base_url=opts.get("grocy_url", ""),
-        api_key=opts.get("grocy_api_key", ""),
+    grocy = StorageClient(
+        base_url=opts.get("storage_url", ""),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     with _capture_logs() as logs:
@@ -420,12 +415,11 @@ def _handle_date() -> dict[str, Any]:
             ],
         }
 
-    from grocy_scraper.grocy_client import GrocyClient
+    from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = GrocyClient(
-        base_url=opts.get("grocy_url", ""),
-        api_key=opts.get("grocy_api_key", ""),
+    grocy = StorageClient(
+        base_url=opts.get("storage_url", ""),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     with _capture_logs() as logs:
@@ -451,12 +445,11 @@ def _handle_group() -> dict[str, Any]:
             ],
         }
 
-    from grocy_scraper.grocy_client import GrocyClient
+    from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = GrocyClient(
-        base_url=opts.get("grocy_url", ""),
-        api_key=opts.get("grocy_api_key", ""),
+    grocy = StorageClient(
+        base_url=opts.get("storage_url", ""),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     optimize_model = opts.get("gemini_model_optimize", "")
@@ -493,17 +486,16 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "No products provided."}
 
     opts = _read_options()
-    grocy_url = opts.get("grocy_url", "")
-    grocy_key = opts.get("grocy_api_key", "")
-    if not grocy_url or not grocy_key:
-        return {"success": False, "error": "Grocy URL and API key must be configured."}
+    storage_url = opts.get("storage_url", "")
+    if not storage_url:
+        return {"success": False, "error": "Storage URL must be configured."}
 
-    from grocy_scraper.grocy_client import GrocyClient, GrocyAPIError
+    from grocy_scraper.storage_client import StorageClient, StorageAPIError
     from grocy_scraper.scraper import Product
 
     import main as _main
 
-    grocy = GrocyClient(base_url=grocy_url, api_key=grocy_key)
+    grocy = StorageClient(base_url=storage_url)
     location_id = int(opts.get("location_id", 0)) or None
     quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
     upload_images = opts.get("upload_images", True)
@@ -529,7 +521,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                     name,
                     description=description,
                     location_id=location_id,
-                    quantity_unit_id=quantity_unit_id,
+                    unit_id=quantity_unit_id,
                 )
                 if ean:
                     grocy.add_barcode(product_id, ean)
@@ -542,7 +534,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 logger.info("Added '%s' (id=%d, ean=%s).", name, product_id, ean or "–")
                 added += 1
                 added_ids.append(product_id)
-            except GrocyAPIError as exc:
+            except StorageAPIError as exc:
                 msg = f"Failed to add '{name}': {exc}"
                 logger.error(msg)
                 errors.append(msg)
