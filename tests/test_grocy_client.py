@@ -625,3 +625,37 @@ class TestDeleteQuantityUnit:
         session.delete.return_value = _mock_response(raise_for=http_err, status_code=500)
         with pytest.raises(GrocyAPIError, match="delete QU"):
             client.delete_quantity_unit(5)
+
+
+class TestGetRecipePositions:
+    def test_returns_positions(self):
+        client, session = _make_client()
+        data = [{"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 5}]
+        session.get.return_value = _mock_response(json_data=data)
+        result = client.get_recipe_positions()
+        assert result == data
+        assert "/api/objects/recipes_pos" in session.get.call_args[0][0]
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
+        session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="recipe positions"):
+            client.get_recipe_positions()
+
+
+class TestUpdateRecipePosition:
+    def test_updates_position(self):
+        client, session = _make_client()
+        session.put.return_value = _mock_response(status_code=204)
+        client.update_recipe_position(1, qu_id=7)
+        assert "/api/objects/recipes_pos/1" in session.put.call_args[0][0]
+        payload = session.put.call_args[1]["json"]
+        assert payload["qu_id"] == 7
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
+        session.put.return_value = _mock_response(raise_for=http_err, status_code=400)
+        with pytest.raises(GrocyAPIError, match="recipe position"):
+            client.update_recipe_position(1, qu_id=7)

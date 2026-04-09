@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.19.0
+
+- Fix unit optimization: human-readable log output (unit names instead of numeric IDs)
+- Fix 144 failed product QU reassignments by creating bridging conversions before updating stock units
+- Add smart default unit detection for broken products (weight→g/kg, volume→l/dl, fallback→kpl)
+- Fix conversion migration idempotency (no more "already exists" errors)
+- Add recipe unit validation: detect and fix recipe ingredients with missing QU conversions
+- Add get_recipe_positions() and update_recipe_position() to Grocy API client
+
 ## 1.18.2
 
 - Fix Cloudflare timeout on long-running operations (discover, optimize, sort, date, group, update, search)

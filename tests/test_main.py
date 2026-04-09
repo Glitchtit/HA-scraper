@@ -3214,13 +3214,16 @@ class TestAiDetectDensityConversions:
         mock_gemini.assert_not_called()
 
 
+@patch("grocy_scraper_addon.main._fix_recipe_units", return_value=0)
 @patch("grocy_scraper_addon.main._ai_detect_density_conversions", return_value=0)
 @patch("grocy_scraper_addon.main._ai_detect_package_sizes", return_value=0)
 @patch("grocy_scraper_addon.main._consolidate_duplicate_units")
+@patch("grocy_scraper_addon.main._fix_broken_product_units", return_value=0)
 @patch("grocy_scraper_addon.main._ensure_units_and_conversions")
 class TestOptimizeUnits:
-    def test_calls_pipeline_steps(self, mock_ensure, mock_consolidate,
-                                   mock_pkg, mock_density):
+    def test_calls_pipeline_steps(self, mock_ensure, mock_fix_broken,
+                                   mock_consolidate, mock_pkg, mock_density,
+                                   mock_fix_recipes):
         from grocy_scraper_addon.main import _optimize_units
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_all_products.return_value = [{"id": 1, "name": "Maito"}]
@@ -3230,22 +3233,27 @@ class TestOptimizeUnits:
         _optimize_units(grocy, "key", "model")
 
         mock_ensure.assert_called_once_with(grocy)
+        mock_fix_broken.assert_called_once()
         mock_consolidate.assert_called_once()
         mock_pkg.assert_called_once()
         mock_density.assert_called_once()
+        mock_fix_recipes.assert_called_once()
 
-    def test_stops_on_ensure_failure(self, mock_ensure, mock_consolidate,
-                                      mock_pkg, mock_density):
+    def test_stops_on_ensure_failure(self, mock_ensure, mock_fix_broken,
+                                      mock_consolidate, mock_pkg, mock_density,
+                                      mock_fix_recipes):
         from grocy_scraper_addon.main import _optimize_units
         grocy = MagicMock(spec=GrocyClient)
         mock_ensure.side_effect = GrocyAPIError("fail")
 
         result = _optimize_units(grocy, "key", "model")
         assert result == 0
+        mock_fix_broken.assert_not_called()
         mock_consolidate.assert_not_called()
 
-    def test_no_products_skips_ai(self, mock_ensure, mock_consolidate,
-                                   mock_pkg, mock_density):
+    def test_no_products_skips_ai(self, mock_ensure, mock_fix_broken,
+                                   mock_consolidate, mock_pkg, mock_density,
+                                   mock_fix_recipes):
         from grocy_scraper_addon.main import _optimize_units
         grocy = MagicMock(spec=GrocyClient)
         grocy.get_all_products.return_value = []
@@ -3255,3 +3263,240 @@ class TestOptimizeUnits:
         _optimize_units(grocy, "key", "model")
         mock_pkg.assert_not_called()
         mock_density.assert_not_called()
+
+
+class TestFixBrokenProductUnits:
+    def _make_grocy(self, units, products):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_quantity_units.return_value = units
+        grocy.get_all_products.return_value = products
+        return grocy
+
+    def test_fixes_orphaned_weight_product(self):
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 5, "name": "Gramma", "description": "g"}]
+        products = [
+            {"id": 1, "name": "Vehnäjauho 2kg", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"g": 5, "kg": 6, "kpl": 10}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        call_kwargs = grocy.update_product.call_args[1]
+        assert call_kwargs["qu_id_stock"] == 6  # kg detected from "2kg"
+
+    def test_fixes_orphaned_volume_product(self):
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 5, "name": "Litra", "description": "l"}]
+        products = [
+            {"id": 1, "name": "Maito 1L", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 5, "qu_id_price": 5},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"l": 5, "kpl": 10}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        call_kwargs = grocy.update_product.call_args[1]
+        # Only the orphaned fields should be updated
+        assert "qu_id_stock" in call_kwargs
+        assert call_kwargs["qu_id_stock"] == 5  # l detected from "1L"
+        assert "qu_id_consume" not in call_kwargs  # was valid
+
+    def test_defaults_to_kpl_for_packaged(self):
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 10, "name": "Kappale", "description": "kpl"}]
+        products = [
+            {"id": 1, "name": "Hapankorppu", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"kpl": 10, "g": 5}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        call_kwargs = grocy.update_product.call_args[1]
+        assert call_kwargs["qu_id_stock"] == 10  # kpl for no size in name
+
+    def test_no_orphans_is_noop(self):
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 5, "name": "Gramma", "description": "g"}]
+        products = [
+            {"id": 1, "name": "Maito", "qu_id_stock": 5,
+             "qu_id_purchase": 5, "qu_id_consume": 5, "qu_id_price": 5},
+        ]
+        grocy = self._make_grocy(units, products)
+        abbrev = {"g": 5}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 0
+        grocy.update_product.assert_not_called()
+
+    def test_handles_update_failure(self):
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 10, "name": "Kappale", "description": "kpl"}]
+        products = [
+            {"id": 1, "name": "Tuote", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+        ]
+        grocy = self._make_grocy(units, products)
+        grocy.update_product.side_effect = GrocyAPIError("fail")
+        abbrev = {"kpl": 10}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 0
+
+
+class TestFixRecipeUnits:
+    def _make_grocy(self, positions, products, units, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_recipe_positions.return_value = positions
+        grocy.get_all_products.return_value = products
+        grocy.get_quantity_units.return_value = units
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        return grocy
+
+    def test_fixes_invalid_qu_id(self):
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 999, "amount": 1},
+        ]
+        products = [
+            {"id": 10, "name": "Maito", "qu_id_stock": 5},
+        ]
+        units = [{"id": 5, "name": "Kappale", "description": "kpl"}]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"kpl": 5}
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 1
+        grocy.update_recipe_position.assert_called_once_with(1, qu_id=5)
+
+    def test_same_unit_is_noop(self):
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 5, "amount": 1},
+        ]
+        products = [{"id": 10, "name": "Maito", "qu_id_stock": 5}]
+        units = [{"id": 5, "name": "Kappale", "description": "kpl"}]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"kpl": 5}
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 0
+        grocy.update_recipe_position.assert_not_called()
+
+    def test_skips_when_conversion_exists(self):
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 500},
+        ]
+        products = [{"id": 10, "name": "Vehnäjauho 2kg", "qu_id_stock": 5}]
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl"},
+            {"id": 7, "name": "Gramma", "description": "g"},
+        ]
+        conversions = [
+            {"id": 50, "from_qu_id": 5, "to_qu_id": 7, "factor": 2000.0, "product_id": 10},
+        ]
+        grocy = self._make_grocy(positions, products, units, conversions)
+        abbrev = {"kpl": 5, "g": 7}
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 0
+        grocy.update_recipe_position.assert_not_called()
+
+    def test_same_domain_units_skip(self):
+        """Units in the same domain (e.g., g→kg) have global conversions."""
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 500},
+        ]
+        products = [{"id": 10, "name": "Vehnäjauho", "qu_id_stock": 8}]
+        units = [
+            {"id": 7, "name": "Gramma", "description": "g"},
+            {"id": 8, "name": "Kilogramma", "description": "kg"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"g": 7, "kg": 8}
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 0
+        grocy.update_recipe_position.assert_not_called()
+
+    def test_falls_back_to_stock_qu_when_no_conversion(self):
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 600},
+        ]
+        products = [{"id": 10, "name": "Turskafilee", "qu_id_stock": 5}]
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl"},
+            {"id": 7, "name": "Gramma", "description": "g"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"kpl": 5, "g": 7}
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 1
+        grocy.update_recipe_position.assert_called_once_with(1, qu_id=5)
+
+    def test_empty_positions_is_noop(self):
+        from grocy_scraper_addon.main import _fix_recipe_units
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_recipe_positions.return_value = []
+        abbrev = {"kpl": 5}
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 0
+
+
+class TestConsolidateBridgingConversions:
+    """Test that bridging conversions are created before QU reassignment."""
+
+    def _make_grocy(self, units, products=None, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_quantity_units.return_value = units
+        grocy.get_all_products.return_value = products or []
+        grocy.get_all_barcodes.return_value = []
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        return grocy
+
+    def test_creates_bridging_conversion_before_reassign(self):
+        from grocy_scraper_addon.main import _consolidate_duplicate_units
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl", "name_plural": "Kappaletta"},
+            {"id": 99, "name": "Piece", "description": "", "name_plural": "Pieces"},
+        ]
+        products = [
+            {"id": 1, "name": "Maito", "qu_id_stock": 99, "qu_id_purchase": 99,
+             "qu_id_consume": 99, "qu_id_price": 99},
+        ]
+        grocy = self._make_grocy(units, products=products)
+        abbrev = {"kpl": 5}
+        _consolidate_duplicate_units(grocy, abbrev)
+        # Should create bridging conversion 99→5 (factor 1.0) for product 1
+        bridge_calls = [
+            c for c in grocy.create_quantity_unit_conversion.call_args_list
+            if c.args == (99, 5, 1.0) and c.kwargs.get("product_id") == 1
+        ]
+        assert len(bridge_calls) == 1
+        # Then update the product
+        grocy.update_product.assert_called_once()
+
+    def test_skips_bridging_when_already_exists(self):
+        from grocy_scraper_addon.main import _consolidate_duplicate_units
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl", "name_plural": ""},
+            {"id": 99, "name": "Piece", "description": "", "name_plural": ""},
+        ]
+        products = [
+            {"id": 1, "name": "Maito", "qu_id_stock": 99, "qu_id_purchase": 99,
+             "qu_id_consume": 99, "qu_id_price": 99},
+        ]
+        # Conversion already exists
+        conversions = [
+            {"id": 50, "from_qu_id": 99, "to_qu_id": 5, "factor": 1.0, "product_id": 1},
+        ]
+        grocy = self._make_grocy(units, products=products, conversions=conversions)
+        abbrev = {"kpl": 5}
+        _consolidate_duplicate_units(grocy, abbrev)
+        # Bridging conversion should NOT be created (already exists)
+        bridge_calls = [
+            c for c in grocy.create_quantity_unit_conversion.call_args_list
+            if c.args == (99, 5, 1.0) and c.kwargs.get("product_id") == 1
+        ]
+        assert len(bridge_calls) == 0
+        # Product should still be updated
+        grocy.update_product.assert_called_once()
