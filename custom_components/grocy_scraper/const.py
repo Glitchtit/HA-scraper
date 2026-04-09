@@ -15,10 +15,6 @@ CONF_LOCATION_ID = "location_id"
 CONF_QUANTITY_UNIT_ID = "quantity_unit_id"
 
 # Options-flow keys (optional, can be changed after setup)
-CONF_BBUDDY_URL = "bbuddy_url"
-CONF_BBUDDY_KEY = "bbuddy_key"
-CONF_BBUDDY_USER = "bbuddy_user"
-CONF_BBUDDY_PASSWORD = "bbuddy_password"
 CONF_DISCOVER_INTERVAL = "discover_interval"
 CONF_UPLOAD_IMAGES = "upload_images"
 CONF_USE_GRAPHQL = "use_graphql"

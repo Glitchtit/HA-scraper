@@ -133,7 +133,6 @@ class TestHandleConfig:
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             cfg = ingress_mod._handle_config()
         assert cfg["configured"] is False
-        assert cfg["bbuddy_configured"] is False
         assert cfg["gemini_configured"] is False
         assert cfg["discover_interval"] == 60
 
@@ -142,9 +141,6 @@ class TestHandleConfig:
             "storage_url": "http://grocy",
             "store_id": "N110",
             "discover_interval": 30,
-            "bbuddy_url": "http://bb",
-            "bbuddy_user": "admin",
-            "bbuddy_password": "secret",
             "gemini_api_key": "gem-key",
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
@@ -152,7 +148,6 @@ class TestHandleConfig:
         assert cfg["configured"] is True
         assert cfg["store_id"] == "N110"
         assert cfg["discover_interval"] == 30
-        assert cfg["bbuddy_configured"] is True
         assert cfg["gemini_configured"] is True
 
 
@@ -206,19 +201,8 @@ class TestHandleSearch:
 
 
 class TestHandleDiscover:
-    def test_missing_bbuddy_config(self, ingress_mod: ModuleType) -> None:
-        with mock.patch.object(ingress_mod, "_read_options", return_value={}):
-            result = ingress_mod._handle_discover()
-        assert result["success"] is False
-        assert result["skipped"] is True
-        assert len(result["logs"]) == 1
-        assert result["logs"][0]["level"] == "WARNING"
-
     def test_calls_discover_products(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "bbuddy_url": "http://bb",
-            "bbuddy_user": "admin",
-            "bbuddy_password": "pass",
             "store_id": "N110",
             "storage_url": "http://grocy",
         }
@@ -232,9 +216,6 @@ class TestHandleDiscover:
 
     def test_discover_chains_optimize(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "bbuddy_url": "http://bb",
-            "bbuddy_user": "admin",
-            "bbuddy_password": "pass",
             "store_id": "N110",
             "storage_url": "http://grocy",
             "gemini_api_key": "gem-key",
@@ -260,9 +241,6 @@ class TestHandleDiscover:
 
     def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "bbuddy_url": "http://bb",
-            "bbuddy_user": "admin",
-            "bbuddy_password": "pass",
             "store_id": "N110",
             "storage_url": "http://grocy",
         }
@@ -279,9 +257,6 @@ class TestHandleDiscover:
 
     def test_discover_failure_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "bbuddy_url": "http://bb",
-            "bbuddy_user": "admin",
-            "bbuddy_password": "pass",
             "store_id": "N110",
             "storage_url": "http://grocy",
             "gemini_api_key": "gem-key",
@@ -300,9 +275,6 @@ class TestHandleDiscover:
     def test_discover_no_new_products_skips_ai(self, ingress_mod: ModuleType) -> None:
         """When discover succeeds but finds no new products, AI is skipped."""
         opts = {
-            "bbuddy_url": "http://bb",
-            "bbuddy_user": "admin",
-            "bbuddy_password": "pass",
             "store_id": "N110",
             "storage_url": "http://grocy",
             "gemini_api_key": "gem-key",
@@ -823,7 +795,7 @@ class TestHTTPHandler:
         time.sleep(0.1)
         status2, result = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
         assert status2 == 200
-        assert result["skipped"] is True
+        assert result["success"] is True
 
     def test_post_add_products_no_body(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "POST", "/api/add_products", body={})

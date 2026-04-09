@@ -20,10 +20,6 @@ from .const import (
     CONF_STORE_ID,
     CONF_LOCATION_ID,
     CONF_QUANTITY_UNIT_ID,
-    CONF_BBUDDY_URL,
-    CONF_BBUDDY_KEY,
-    CONF_BBUDDY_USER,
-    CONF_BBUDDY_PASSWORD,
     CONF_DISCOVER_INTERVAL,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
@@ -228,11 +224,6 @@ async def ws_get_config(
             "discover_interval": entry.options.get(
                 CONF_DISCOVER_INTERVAL, DEFAULT_DISCOVER_INTERVAL
             ),
-            "bbuddy_configured": bool(
-                entry.options.get(CONF_BBUDDY_URL)
-                and entry.options.get(CONF_BBUDDY_USER)
-                and entry.options.get(CONF_BBUDDY_PASSWORD)
-            ),
             "gemini_configured": bool(entry.options.get(CONF_GEMINI_API_KEY)),
         },
     )
@@ -254,7 +245,7 @@ async def ws_run_discover(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Trigger an immediate Barcode Buddy -> K-Ruoka -> Grocy discover run."""
+    """Trigger an immediate barcode queue → K-Ruoka → Grocy discover run."""
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:
         connection.send_error(
@@ -284,32 +275,14 @@ async def ws_run_discover(
 
 
 def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
-    """Execute the Barcode Buddy -> K-Ruoka -> Grocy discovery pipeline."""
-    bbuddy_url = options.get(CONF_BBUDDY_URL, "")
-    bbuddy_user = options.get(CONF_BBUDDY_USER, "")
-    bbuddy_password = options.get(CONF_BBUDDY_PASSWORD, "")
-
-    if not (bbuddy_url and bbuddy_user and bbuddy_password):
-        if on_log:
-            on_log({
-                "level": "WARNING",
-                "message": "Barcode Buddy URL, username, and password are required "
-                "for Discover. Configure them in the integration options.",
-            })
-        return {"success": False, "skipped": True}
-
+    """Execute the barcode queue → K-Ruoka → Grocy discovery pipeline."""
     _ensure_repo_on_path()
 
     args = argparse.Namespace(
         store=config.get(CONF_STORE_ID, ""),
-        grocy_url=config.get(CONF_GROCY_URL, ""),
-        grocy_key=config.get(CONF_GROCY_KEY, ""),
+        storage_url=config.get(CONF_GROCY_URL, ""),
         location_id=config.get(CONF_LOCATION_ID),
         quantity_unit_id=config.get(CONF_QUANTITY_UNIT_ID),
-        bbuddy_url=bbuddy_url,
-        bbuddy_key=options.get(CONF_BBUDDY_KEY, ""),
-        bbuddy_user=bbuddy_user,
-        bbuddy_password=bbuddy_password,
         upload_images=options.get(CONF_UPLOAD_IMAGES, DEFAULT_UPLOAD_IMAGES),
         use_graphql=options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
     )

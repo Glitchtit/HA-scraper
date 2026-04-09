@@ -46,7 +46,6 @@ try:
 except ImportError:
     pass  # python-dotenv is optional; fall back to plain env vars
 
-from grocy_scraper.barcodebuddy_client import BarcodeBuddyClient, BarcodeBuddyError
 from grocy_scraper.storage_client import StorageAPIError, StorageClient
 from grocy_scraper.scraper import KRuokaScraper, Product
 from grocy_scraper.searxng_client import SearXNGError, lookup_ean as searxng_lookup
@@ -101,10 +100,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help=(
-            "Fetch unknown barcodes from Barcode Buddy, search K-Ruoka for "
-            "matching products, add them to Grocy, stock them, and remove "
-            "from the Barcode Buddy unknown list.  "
-            "Requires --bbuddy-url and --bbuddy-user/--bbuddy-password (or env vars)."
+            "Fetch pending barcodes from the Storage barcode queue, search "
+            "K-Ruoka for matching products, add them to Grocy, stock them, "
+            "and mark the queue items as done."
         ),
     )
     scrape_group.add_argument(
@@ -175,45 +173,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Grocy quantity unit ID to assign to new products. "
             "Also read from the GROCY_QUANTITY_UNIT_ID environment variable."
-        ),
-    )
-
-    # Barcode Buddy options (for --discover)
-    parser.add_argument(
-        "--bbuddy-url",
-        default=os.environ.get("BARCODEBDY_URL", ""),
-        metavar="URL",
-        help=(
-            "Base URL of the Barcode Buddy instance "
-            "(e.g. https://bbuddy.example.com).  "
-            "Also read from the BARCODEBDY_URL environment variable."
-        ),
-    )
-    parser.add_argument(
-        "--bbuddy-key",
-        default=os.environ.get("BARCODEBDY_API", ""),
-        metavar="KEY",
-        help=(
-            "Barcode Buddy API key (for /api endpoints).  "
-            "Also read from the BARCODEBDY_API environment variable."
-        ),
-    )
-    parser.add_argument(
-        "--bbuddy-user",
-        default=os.environ.get("BARCODEBDY_USER", ""),
-        metavar="USER",
-        help=(
-            "Barcode Buddy web UI username.  "
-            "Also read from the BARCODEBDY_USER environment variable."
-        ),
-    )
-    parser.add_argument(
-        "--bbuddy-password",
-        default=os.environ.get("BARCODEBDY_PASSWORD", ""),
-        metavar="PASS",
-        help=(
-            "Barcode Buddy web UI password.  "
-            "Also read from the BARCODEBDY_PASSWORD environment variable."
         ),
     )
 
@@ -3396,21 +3355,6 @@ def _validate_args(args: argparse.Namespace) -> int:
             )
             return 1
 
-    if discover_mode:
-        if not args.bbuddy_url:
-            logger.error(
-                "Barcode Buddy URL is required for --discover.  "
-                "Use --bbuddy-url or set the BARCODEBDY_URL environment variable."
-            )
-            return 1
-        if not args.bbuddy_user or not args.bbuddy_password:
-            logger.error(
-                "Barcode Buddy username and password are required for --discover.  "
-                "Use --bbuddy-user / --bbuddy-password or set "
-                "BARCODEBDY_USER / BARCODEBDY_PASSWORD environment variables."
-            )
-            return 1
-
     return 0
 
 
@@ -3524,8 +3468,7 @@ def _discover_single_barcode(
 ) -> dict:
     """Discover a single barcode by searching K-Ruoka / S-kaupat and syncing to Grocy.
 
-    Unlike :func:`_discover_products`, this bypasses Barcode Buddy entirely —
-    the caller already knows the barcode.  It searches online stores, creates
+    The caller already knows the barcode.  It searches online stores, creates
     the product in Grocy, adds 1 unit to stock, and returns a result dict.
 
     Returns ``{"success": True, "product": {...}, "grocy_id": int}`` on
@@ -3640,22 +3583,6 @@ def _discover_single_barcode(
         except (StorageAPIError, ValueError) as exc:
             logger.warning("Could not add stock for '%s': %s", product.name, exc)
 
-    # Remove the barcode from Barcode Buddy's unknown/pending list.
-    if getattr(args, "bbuddy_url", "") and getattr(args, "bbuddy_user", ""):
-        try:
-            bbuddy = BarcodeBuddyClient(
-                base_url=args.bbuddy_url,
-                api_key=args.bbuddy_key,
-                username=args.bbuddy_user,
-                password=args.bbuddy_password,
-            )
-            for entry in bbuddy.get_pending_barcodes():
-                if entry.barcode == barcode:
-                    bbuddy.delete_barcode(entry.id)
-                    logger.info("Removed EAN %s (id %s) from Barcode Buddy.", barcode, entry.id)
-        except BarcodeBuddyError as exc:
-            logger.warning("Could not clean up Barcode Buddy for %s: %s", barcode, exc)
-
     logger.info("Single-barcode discover complete for EAN %s.", barcode)
     return {
         "success": True,
@@ -3670,30 +3597,23 @@ def _discover_single_barcode(
 
 
 def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
-    """Discover products via Barcode Buddy pending barcodes.
+    """Discover products via the Storage barcode queue.
 
-    Processes both "New Barcodes" (looked-up but unassigned) and "Unknown
-    Barcodes" (not resolved at all) from Barcode Buddy.
+    Fetches pending items from the barcode queue, searches online stores for
+    each barcode, creates/stocks them in Grocy, and marks queue items as done.
 
     For each barcode:
 
-    1. If Barcode Buddy already has a product name (New Barcode), use it
-       directly; otherwise search K-Ruoka by EAN.
+    1. Search K-Ruoka by EAN; fall back to S-kaupat, SearXNG.
     2. Create the product in Grocy (via ``sync_product``).
-    3. Add units to Grocy stock (using the quantity from BB).
-    4. Remove the barcode from Barcode Buddy.
+    3. Add 1 unit to Grocy stock.
+    4. Mark the barcode queue item as done with the resulting product ID.
 
     Returns a ``(return_code, product_ids)`` tuple.  *return_code* is 0 on
     success and 1 if any errors occurred.  *product_ids* contains the Grocy
     IDs of all products that were successfully created or stocked during this
     run.
     """
-    bbuddy = BarcodeBuddyClient(
-        base_url=args.bbuddy_url,
-        api_key=args.bbuddy_key,
-        username=args.bbuddy_user,
-        password=args.bbuddy_password,
-    )
     grocy = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
     scrapers = [
@@ -3712,30 +3632,28 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     except StorageAPIError as exc:
         logger.warning("Could not fetch existing barcodes: %s", exc)
 
-    # Fetch pending barcodes (new + unknown) from Barcode Buddy.
+    # Fetch pending barcodes from the Storage barcode queue.
     try:
-        pending = bbuddy.get_pending_barcodes()
-    except BarcodeBuddyError as exc:
-        logger.error("Failed to fetch barcodes from Barcode Buddy: %s", exc)
+        pending = grocy.get_barcode_queue(status="pending")
+    except StorageAPIError as exc:
+        logger.error("Failed to fetch barcode queue: %s", exc)
         return 1, []
 
     if not pending:
-        logger.info("No pending barcodes in Barcode Buddy.")
+        logger.info("No pending barcodes in the queue.")
         return 0, []
 
-    logger.info("Found %d pending barcode(s) in Barcode Buddy.", len(pending))
+    logger.info("Found %d pending barcode(s) in the queue.", len(pending))
 
     created = skipped = errors = 0
     discovered_ids: list[int] = []
 
     for entry in pending:
-        barcode = entry.barcode
-        bb_name = entry.name  # Non-empty for "New Barcodes", empty for unknown.
+        barcode = entry.get("barcode", "")
+        queue_id = entry.get("id")
         logger.info("Looking up EAN %s …", barcode)
 
-        # Always search K-Ruoka first; its data takes priority.
-        # Fall back to S-kaupat, then the BB-resolved name.
-        # Try each configured store until a match is found.
+        # Search K-Ruoka first; fall back to S-kaupat, then SearXNG.
         product = None
         for scraper in scrapers:
             try:
@@ -3780,12 +3698,16 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
             except SearXNGError as exc:
                 logger.debug("  SearXNG lookup failed: %s", exc)
 
-        if product is None and bb_name:
-            logger.info("  Not on K-Ruoka, S-kaupat, or SearXNG; using Barcode Buddy name '%s'.", bb_name)
-            product = Product(name=bb_name, ean=barcode)
-
         if product is None:
             logger.info("  EAN %s not found on K-Ruoka, S-kaupat, or SearXNG – skipping.", barcode)
+            if queue_id is not None:
+                try:
+                    grocy.update_barcode_queue_item(
+                        queue_id, status="error",
+                        error_message=f"Product not found for EAN {barcode}",
+                    )
+                except StorageAPIError:
+                    pass
             skipped += 1
             continue
 
@@ -3804,6 +3726,13 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
             )
         except StorageAPIError as exc:
             logger.error("Grocy error for '%s': %s", product.name, exc)
+            if queue_id is not None:
+                try:
+                    grocy.update_barcode_queue_item(
+                        queue_id, status="error", error_message=str(exc),
+                    )
+                except StorageAPIError:
+                    pass
             errors += 1
             continue
 
@@ -3813,7 +3742,7 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
             if existing:
                 grocy_id = existing.get("id")
             else:
-                logger.info("  Product already in Grocy – skipping stock/BB removal.")
+                logger.info("  Product already in Grocy – skipping.")
                 skipped += 1
                 continue
         else:
@@ -3825,23 +3754,25 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         if grocy_id is not None:
             discovered_ids.append(int(grocy_id))
             try:
-                amount = float(entry.amount) if entry.amount else 1.0
-                grocy.add_stock(int(grocy_id), amount=amount)
+                grocy.add_stock(int(grocy_id), amount=1.0)
                 logger.info(
-                    "  → Added %.0f unit(s) to Grocy stock (product ID %s).",
-                    amount, grocy_id,
+                    "  → Added 1 unit to Grocy stock (product ID %s).", grocy_id,
                 )
             except (StorageAPIError, ValueError) as exc:
                 logger.warning("  Could not add stock for '%s': %s", product.name, exc)
 
-        # Remove from Barcode Buddy.
-        try:
-            bbuddy.delete_barcode(entry.id)
-            logger.info("  → Removed EAN %s from Barcode Buddy.", barcode)
-        except BarcodeBuddyError as exc:
-            logger.warning(
-                "  Could not remove EAN %s from Barcode Buddy: %s", barcode, exc
-            )
+        # Mark the queue item as done.
+        if queue_id is not None:
+            try:
+                grocy.update_barcode_queue_item(
+                    queue_id, status="done",
+                    result_product_id=int(grocy_id) if grocy_id else None,
+                )
+                logger.info("  → Marked queue item %s as done.", queue_id)
+            except StorageAPIError as exc:
+                logger.warning(
+                    "  Could not update queue item %s: %s", queue_id, exc,
+                )
 
         created += 1
 
@@ -4082,7 +4013,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.query and not args.browse and not args.discover:
             return 0
 
-    # Discover mode: Barcode Buddy → K-Ruoka → Grocy pipeline.
+    # Discover mode: barcode queue → K-Ruoka → Grocy pipeline.
     if args.discover:
         rc, discovered_ids = _discover_products(args)
         # After discover, run AI optimize when a Gemini key is available.

@@ -286,6 +286,76 @@ class StorageClient:
             ) from exc
 
     # ------------------------------------------------------------------
+    # Barcode Queue
+    # ------------------------------------------------------------------
+
+    def get_barcode_queue(self, status: str = "pending") -> list[dict]:
+        """Return barcode-queue items filtered by *status*."""
+        url = self._url(f"/api/barcode-queue?status={status}")
+        try:
+            resp = self._session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            raise StorageAPIError(
+                f"Failed to fetch barcode queue{_response_error_detail(getattr(exc, 'response', None))}"
+            ) from exc
+
+    def add_to_barcode_queue(self, barcode: str, source: str = "scraper") -> dict:
+        """Add a barcode to the queue. Returns the created item."""
+        url = self._url("/api/barcode-queue")
+        try:
+            resp = self._session.post(
+                url,
+                json={"barcode": barcode, "source": source},
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            raise StorageAPIError(
+                f"Failed to add barcode to queue{_response_error_detail(getattr(exc, 'response', None))}"
+            ) from exc
+
+    def update_barcode_queue_item(
+        self,
+        item_id: int,
+        *,
+        status: str | None = None,
+        result_product_id: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Update fields on a barcode-queue item."""
+        url = self._url(f"/api/barcode-queue/{item_id}")
+        payload: dict = {}
+        if status is not None:
+            payload["status"] = status
+        if result_product_id is not None:
+            payload["result_product_id"] = result_product_id
+        if error_message is not None:
+            payload["error_message"] = error_message
+        try:
+            resp = self._session.put(url, json=payload, timeout=self.timeout)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise StorageAPIError(
+                f"Failed to update barcode queue item {item_id}"
+                f"{_response_error_detail(getattr(exc, 'response', None))}"
+            ) from exc
+
+    def delete_barcode_queue_item(self, item_id: int) -> None:
+        """Delete a barcode-queue item by ID."""
+        url = self._url(f"/api/barcode-queue/{item_id}")
+        try:
+            resp = self._session.delete(url, timeout=self.timeout)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise StorageAPIError(
+                f"Failed to delete barcode queue item {item_id}"
+                f"{_response_error_detail(getattr(exc, 'response', None))}"
+            ) from exc
+
+    # ------------------------------------------------------------------
     # Images
     # ------------------------------------------------------------------
 

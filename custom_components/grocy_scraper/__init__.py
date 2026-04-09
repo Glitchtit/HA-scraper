@@ -2,8 +2,8 @@
 
 This integration exposes a sidebar panel that lets users search for Finnish
 grocery products on k-ruoka.fi and add them to a Grocy inventory database.
-It also supports automatic product discovery via Barcode Buddy on a
-configurable time interval.
+It also supports automatic product discovery via the Storage barcode queue
+on a configurable time interval.
 """
 
 from __future__ import annotations
@@ -29,10 +29,6 @@ from .const import (
     CONF_STORE_ID,
     CONF_LOCATION_ID,
     CONF_QUANTITY_UNIT_ID,
-    CONF_BBUDDY_URL,
-    CONF_BBUDDY_KEY,
-    CONF_BBUDDY_USER,
-    CONF_BBUDDY_PASSWORD,
     CONF_DISCOVER_INTERVAL,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
@@ -191,32 +187,18 @@ def _cancel_discover(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 def _run_discover_sync(config: dict, options: dict) -> dict:
-    """Execute the Barcode Buddy → K-Ruoka → Grocy discovery pipeline.
+    """Execute the barcode queue → K-Ruoka → Grocy discovery pipeline.
 
     Returns a dict with ``success`` (bool) and ``result_code`` (int).
-    Does nothing and returns immediately if Barcode Buddy is not configured.
     """
-    bbuddy_url = options.get(CONF_BBUDDY_URL, "")
-    bbuddy_user = options.get(CONF_BBUDDY_USER, "")
-    bbuddy_password = options.get(CONF_BBUDDY_PASSWORD, "")
-
-    if not (bbuddy_url and bbuddy_user and bbuddy_password):
-        _LOGGER.debug("Barcode Buddy not configured – discover skipped.")
-        return {"success": True, "result_code": 0, "skipped": True}
-
     _ensure_repo_on_path()
 
     # Build an argparse.Namespace that matches what main._discover_products expects.
     args = argparse.Namespace(
         store=config.get(CONF_STORE_ID, ""),
-        grocy_url=config.get(CONF_GROCY_URL, ""),
-        grocy_key=config.get(CONF_GROCY_KEY, ""),
+        storage_url=config.get(CONF_GROCY_URL, ""),
         location_id=config.get(CONF_LOCATION_ID),
         quantity_unit_id=config.get(CONF_QUANTITY_UNIT_ID),
-        bbuddy_url=bbuddy_url,
-        bbuddy_key=options.get(CONF_BBUDDY_KEY, ""),
-        bbuddy_user=bbuddy_user,
-        bbuddy_password=bbuddy_password,
         upload_images=options.get(CONF_UPLOAD_IMAGES, DEFAULT_UPLOAD_IMAGES),
         use_graphql=options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
     )
