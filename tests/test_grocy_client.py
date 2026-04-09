@@ -659,3 +659,37 @@ class TestUpdateRecipePosition:
         session.put.return_value = _mock_response(raise_for=http_err, status_code=400)
         with pytest.raises(GrocyAPIError, match="recipe position"):
             client.update_recipe_position(1, qu_id=7)
+
+
+class TestGetStockEntries:
+    def test_returns_entries(self):
+        client, session = _make_client()
+        data = [{"id": 1, "product_id": 10, "qu_id": 5, "amount": 1}]
+        session.get.return_value = _mock_response(json_data=data)
+        result = client.get_stock_entries(product_id=10)
+        assert result == data
+        assert "/api/objects/stock" in session.get.call_args[0][0]
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
+        session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="stock entries"):
+            client.get_stock_entries()
+
+
+class TestUpdateStockEntry:
+    def test_updates_entry(self):
+        client, session = _make_client()
+        session.put.return_value = _mock_response(status_code=204)
+        client.update_stock_entry(1, qu_id=7)
+        assert "/api/objects/stock/1" in session.put.call_args[0][0]
+        payload = session.put.call_args[1]["json"]
+        assert payload["qu_id"] == 7
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
+        session.put.return_value = _mock_response(raise_for=http_err, status_code=400)
+        with pytest.raises(GrocyAPIError, match="stock entry"):
+            client.update_stock_entry(1, qu_id=7)

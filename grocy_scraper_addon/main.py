@@ -967,25 +967,29 @@ def _fix_broken_product_units(
             )
             fixed += 1
         except GrocyAPIError:
-            # Likely a stocked product — Grocy refuses qu_id_stock change
-            # without old→new conversion.  Try creating bridging conversions
-            # for each orphaned old QU ID, then retry.
-            bridged = False
-            for field in orphaned_fields:
-                old_id = old_qu_ids.get(field)
-                if old_id is not None and old_id != default_unit_id:
-                    try:
-                        grocy.create_quantity_unit_conversion(
-                            old_id, default_unit_id, 1.0, product_id=pid,
-                        )
-                        bridged = True
-                    except GrocyAPIError:
-                        pass
-            if bridged:
+            # Stocked product — Grocy refuses qu_id_stock change because the
+            # old QU is deleted and no old→new conversion can be created.
+            # Fix stock entries first to reference the new QU, then retry.
+            stock_fixed = False
+            try:
+                entries = grocy.get_stock_entries(product_id=pid)
+                for entry in entries:
+                    eid = int(entry["id"])
+                    entry_qu = entry.get("qu_id")
+                    if entry_qu is not None and entry_qu != "" and int(entry_qu) not in valid_ids:
+                        try:
+                            grocy.update_stock_entry(eid, qu_id=default_unit_id)
+                            stock_fixed = True
+                        except GrocyAPIError:
+                            pass
+            except GrocyAPIError:
+                pass
+
+            if stock_fixed:
                 try:
                     grocy.update_product(pid, **updates)
                     logger.info(
-                        "Fixed orphaned QU refs for '%s' (ID %d) via bridging: set %s to '%s'.",
+                        "Fixed orphaned QU refs for '%s' (ID %d) via stock repair: set %s to '%s'.",
                         name, pid,
                         ", ".join(orphaned_fields),
                         default_label,
@@ -995,9 +999,11 @@ def _fix_broken_product_units(
                 except GrocyAPIError:
                     pass
 
-            # Last resort: try each field individually
+            # Last resort: try each field individually (non-stock fields may work)
             any_fixed = False
             for field in orphaned_fields:
+                if field == "qu_id_stock":
+                    continue  # skip the problematic one
                 try:
                     grocy.update_product(pid, **{field: default_unit_id})
                     any_fixed = True
@@ -1005,7 +1011,7 @@ def _fix_broken_product_units(
                     pass
             if any_fixed:
                 logger.info(
-                    "Partially fixed orphaned QU refs for '%s' (ID %d): set some fields to '%s'.",
+                    "Partially fixed orphaned QU refs for '%s' (ID %d): set non-stock fields to '%s'.",
                     name, pid, default_label,
                 )
                 fixed += 1

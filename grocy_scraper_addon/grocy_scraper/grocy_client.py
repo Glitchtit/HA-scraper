@@ -719,6 +719,46 @@ class GrocyClient:
                 f"Failed to update recipe position {pos_id}: {exc}"
             ) from exc
 
+    def get_stock_entries(self, product_id: int | None = None) -> list[dict]:
+        """Return stock entries, optionally filtered by product.
+
+        Uses ``/api/objects/stock`` with an optional query filter.
+        """
+        url = self._url("/api/objects/stock")
+        params = {}
+        if product_id is not None:
+            params["query[]"] = f"product_id={product_id}"
+        try:
+            resp = self._session.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to fetch stock entries: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to fetch stock entries: {exc}") from exc
+
+    def update_stock_entry(self, entry_id: int, **fields) -> None:
+        """Update fields on a stock entry (e.g. ``qu_id``).
+
+        Uses ``PUT /api/objects/stock/{id}``.
+        """
+        url = self._url(f"/api/objects/stock/{entry_id}")
+        try:
+            resp = self._session.put(url, json=fields, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to update stock entry {entry_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to update stock entry {entry_id}: {exc}"
+            ) from exc
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
