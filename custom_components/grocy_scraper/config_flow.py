@@ -14,10 +14,6 @@ from .const import (
     CONF_STORE_ID,
     CONF_LOCATION_ID,
     CONF_QUANTITY_UNIT_ID,
-    CONF_BBUDDY_URL,
-    CONF_BBUDDY_KEY,
-    CONF_BBUDDY_USER,
-    CONF_BBUDDY_PASSWORD,
     CONF_DISCOVER_INTERVAL,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
@@ -84,7 +80,7 @@ class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
-    """Handle the options flow (Barcode Buddy credentials + discover interval)."""
+    """Handle the options flow (discover interval + AI settings)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialise with current options."""
@@ -100,22 +96,6 @@ class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
         opts = self.config_entry.options
         schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_BBUDDY_URL,
-                    default=opts.get(CONF_BBUDDY_URL, ""),
-                ): str,
-                vol.Optional(
-                    CONF_BBUDDY_KEY,
-                    default=opts.get(CONF_BBUDDY_KEY, ""),
-                ): str,
-                vol.Optional(
-                    CONF_BBUDDY_USER,
-                    default=opts.get(CONF_BBUDDY_USER, ""),
-                ): str,
-                vol.Optional(
-                    CONF_BBUDDY_PASSWORD,
-                    default=opts.get(CONF_BBUDDY_PASSWORD, ""),
-                ): str,
                 vol.Optional(
                     CONF_DISCOVER_INTERVAL,
                     default=opts.get(CONF_DISCOVER_INTERVAL, DEFAULT_DISCOVER_INTERVAL),

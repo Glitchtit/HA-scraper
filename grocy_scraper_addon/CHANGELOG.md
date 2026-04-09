@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.20.1
+
+- Remove BarcodebuddyClient; barcode queue in HA-Storage replaces Barcode Buddy
+- Deleted bbuddy_url/bbuddy_user/bbuddy_password config options and argparse flags
+- Discover now reads pending barcodes from Storage barcode queue and marks items as done
+- Added barcode queue methods to StorageClient
+
 ## 1.20.0
 
 - Replace GrocyClient with StorageClient for HA-Storage REST API

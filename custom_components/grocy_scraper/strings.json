@@ -32,12 +32,8 @@
     "step": {
       "init": {
         "title": "Grocy Scraper Settings",
-        "description": "Configure optional features. Fill in your Barcode Buddy credentials to enable automatic product discovery.",
+        "description": "Configure optional features such as the auto-discover interval and Gemini AI.",
         "data": {
-          "bbuddy_url": "Barcode Buddy URL",
-          "bbuddy_key": "Barcode Buddy API Key",
-          "bbuddy_user": "Barcode Buddy Username",
-          "bbuddy_password": "Barcode Buddy Password",
           "discover_interval": "Auto-discover interval (minutes)",
           "upload_images": "Upload product images to Grocy",
           "use_graphql": "Use GraphQL backend (recommended)",
@@ -45,11 +41,7 @@
           "gemini_model": "Gemini model name"
         },
         "data_description": {
-          "bbuddy_url": "Base URL of your Barcode Buddy instance, e.g. https://bbuddy.example.com",
-          "bbuddy_key": "Barcode Buddy API key (optional, for /api endpoints)",
-          "bbuddy_user": "Barcode Buddy web UI username",
-          "bbuddy_password": "Barcode Buddy web UI password",
-          "discover_interval": "How often (in minutes) to scan Barcode Buddy for new barcodes",
+          "discover_interval": "How often (in minutes) to scan the barcode queue for new barcodes",
           "upload_images": "Download and upload product images when creating new products",
           "use_graphql": "Use the faster GraphQL backend; disable only if you need the kr-api fallback",
           "gemini_api_key": "Google Gemini API key used by the Sort and Date action buttons",

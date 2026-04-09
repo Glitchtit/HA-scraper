@@ -13,7 +13,7 @@ GET  /api/config        Return current add-on configuration summary
 GET  /api/task/{id}     Poll background task status/result
 POST /api/search        Search products on K-Ruoka
 POST /api/discover      Run discover pipeline.  Optionally accepts {"barcode": "..."} for
-                        single-barcode mode (bypasses Barcode Buddy).
+                        single-barcode mode.
 POST /api/optimize      Run Gemini AI combined optimization (sort + date + group + pack)
 POST /api/sort          Run Gemini AI product location sorting
 POST /api/date          Run Gemini AI best-before date assignment
@@ -153,10 +153,6 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
         storage_url=opts.get("storage_url", ""),
         location_id=opts.get("location_id", 0),
         quantity_unit_id=opts.get("quantity_unit_id", 0),
-        bbuddy_url=opts.get("bbuddy_url", ""),
-        bbuddy_key=opts.get("bbuddy_api_key", ""),
-        bbuddy_user=opts.get("bbuddy_user", ""),
-        bbuddy_password=opts.get("bbuddy_password", ""),
         upload_images=opts.get("upload_images", True),
         use_graphql=opts.get("use_graphql", True),
         gemini_api_key=opts.get("gemini_api_key", ""),
@@ -180,14 +176,10 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
 def _handle_config() -> dict[str, Any]:
     """Return a config summary for the settings badge area."""
     opts = _read_options()
-    bbuddy_configured = bool(
-        opts.get("bbuddy_url") and opts.get("bbuddy_user") and opts.get("bbuddy_password")
-    )
     return {
         "configured": bool(opts.get("storage_url")),
         "store_id": opts.get("store_id", ""),
         "discover_interval": opts.get("discover_interval", 60),
-        "bbuddy_configured": bbuddy_configured,
         "gemini_configured": bool(opts.get("gemini_api_key")),
     }
 
@@ -248,15 +240,15 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run the discover pipeline.
 
     When *body* contains a ``"barcode"`` key, only that single barcode is
-    looked up (K-Ruoka / S-kaupat → Grocy).  Otherwise the full Barcode
-    Buddy → K-Ruoka → Grocy batch pipeline is executed.
+    looked up (K-Ruoka / S-kaupat → Grocy).  Otherwise the full barcode
+    queue → K-Ruoka → Grocy batch pipeline is executed.
     """
     opts = _read_options()
 
     single_barcode = (body or {}).get("barcode", "").strip() if body else ""
 
     if single_barcode:
-        # --- Single-barcode mode (no Barcode Buddy needed) ----------------
+        # --- Single-barcode mode -----------------------------------------------
         import main as _main
 
         args = _build_args(opts)
@@ -287,20 +279,7 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
         result["logs"] = logs
         return result
 
-    # --- Batch mode (original behaviour) -----------------------------------
-    if not (opts.get("bbuddy_url") and opts.get("bbuddy_user") and opts.get("bbuddy_password")):
-        return {
-            "success": False,
-            "skipped": True,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "Barcode Buddy URL, username, and password are "
-                    "required for Discover. Configure them in the add-on options.",
-                }
-            ],
-        }
-
+    # --- Batch mode (barcode queue) ----------------------------------------
     from grocy_scraper.storage_client import StorageClient
     import main as _main
 
@@ -1072,9 +1051,7 @@ _HTML = """\
         if (!cfg.configured) return;
         configCard.style.display = "";
 
-        var disc = cfg.bbuddy_configured
-          ? '<span class="badge ok">&#128260; Auto-discover every ' + cfg.discover_interval + ' min</span>'
-          : '<span class="badge warn">&#9888;&#65039; Barcode Buddy not configured</span>';
+        var disc = '<span class="badge ok">&#128260; Auto-discover every ' + cfg.discover_interval + ' min</span>';
         var gem = cfg.gemini_configured
           ? '<span class="badge ok">&#129302; Gemini AI ready</span>'
           : '<span class="badge warn">&#9888;&#65039; Gemini API key not set</span>';

@@ -1,7 +1,7 @@
 name: "Grocy Scraper"
-version: "1.20.0"
+version: "1.20.1"
 slug: "grocy_scraper"
-description: "Scrapes k-ruoka.fi for Finnish food products and populates a Grocy database. Integrates with Barcode Buddy for automated discovery."
+description: "Scrapes k-ruoka.fi for Finnish food products and populates a Grocy database via HA-Storage."
 url: "https://github.com/Glitchtit/grocy_scraper"
 arch:
   - aarch64
@@ -28,10 +28,6 @@ options:
   upload_images: true
   use_graphql: true
   flaresolverr_url: ""
-  bbuddy_url: ""
-  bbuddy_api_key: ""
-  bbuddy_user: ""
-  bbuddy_password: ""
   gemini_api_key: ""
   gemini_model: "gemini-1.5-flash"
   gemini_model_optimize: ""
@@ -45,10 +41,6 @@ schema:
   upload_images: bool
   use_graphql: bool
   flaresolverr_url: str?
-  bbuddy_url: str?
-  bbuddy_api_key: str?
-  bbuddy_user: str?
-  bbuddy_password: str?
   gemini_api_key: str?
   gemini_model: str?
   gemini_model_optimize: str?

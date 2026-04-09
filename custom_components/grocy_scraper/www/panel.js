@@ -356,9 +356,7 @@ class GrocyScraperPanel extends HTMLElement {
       const info = this.shadowRoot.querySelector("#config-info");
       card.style.display = "";
 
-      const discoverBadge = cfg.bbuddy_configured
-        ? `<span class="badge ok">🔄 Auto-discover every ${cfg.discover_interval} min</span>`
-        : `<span class="badge warn">⚠️ Barcode Buddy not configured</span>`;
+      const discoverBadge = `<span class="badge ok">🔄 Auto-discover every ${cfg.discover_interval} min</span>`;
 
       const geminiBadge = cfg.gemini_configured
         ? `<span class="badge ok">🤖 Gemini AI ready</span>`
