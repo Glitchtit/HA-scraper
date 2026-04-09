@@ -3066,6 +3066,22 @@ def _validate_args(args: argparse.Namespace) -> int:
     return 0
 
 
+def wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) -> None:
+    """Block until Storage addon is reachable."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = requests.get(f"{base_url}/api/health", timeout=5)
+            if resp.ok:
+                logger.info("Storage addon is ready (%s).", resp.json().get("version", "?"))
+                return
+        except requests.RequestException:
+            pass
+        if attempt < max_retries:
+            logger.info("Storage not ready (attempt %d/%d), retrying in %.0fs…", attempt, max_retries, delay)
+            time.sleep(delay)
+    raise SystemExit("ERROR: Storage addon not reachable after %d attempts." % max_retries)
+
+
 def _setup_grocy(args: argparse.Namespace) -> tuple[StorageClient | None, set[str]]:
     """Create a Grocy client and pre-load known barcodes if not a dry run."""
     if args.dry_run:
@@ -3690,6 +3706,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if _validate_args(args) != 0:
         return 1
+
+    if not args.dry_run:
+        wait_for_storage(args.storage_url)
 
     # AI analysis modes operate on the existing Grocy database independently
     # of the scraping pipeline.
