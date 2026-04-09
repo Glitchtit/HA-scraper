@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.20.2
+
+- Simplified AI optimization: pack sizes stored on barcode (no separate pack products)
+- Single unit_id per product (removed QU field juggling workarounds)
+- Leverage CASCADE deletes (no manual barcode/stock cleanup before product deletion)
+- Removed orphaned QU consolidation code (Storage seeds canonical units)
+- Removed pack weight conversion helper (handled by package size detection)
+
 ## 1.20.1
 
 - Remove BarcodebuddyClient; barcode queue in HA-Storage replaces Barcode Buddy

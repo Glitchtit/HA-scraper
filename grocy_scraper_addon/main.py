@@ -632,19 +632,6 @@ def _ensure_units_and_conversions(grocy: StorageClient) -> dict[str, int]:
     return abbrev_to_id
 
 
-def _consolidate_duplicate_units(
-    grocy: StorageClient,
-    abbrev_to_id: dict[str, int],
-) -> dict[str, int]:
-    """Find duplicate/synonym QUs and merge them into canonical units.
-
-    Storage seeds units once — duplicates are not possible.
-
-    Returns the abbrev_to_id mapping unchanged.
-    """
-    return abbrev_to_id
-
-
 # Pattern to extract size info from Finnish product names
 _SIZE_RE = re.compile(
     r"(\d+(?:[.,]\d+)?)\s*"
@@ -1559,10 +1546,9 @@ def _optimize_units(
 
     1. Ensure standard units and global conversions exist.
     2. Fix products with orphaned (non-existent) QU IDs.
-    3. Consolidate duplicate/synonym units.
-    4. AI-detect package sizes and create Piece→unit conversions.
-    5. AI-detect density factors for cross-domain conversions.
-    6. Fix recipe ingredients with invalid unit conversions.
+    3. AI-detect package sizes and create Piece→unit conversions.
+    4. AI-detect density factors for cross-domain conversions.
+    5. Fix recipe ingredients with invalid unit conversions.
 
     Returns the total number of conversions created.
     """
@@ -1575,20 +1561,13 @@ def _optimize_units(
         logger.error("Failed to ensure standard units: %s", exc)
         return 0
 
-    # Step 2: Consolidate duplicates
-    try:
-        abbrev_to_id = _consolidate_duplicate_units(grocy, abbrev_to_id)
-    except StorageAPIError as exc:
-        logger.warning("Failed to consolidate duplicate units: %s", exc)
-
-    # Step 3: Fix products with orphaned/empty QU IDs (after consolidation,
-    # so products broken by duplicate QU deletion are also repaired).
+    # Step 2: Fix products with orphaned/empty QU IDs.
     try:
         _fix_broken_product_units(grocy, abbrev_to_id)
     except StorageAPIError as exc:
         logger.warning("Failed to fix broken product units: %s", exc)
 
-    # Step 4: Fetch products if not provided
+    # Step 3: Fetch products if not provided
     if products is None:
         try:
             products = grocy.get_all_products()
@@ -1600,17 +1579,17 @@ def _optimize_units(
         logger.info("No products found — skipping unit optimization.")
         return 0
 
-    # Step 5: AI package size detection
+    # Step 4: AI package size detection
     pkg_count = _ai_detect_package_sizes(
         grocy, products, abbrev_to_id, gemini_api_key, model,
     )
 
-    # Step 6: AI density conversions
+    # Step 5: AI density conversions
     density_count = _ai_detect_density_conversions(
         grocy, products, abbrev_to_id, gemini_api_key, model,
     )
 
-    # Step 7: Fix recipe ingredient units (with density creation for gaps)
+    # Step 6: Fix recipe ingredient units (with density creation for gaps)
     try:
         _fix_recipe_units(grocy, abbrev_to_id, gemini_api_key, model)
     except StorageAPIError as exc:
@@ -1962,14 +1941,8 @@ def _deduplicate_parent_products(
                         child.get("name", "?"), canonical_name, exc,
                     )
 
-            # Delete the now-empty non-canonical parent.
+            # Delete the now-empty non-canonical parent (CASCADE).
             try:
-                picture = dup_parent.get("picture_filename", "")
-                if picture:
-                    try:
-                        grocy.delete_product_image(picture)
-                    except StorageAPIError:
-                        pass
                 grocy.delete_product(dup_id)
                 logger.info(
                     "  → Merged duplicate parent '%s' (ID %d) into '%s'.",
@@ -2374,12 +2347,6 @@ def _ai_group_products(
             if old_prod is None:
                 continue
             try:
-                picture = old_prod.get("picture_filename", "")
-                if picture:
-                    try:
-                        grocy.delete_product_image(picture)
-                    except StorageAPIError:
-                        pass
                 grocy.delete_product(old_pid)
                 logger.info(
                     "  → Deleted old parent '%s' (ID %d).",
@@ -2426,117 +2393,6 @@ def _ai_group_products(
     return updated
 
 
-# Regex for extracting weight/volume from Finnish pack product names.
-# Matches patterns like "580g", "1.5L", "200ml", "2kg", "33cl", "2dl".
-_PACK_WEIGHT_RE = re.compile(
-    r"(\d+(?:[.,]\d+)?)\s*(g|kg|ml|dl|cl|l)\b", re.IGNORECASE,
-)
-
-# "NxSize" pattern: "4x250ml", "6x1l", "12 x 33cl" → per-unit weight.
-_NxW_RE = re.compile(
-    r"\d+\s*[xX×]\s*(\d+(?:[.,]\d+)?)\s*(g|kg|ml|dl|cl|l)\b", re.IGNORECASE,
-)
-
-# Mapping from unit abbreviation to canonical unit + factor to grams/ml.
-_UNIT_TO_CANONICAL: dict[str, tuple[str, float]] = {
-    "g": ("g", 1.0),
-    "kg": ("g", 1000.0),
-    "ml": ("ml", 1.0),
-    "dl": ("ml", 100.0),
-    "cl": ("ml", 10.0),
-    "l": ("ml", 1000.0),
-}
-
-
-def _create_pack_weight_conversion(
-    grocy: StorageClient,
-    base_product_id: int,
-    pack_name: str,
-    pack_count: int,
-) -> None:
-    """Parse weight from a pack product name and create a per-unit conversion.
-
-    For example, "Pirkka vapaan kanan munia 10 kpl / 580g" with pack_count=10
-    creates: 1 piece = 58 g  (product-specific conversion on the base product).
-
-    Handles two conventions:
-    - "NxSize" (e.g. "4x250ml") → 250 ml is already per-unit.
-    - Total weight (e.g. "580g") → divide by pack_count.
-    """
-    if pack_count <= 0:
-        return
-
-    # Try "NxSize" pattern first (per-unit amount, no division needed).
-    nxw = _NxW_RE.search(pack_name)
-    if nxw:
-        raw_amount = float(nxw.group(1).replace(",", "."))
-        unit_str = nxw.group(2).lower()
-        canonical_unit, factor = _UNIT_TO_CANONICAL.get(unit_str, (unit_str, 1.0))
-        per_unit = raw_amount * factor
-    else:
-        match = _PACK_WEIGHT_RE.search(pack_name)
-        if not match:
-            return
-        raw_amount = float(match.group(1).replace(",", "."))
-        unit_str = match.group(2).lower()
-        canonical_unit, factor = _UNIT_TO_CANONICAL.get(unit_str, (unit_str, 1.0))
-        total = raw_amount * factor
-        per_unit = total / pack_count
-
-    if per_unit <= 0:
-        return
-
-    # Find the QU IDs we need.  _ensure_units_and_conversions has not run
-    # yet at this point (it runs later), so look up units from what Grocy
-    # already has.
-    try:
-        all_units = grocy.get_quantity_units()
-    except StorageAPIError:
-        return
-
-    piece_id: int | None = None
-    target_id: int | None = None
-    for u in all_units:
-        name_lower = (u.get("name") or "").lower().strip()
-        desc_lower = (u.get("description") or "").lower().strip()
-        if name_lower in ("piece", "pack", "stück") or desc_lower == "piece":
-            piece_id = int(u["id"])
-        if desc_lower == canonical_unit or name_lower == canonical_unit:
-            target_id = int(u["id"])
-
-    if piece_id is None or target_id is None or piece_id == target_id:
-        return
-
-    # Check for existing conversion to avoid duplicates.
-    try:
-        existing = grocy.get_quantity_unit_conversions()
-        for c in existing:
-            if (
-                c.get("product_id") is not None
-                and c.get("product_id") != ""
-                and int(c["product_id"]) == base_product_id
-                and int(c["from_qu_id"]) == piece_id
-                and int(c["to_qu_id"]) == target_id
-            ):
-                return  # Already exists.
-    except StorageAPIError:
-        pass  # Proceed anyway; create will fail if duplicate.
-
-    try:
-        grocy.create_quantity_unit_conversion(
-            piece_id, target_id, per_unit, product_id=base_product_id,
-        )
-        logger.info(
-            "  → Created conversion for '%s': 1 piece = %.4g %s.",
-            pack_name, per_unit, canonical_unit,
-        )
-    except StorageAPIError as exc:
-        logger.warning(
-            "Could not create weight conversion for base product %d: %s",
-            base_product_id, exc,
-        )
-
-
 def _ai_optimize_products(
     grocy: StorageClient,
     gemini_api_key: str,
@@ -2564,9 +2420,8 @@ def _ai_optimize_products(
     that Gemini slots new products into the existing structure.
 
     **Pack handling**: when the model identifies a product as a multi-pack
-    (e.g. "Red Bull 4-pack"), the pack product's barcode is moved to the
-    base product with ``amount = pack_count``, and the pack product is
-    deleted from Grocy.
+    (e.g. "10 kpl"), the barcode's ``pack_size`` and ``pack_unit_id`` are
+    set directly.  The product itself is kept as-is.
 
     Returns the number of products updated.
     """
@@ -2690,9 +2545,22 @@ def _ai_optimize_products(
 
     logger.info("Asking Gemini to optimize %d product(s) …", len(products))
 
+    # Pre-load unit map for pack handling (unit abbreviation → ID).
+    _unit_abbrev_to_id: dict[str, int] = {}
+    try:
+        all_units = grocy.get_quantity_units()
+        for u in all_units:
+            desc = (u.get("description") or "").lower().strip()
+            if desc:
+                _unit_abbrev_to_id[desc] = int(u["id"])
+            name_lower = (u.get("name") or "").lower().strip()
+            canonical = _canonical_unit(name_lower)
+            if canonical and canonical not in _unit_abbrev_to_id:
+                _unit_abbrev_to_id[canonical] = int(u["id"])
+    except StorageAPIError:
+        pass
+
     updated = 0
-    deleted_ids: set[int] = set()
-    pack_to_base: dict[int, int] = {}  # deleted pack ID → surviving base ID
     for i in range(0, len(products), _GEMINI_OPTIMIZE_BATCH_SIZE):
         batch = products[i : i + _GEMINI_OPTIMIZE_BATCH_SIZE]
         product_lines = "\n".join(
@@ -2757,11 +2625,11 @@ def _ai_optimize_products(
             "meat → \"Nauta\", \"Sika\", \"Kana\", \"Kala\". "
             "If an existing category name fits, you MUST use that exact name. "
             "Null if the product is unique.\n"
-            '  "pack_of": (string) the base product name if this product is a '
-            "multi-pack (e.g. for \"Red Bull 4-pack\" → \"Red Bull\"), or null "
-            "if it is not a pack.\n"
-            '  "pack_count": (integer) the number of individual items in the pack '
-            "(e.g. 4 for a 4-pack), or null if not a pack.\n\n"
+            '  "pack_size": (integer) the number of individual items if this '
+            "product is a multi-pack (e.g. 4 for a '4-pack', 10 for '10 kpl'), "
+            "or null if it is not a pack.\n"
+            '  "pack_unit": (string) the unit abbreviation for individual items '
+            "in the pack (typically \"kpl\"), or null if not a pack.\n\n"
             "Guidelines:\n"
             "- Location: dairy/meat/fresh produce/drinks/energy drinks/soda → refrigerator; "
             "cleaning/laundry → cleaning cabinet; dry goods/canned/packaged/eggs → cupboard/pantry.\n"
@@ -2772,14 +2640,14 @@ def _ai_optimize_products(
             "- Grouping: group ALL grocery categories.  If an existing parent "
             "product name fits, you MUST use that exact name.\n"
             "- Packs: detect multi-packs from names like '4-pack', '6x0.33l', "
-            "'monipakkaus', '4 kpl', etc.\n\n"
+            "'monipakkaus', '10 kpl', etc.\n\n"
             "Return ONLY valid JSON, for example:\n"
             '{"1": {"location_id": 2, "best_before_days": 14, '
             '"group_name": "Maito", "category": "Maito", '
-            '"pack_of": null, "pack_count": null}, '
+            '"pack_size": null, "pack_unit": null}, '
             '"2": {"location_id": 3, "best_before_days": 730, '
             '"group_name": null, "category": null, '
-            '"pack_of": "Red Bull", "pack_count": 4}}\n\n'
+            '"pack_size": 4, "pack_unit": "kpl"}}\n\n'
             "Products:\n"
             f"{product_lines}"
         )
@@ -2794,11 +2662,10 @@ def _ai_optimize_products(
             continue
 
         # --- Apply results -----------------------------------------------
-        # First pass: collect parent names, category names, and pack base names.
+        # First pass: collect parent names and category names.
         # In incremental mode, redirect merged-away names via dedup_map.
         parent_names: set[str] = set()
         category_names: set[str] = set()
-        pack_base_names: set[str] = set()
         for product in batch:
             pid = str(product["id"])
             info = mapping.get(pid)
@@ -2812,9 +2679,6 @@ def _ai_optimize_products(
             cat = info.get("category")
             if cat:
                 category_names.add(str(cat))
-            po = info.get("pack_of")
-            if po:
-                pack_base_names.add(str(po))
 
         # Ensure parent products exist (for grouping).
         parent_name_to_id: dict[str, int] = {}
@@ -2857,25 +2721,6 @@ def _ai_optimize_products(
             except StorageAPIError as exc:
                 logger.warning("Could not ensure product group '%s': %s", cat_name, exc)
 
-        # Ensure base products exist (for pack handling).
-        pack_base_name_to_id: dict[str, int] = {}
-        for base_name in pack_base_names:
-            existing = name_to_product.get(base_name)
-            if existing:
-                pack_base_name_to_id[base_name] = int(existing["id"])
-            else:
-                try:
-                    pid_new = grocy.create_product(
-                        base_name,
-                        location_id=location_id,
-                        unit_id=quantity_unit_id,
-                    )
-                    logger.info("  → Created base product '%s' (ID %d) for pack.", base_name, pid_new)
-                    pack_base_name_to_id[base_name] = pid_new
-                    name_to_product[base_name] = {"id": pid_new, "name": base_name}
-                except StorageAPIError as exc:
-                    logger.warning("Could not create base product '%s': %s", base_name, exc)
-
         # Second pass: apply sort, date, group, and pack for each product.
         for product in batch:
             pid = str(product["id"])
@@ -2886,147 +2731,36 @@ def _ai_optimize_products(
 
             product_id = int(product["id"])
 
-            # --- Pack handling (do first, may delete product) -------------
-            pack_of = info.get("pack_of")
-            pack_count = info.get("pack_count")
-            if pack_of and pack_count:
-                base_id = pack_base_name_to_id.get(str(pack_of))
-                if base_id is not None and base_id != product_id:
+            # --- Pack handling: set pack_size/pack_unit_id on barcode ---
+            pack_size = info.get("pack_size")
+            pack_unit = info.get("pack_unit")
+            if pack_size and pack_unit:
+                canonical = _canonical_unit(str(pack_unit))
+                pack_unit_id = (
+                    _unit_abbrev_to_id.get(canonical)
+                    if canonical else None
+                )
+                if pack_unit_id is not None:
                     try:
                         barcodes = grocy.get_product_barcodes(product_id)
                         for bc_entry in barcodes:
                             bc_id = int(bc_entry["id"])
                             grocy.update_barcode(
                                 bc_id,
-                                product_id=base_id,
-                                amount=int(pack_count),
+                                pack_size=int(pack_size),
+                                pack_unit_id=pack_unit_id,
                             )
                             logger.info(
-                                "  → Moved barcode '%s' from '%s' to '%s' (amount=%d).",
+                                "  → Set pack_size=%d, pack_unit=%s on "
+                                "barcode '%s' for '%s'.",
+                                int(pack_size), pack_unit,
                                 bc_entry.get("barcode", "?"),
                                 product.get("name"),
-                                pack_of,
-                                int(pack_count),
                             )
-                        # Add stock to the base product before deleting
-                        # the pack (1 pack scanned = pack_count base units).
-                        try:
-                            grocy.add_stock(base_id, amount=float(int(pack_count)))
-                            logger.info(
-                                "  → Added %d unit(s) to stock for '%s' (ID %d).",
-                                int(pack_count), pack_of, base_id,
-                            )
-                        except (StorageAPIError, ValueError) as stock_exc:
-                            logger.warning(
-                                "Could not add stock for base product '%s': %s",
-                                pack_of, stock_exc,
-                            )
-                        # Transfer the pack product's image to the base
-                        # product (if the base doesn't already have one).
-                        picture = product.get("picture_filename", "")
-                        if picture:
-                            base_rec = name_to_product.get(str(pack_of), {})
-                            base_picture = base_rec.get("picture_filename", "")
-                            if not base_picture:
-                                try:
-                                    grocy.update_product(
-                                        base_id,
-                                        picture_filename=picture,
-                                    )
-                                    logger.info(
-                                        "  → Transferred image '%s' to base "
-                                        "product '%s' (ID %d).",
-                                        picture, pack_of, base_id,
-                                    )
-                                except StorageAPIError as img_exc:
-                                    logger.warning(
-                                        "Could not transfer image to '%s': %s",
-                                        pack_of, img_exc,
-                                    )
-                            else:
-                                # Base already has an image — delete the
-                                # pack's image from storage.
-                                try:
-                                    grocy.delete_product_image(picture)
-                                except StorageAPIError:
-                                    pass
-                        grocy.delete_product(product_id)
-                        logger.info(
-                            "  → Deleted pack product '%s' (ID %s).",
-                            product.get("name"), pid,
-                        )
-                        deleted_ids.add(product_id)
-                        pack_to_base[product_id] = base_id
-                        updated += 1
-
-                        # --- Apply sort/date/group to the surviving
-                        # base product (the pack product is gone, so its
-                        # Gemini-suggested attributes must land on the
-                        # base instead). ---------------------------------
-                        base_update: dict = {}
-                        loc_id = info.get("location_id")
-                        if loc_id is not None and locations:
-                            base_update["location_id"] = int(loc_id)
-                        days = info.get("best_before_days")
-                        if days is not None:
-                            base_update["default_best_before_days"] = int(days)
-
-                        group_name = info.get("group_name")
-                        parent_id = (
-                            parent_name_to_id.get(str(group_name))
-                            if group_name else None
-                        )
-                        if parent_id is not None and parent_id != base_id:
-                            # Normal case: base product becomes a child of
-                            # the parent.
-                            base_update["parent_id"] = parent_id
-                            cat_name = info.get("category")
-                            if cat_name:
-                                cg_id = category_name_to_group_id.get(
-                                    str(cat_name)
-                                )
-                                if cg_id is not None:
-                                    base_update["product_group_id"] = cg_id
-                        elif parent_id is not None and parent_id == base_id:
-                            # Edge case: pack_of == group_name — the base
-                            # product IS the parent.  Keep it active so it is
-                            # treated as a real product, not a placeholder.
-                            base_update["active"] = True
-                            cat_name = info.get("category")
-                            if cat_name:
-                                cg_id = category_name_to_group_id.get(
-                                    str(cat_name)
-                                )
-                                if cg_id is not None:
-                                    base_update["product_group_id"] = cg_id
-
-                        if base_update:
-                            try:
-                                grocy.update_product(base_id, **base_update)
-                                logger.info(
-                                    "  → Applied attributes to base "
-                                    "product '%s' (ID %d).",
-                                    pack_of, base_id,
-                                )
-                            except (StorageAPIError, ValueError) as exc:
-                                logger.warning(
-                                    "Could not update base product "
-                                    "'%s': %s", pack_of, exc,
-                                )
-
-                        # --- Create per-unit weight conversion from
-                        # the original pack name (e.g. "580g / 10 kpl"
-                        # → 1 piece = 58 g). ----------------------------
-                        _create_pack_weight_conversion(
-                            grocy, base_id,
-                            product.get("name", ""),
-                            int(pack_count),
-                        )
-
-                        continue  # Skip sort/date/group for deleted product.
+                            updated += 1
                     except StorageAPIError as exc:
                         logger.warning(
-                            "Could not handle pack for '%s': %s",
+                            "Could not set pack info for '%s': %s",
                             product.get("name"), exc,
                         )
 
@@ -3151,9 +2885,8 @@ def _ai_optimize_products(
                 new_children_of.add(int(ppid))
 
         for old_pid in old_parent_ids:
-            if old_pid in new_children_of or old_pid in deleted_ids:
+            if old_pid in new_children_of:
                 continue
-            # Find the product record to get image info.
             old_prod = next(
                 (p for p in all_products_after if int(p["id"]) == old_pid),
                 None,
@@ -3161,12 +2894,6 @@ def _ai_optimize_products(
             if old_prod is None:
                 continue
             try:
-                picture = old_prod.get("picture_filename", "")
-                if picture:
-                    try:
-                        grocy.delete_product_image(picture)
-                    except StorageAPIError:
-                        pass
                 grocy.delete_product(old_pid)
                 logger.info(
                     "  → Deleted old parent '%s' (ID %d).",
@@ -3193,25 +2920,13 @@ def _ai_optimize_products(
                 if ppid:
                     children_of.setdefault(int(ppid), []).append(p)
 
-            # Products that received barcodes/stock from pack handling
-            # must not be deleted even if they currently have no children.
-            pack_base_ids = set(pack_to_base.values())
-
             for p in all_products_after:
                 pid_int = int(p["id"])
                 if (
                     pid_int not in children_of
                     and not p.get("active", True)
-                    and pid_int not in deleted_ids
-                    and pid_int not in pack_base_ids
                 ):
                     try:
-                        picture = p.get("picture_filename", "")
-                        if picture:
-                            try:
-                                grocy.delete_product_image(picture)
-                            except StorageAPIError:
-                                pass
                         grocy.delete_product(pid_int)
                         logger.info(
                             "  → Deleted empty parent '%s' (ID %d).",
@@ -3261,24 +2976,18 @@ def _ai_optimize_products(
         # Incremental: ensure standard units, detect package sizes and
         # density conversions for newly discovered products, then check
         # existing recipes for unit gaps with these products.
-        # Replace deleted pack IDs with their surviving base product IDs.
-        effective_ids: set[int] = set()
-        for pid in product_ids:
-            effective_ids.add(pack_to_base.get(pid, pid))
-        effective_ids -= deleted_ids
+        target_ids = set(product_ids)
         try:
             abbrev_to_id = _ensure_units_and_conversions(grocy)
-            # Repair products with orphaned/empty QU IDs (e.g. from
-            # prior consolidation or products created with missing fields).
             try:
                 _fix_broken_product_units(grocy, abbrev_to_id)
             except StorageAPIError as exc:
                 logger.warning("Failed to fix broken product units: %s", exc)
-            if effective_ids:
+            if target_ids:
                 fresh_products = grocy.get_all_products()
                 new_products = [
                     p for p in fresh_products
-                    if int(p["id"]) in effective_ids
+                    if int(p["id"]) in target_ids
                 ]
                 if new_products:
                     _ai_detect_package_sizes(
@@ -3290,10 +2999,9 @@ def _ai_optimize_products(
                         gemini_api_key, effective_model,
                     )
                     _check_recipes_for_unit_gaps(
-                        grocy, effective_ids, abbrev_to_id,
+                        grocy, target_ids, abbrev_to_id,
                         gemini_api_key, effective_model,
                     )
-            # Merge recipe stubs that now match real parent products
             _merge_recipe_stubs(grocy)
         except StorageAPIError as exc:
             logger.warning("Incremental unit setup failed: %s", exc)
@@ -3805,7 +3513,7 @@ def _delete_all_products(grocy: StorageClient) -> int:
         name = product.get("name", "?")
         picture = product.get("picture_filename", "")
 
-        # Delete the product image first (if any).
+        # Delete the product image file (CASCADE handles DB records).
         if picture:
             try:
                 grocy.delete_product_image(picture)
