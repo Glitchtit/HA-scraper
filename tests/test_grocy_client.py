@@ -495,3 +495,133 @@ class TestTransferStock:
         session.post.side_effect = requests.RequestException("timeout")
         with pytest.raises(GrocyAPIError, match="transfer stock"):
             client.transfer_stock(42, 1.0, 2, 5)
+
+
+# ---------------------------------------------------------------------------
+# Quantity units & conversions
+# ---------------------------------------------------------------------------
+
+
+class TestGetQuantityUnits:
+    def test_returns_units(self):
+        client, session = _make_client()
+        units = [{"id": 1, "name": "Piece"}, {"id": 2, "name": "Gramma"}]
+        session.get.return_value = _mock_response(json_data=units)
+        result = client.get_quantity_units()
+        assert result == units
+        assert "/api/objects/quantity_units" in session.get.call_args[0][0]
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
+        session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="quantity units"):
+            client.get_quantity_units()
+
+
+class TestGetQuantityUnitConversions:
+    def test_returns_conversions(self):
+        client, session = _make_client()
+        convs = [{"id": 1, "from_qu_id": 2, "to_qu_id": 3, "factor": 1000}]
+        session.get.return_value = _mock_response(json_data=convs)
+        result = client.get_quantity_unit_conversions()
+        assert result == convs
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
+        session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="QU conversions"):
+            client.get_quantity_unit_conversions()
+
+
+class TestCreateQuantityUnit:
+    def test_creates_unit(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={"created_object_id": 5})
+        uid = client.create_quantity_unit("Gramma", "Grammaa", "g")
+        assert uid == 5
+        payload = session.post.call_args[1]["json"]
+        assert payload["name"] == "Gramma"
+        assert payload["name_plural"] == "Grammaa"
+        assert payload["description"] == "g"
+
+    def test_minimal_payload(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={"created_object_id": 6})
+        uid = client.create_quantity_unit("Litra")
+        assert uid == 6
+        payload = session.post.call_args[1]["json"]
+        assert payload == {"name": "Litra"}
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
+        session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
+        with pytest.raises(GrocyAPIError, match="create QU"):
+            client.create_quantity_unit("Bad")
+
+
+class TestCreateQuantityUnitConversion:
+    def test_creates_global_conversion(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={"created_object_id": 10})
+        cid = client.create_quantity_unit_conversion(2, 3, 1000.0)
+        assert cid == 10
+        payload = session.post.call_args[1]["json"]
+        assert payload == {"from_qu_id": 2, "to_qu_id": 3, "factor": 1000.0}
+
+    def test_creates_product_specific_conversion(self):
+        client, session = _make_client()
+        session.post.return_value = _mock_response(json_data={"created_object_id": 11})
+        cid = client.create_quantity_unit_conversion(1, 5, 1.0, product_id=42)
+        assert cid == 11
+        payload = session.post.call_args[1]["json"]
+        assert payload["product_id"] == 42
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
+        session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
+        with pytest.raises(GrocyAPIError, match="QU conversion"):
+            client.create_quantity_unit_conversion(1, 2, 1.0)
+
+
+class TestDeleteQuantityUnitConversion:
+    def test_deletes_conversion(self):
+        client, session = _make_client()
+        session.delete.return_value = _mock_response(status_code=204)
+        client.delete_quantity_unit_conversion(10)
+        assert "/api/objects/quantity_unit_conversions/10" in session.delete.call_args[0][0]
+
+    def test_404_is_silent(self):
+        client, session = _make_client()
+        session.delete.return_value = _mock_response(status_code=404)
+        client.delete_quantity_unit_conversion(99)  # Should not raise
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
+        session.delete.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="delete QU conversion"):
+            client.delete_quantity_unit_conversion(10)
+
+
+class TestDeleteQuantityUnit:
+    def test_deletes_unit(self):
+        client, session = _make_client()
+        session.delete.return_value = _mock_response(status_code=204)
+        client.delete_quantity_unit(5)
+        assert "/api/objects/quantity_units/5" in session.delete.call_args[0][0]
+
+    def test_404_is_silent(self):
+        client, session = _make_client()
+        session.delete.return_value = _mock_response(status_code=404)
+        client.delete_quantity_unit(99)  # Should not raise
+
+    def test_http_error_raises(self):
+        client, session = _make_client()
+        http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
+        session.delete.return_value = _mock_response(raise_for=http_err, status_code=500)
+        with pytest.raises(GrocyAPIError, match="delete QU"):
+            client.delete_quantity_unit(5)

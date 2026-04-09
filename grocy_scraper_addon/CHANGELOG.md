@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.18.0
+
+- Add unit optimization to `--optimize`: automatically ensures standard quantity units (g, kg, ml, dl, l, tl, rkl, rs, kpl) and global conversions exist in Grocy
+- Consolidate duplicate/synonym quantity units — detects and merges units like "gram", "Gramma", "g" into a single canonical unit
+- AI-powered package size detection: extracts sizes from product names (e.g. "Maito 1L" → 1 piece = 1 litre) and creates per-product Piece→unit conversions
+- AI-powered density conversions: creates weight↔volume conversions for products (e.g. 1 kg flour ≈ 1.67 L)
+- Add quantity unit CRUD methods to Grocy API client
+
 ## 1.17.2
 
 - Add connection keep-alive heartbeat to sidebar panel to prevent Cloudflare 524 timeout when page is open for extended periods

@@ -562,6 +562,121 @@ class GrocyClient:
             ) from exc
 
     # ------------------------------------------------------------------
+    # Quantity units & conversions
+    # ------------------------------------------------------------------
+
+    def get_quantity_units(self) -> list[dict]:
+        """Return all quantity units from Grocy."""
+        url = self._url("/api/objects/quantity_units")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(f"Failed to fetch quantity units: {exc}{body}") from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to fetch quantity units: {exc}") from exc
+
+    def get_quantity_unit_conversions(self) -> list[dict]:
+        """Return all quantity unit conversions from Grocy."""
+        url = self._url("/api/objects/quantity_unit_conversions")
+        try:
+            resp = self._session.get(url, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to fetch QU conversions: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to fetch QU conversions: {exc}") from exc
+
+    def create_quantity_unit(self, name: str, name_plural: str = "",
+                             description: str = "") -> int:
+        """Create a quantity unit in Grocy and return its ID."""
+        url = self._url("/api/objects/quantity_units")
+        payload: dict = {"name": name}
+        if name_plural:
+            payload["name_plural"] = name_plural
+        if description:
+            payload["description"] = description
+        try:
+            resp = self._session.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+            return int(resp.json().get("created_object_id", 0))
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to create QU '{name}': {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to create QU '{name}': {exc}") from exc
+
+    def create_quantity_unit_conversion(
+        self,
+        from_qu_id: int,
+        to_qu_id: int,
+        factor: float,
+        product_id: int | None = None,
+    ) -> int:
+        """Create a quantity unit conversion and return its ID."""
+        url = self._url("/api/objects/quantity_unit_conversions")
+        payload: dict = {
+            "from_qu_id": from_qu_id,
+            "to_qu_id": to_qu_id,
+            "factor": factor,
+        }
+        if product_id is not None:
+            payload["product_id"] = product_id
+        try:
+            resp = self._session.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+            return int(resp.json().get("created_object_id", 0))
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to create QU conversion: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to create QU conversion: {exc}") from exc
+
+    def delete_quantity_unit_conversion(self, conversion_id: int) -> None:
+        """Delete a quantity unit conversion by ID."""
+        url = self._url(f"/api/objects/quantity_unit_conversions/{conversion_id}")
+        try:
+            resp = self._session.delete(url, timeout=10)
+            if resp.status_code == 404:
+                return
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to delete QU conversion {conversion_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to delete QU conversion {conversion_id}: {exc}"
+            ) from exc
+
+    def delete_quantity_unit(self, qu_id: int) -> None:
+        """Delete a quantity unit by ID."""
+        url = self._url(f"/api/objects/quantity_units/{qu_id}")
+        try:
+            resp = self._session.delete(url, timeout=10)
+            if resp.status_code == 404:
+                return
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to delete QU {qu_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(f"Failed to delete QU {qu_id}: {exc}") from exc
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
