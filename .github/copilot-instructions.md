@@ -5,47 +5,81 @@
 ```bash
 pip install -r requirements.txt pytest
 
-# Run all tests
+# Run all tests (445 tests)
 python -m pytest tests/ -v
 
 # Run a single test file
-python -m pytest tests/test_scraper.py -v
+python -m pytest tests/test_storage_client.py -v
 
 # Run a single test class or method
-python -m pytest tests/test_grocy_client.py::TestCreateProduct -v
-python -m pytest tests/test_main.py::TestSyncProduct::test_creates_new_product -v
+python -m pytest tests/test_main.py::TestAiOptimize::test_optimize_updates_location -v
 ```
 
-There is no linter or formatter configured.
+No linter or formatter is configured.
 
 ## Architecture
 
-This is a CLI tool that scrapes Finnish grocery products from **k-ruoka.fi** and populates a **Grocy** self-hosted product database via its REST API.
+**Scraper** is a Home Assistant add-on that scrapes Finnish grocery products from **k-ruoka.fi** and **s-kaupat.fi**, then populates **HA-Storage** (a custom SQLite backend) via its REST API. It uses Gemini AI for product sorting, dating, grouping, and optimization.
+
+### Deployment modes
+
+1. **HA Supervisor Add-on** (`grocy_scraper_addon/`) — Docker container with s6-overlay running two services: the periodic scraper and an ingress web server (`ingress_server.py` on port 8099). Entry point: `grocy_scraper_addon/main.py`.
+2. **HA Custom Integration** (`custom_components/grocy_scraper/`) — Sidebar panel + config flow + WebSocket API.
 
 ### Data flow
 
-`main.py` (CLI + orchestration) → `grocy_scraper/scraper.py` (fetch products) → `grocy_scraper/grocy_client.py` (write to Grocy)
+`main.py` (CLI + orchestration) → `scraper.py` (fetch products) → `storage_client.py` (write to Storage)
 
-- **`main.py`** — Entry point. Parses CLI args (which also fall back to env vars / `.env`), validates config, then iterates over scraped `Product` objects and syncs each to Grocy via `sync_product()`.
-- **`scraper.py`** — `KRuokaScraper` with two backends selected by `use_graphql` flag:
-  - **GraphQL** (default): `mobile.k-ruoka.fi/graphql`. No Cloudflare bypass. Hard limit of `offset ≤ 1000` per query (~1,100 results). `browse()` works around this by iterating 27 hardcoded `_PRODUCT_CATEGORY_SLUGS`.
-  - **kr-api REST** (fallback): `www.k-ruoka.fi/kr-api`. Requires Cloudflare bypass (FlareSolverr, manual cookies, or curl_cffi TLS impersonation).
-- **`grocy_client.py`** — Thin `requests`-based client. Auth via `GROCY-API-KEY` header. Wraps all API errors in `GrocyAPIError`.
+### Key modules
+
+| Module | Role |
+|---|---|
+| `grocy_scraper/scraper.py` | K-ruoka.fi scraper (GraphQL + kr-api REST backends) |
+| `grocy_scraper/storage_client.py` | HA-Storage REST API client |
+| `grocy_scraper/skaupat_client.py` | S-kaupat.fi EAN lookup |
+| `grocy_scraper/searxng_client.py` | SearXNG search client |
+| `grocy_scraper/grocy_client.py` | Legacy Grocy client (kept for reference, not used in main flow) |
+| `grocy_scraper_addon/main.py` | Entry point — argparse, Gemini AI helpers, `--sort`/`--date`/`--group`/`--optimize` |
+| `grocy_scraper_addon/ingress_server.py` | HTTP server for HA ingress web UI |
+| `custom_components/grocy_scraper/ws_api.py` | WebSocket API for HA sidebar panel |
 
 ### Core data type
 
-`Product` is a `@dataclass` in `scraper.py` with fields `name`, `ean`, and `description`. Both backends normalize results into this type.
+`Product` is a `@dataclass` in `scraper.py` with fields `name`, `ean`, and `description`. Both scraper backends normalize results into this type.
+
+### Scraper backends
+
+- **GraphQL** (default): `mobile.k-ruoka.fi/graphql`. No Cloudflare bypass. Hard limit of `offset ≤ 1000`.
+- **kr-api REST** (fallback): `www.k-ruoka.fi/kr-api`. Requires Cloudflare bypass.
+
+### Duplicated files
+
+The `grocy_scraper/` package is **copied identically** into `grocy_scraper_addon/grocy_scraper/`. Changes to `scraper.py`, `storage_client.py`, `skaupat_client.py`, or `searxng_client.py` must be applied to both locations.
+
+### Gemini AI integration
+
+All Gemini calls go through `_call_gemini()` → `_call_gemini_json()` in `grocy_scraper_addon/main.py`. Retries up to `_GEMINI_MAX_RETRIES` with exponential back-off. Sanitizes control characters from responses. Batch sizes: 100 for sort/date/group, 1000 for optimize.
+
+### Retry logic
+
+`wait_for_storage()` in `main.py` and `ingress_server.py` retries connecting to Storage on startup (30 attempts × 5 seconds).
+
+### Error handling
+
+- `GrocyAPIError` is the exception for Storage API and Gemini failures (defined in `grocy_client.py`, reused elsewhere).
+- Log warnings and continue on non-fatal errors; batch operations skip failed batches.
 
 ## Versioning and changelog
 
-When making functional changes (bug fixes, new features, refactors that affect behaviour), **always**:
+Bump all three on user-facing changes:
 
-1. **Bump the version number** in **both** of the following files — they must stay in sync:
-   - `grocy_scraper_addon/config.yaml` → `version` field
-   - `custom_components/grocy_scraper/manifest.json` → `"version"` field
-2. **Add a changelog entry** at the top of `CHANGELOG.md` under a new `## [<version>]` heading (or extend an `## [Unreleased]` section if one exists).
+| File | Field |
+|---|---|
+| `grocy_scraper_addon/config.yaml` | `version: "X.Y.Z"` |
+| `custom_components/grocy_scraper/manifest.json` | `"version": "X.Y.Z"` |
+| `grocy_scraper_addon/CHANGELOG.md` | New `## X.Y.Z` section |
 
-### Which version component to bump
+CHANGELOGs use plain `## VERSION` headers (no brackets, no dates).
 
 Follow [Semantic Versioning](https://semver.org/):
 
@@ -55,18 +89,12 @@ Follow [Semantic Versioning](https://semver.org/):
 | New feature, backward-compatible | **minor** | `1.0.0` → `1.1.0` |
 | Bug fix, docs, minor tweak | **patch** | `1.0.0` → `1.0.1` |
 
-### Changelog format
-
-Use [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) sections: `Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`.
-
-### When to skip
-
 Do **not** bump the version or update the changelog for changes that only touch tests, CI configuration, or developer tooling (e.g. `.github/`, `tests/`).
 
 ## Conventions
 
-- All CLI options have corresponding env vars (e.g. `--store` / `KRUOKA_STORE_ID`). Env vars are loaded via `python-dotenv` from `.env`.
-- External API errors are wrapped in domain-specific exceptions (`GrocyAPIError`) rather than leaking `requests` exceptions.
-- Tests use `unittest.mock` (no external mocking libraries). The `GrocyClient` accepts an optional `session` parameter for injecting a mock `requests.Session`. The scraper tests inject mock sessions directly onto scraper instances.
-- GraphQL responses can contain two union types (`Product` and `AssortmentSearchResult`) — both must be handled when parsing results.
-- The scraper yields `Product` objects lazily via iterators (generators), so callers process results in a streaming fashion.
+- All CLI options have corresponding env vars loaded via `python-dotenv`.
+- External API errors are wrapped in `GrocyAPIError` rather than leaking `requests` exceptions.
+- Tests use `unittest.mock` — `StorageClient` and session mocks are injected. 445 tests total.
+- The scraper yields `Product` objects lazily via generators.
+- Product names and UI strings are in Finnish.
