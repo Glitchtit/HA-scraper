@@ -3194,13 +3194,35 @@ def _ai_optimize_products(
                                 "Could not add stock for base product '%s': %s",
                                 pack_of, stock_exc,
                             )
-                        # Delete the pack product.
+                        # Transfer the pack product's image to the base
+                        # product (if the base doesn't already have one).
                         picture = product.get("picture_file_name", "")
                         if picture:
-                            try:
-                                grocy.delete_product_image(picture)
-                            except GrocyAPIError:
-                                pass
+                            base_rec = name_to_product.get(str(pack_of), {})
+                            base_picture = base_rec.get("picture_file_name", "")
+                            if not base_picture:
+                                try:
+                                    grocy.update_product(
+                                        base_id,
+                                        picture_file_name=picture,
+                                    )
+                                    logger.info(
+                                        "  → Transferred image '%s' to base "
+                                        "product '%s' (ID %d).",
+                                        picture, pack_of, base_id,
+                                    )
+                                except GrocyAPIError as img_exc:
+                                    logger.warning(
+                                        "Could not transfer image to '%s': %s",
+                                        pack_of, img_exc,
+                                    )
+                            else:
+                                # Base already has an image — delete the
+                                # pack's image from storage.
+                                try:
+                                    grocy.delete_product_image(picture)
+                                except GrocyAPIError:
+                                    pass
                         grocy.delete_product(product_id)
                         logger.info(
                             "  → Deleted pack product '%s' (ID %s).",
