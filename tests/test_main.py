@@ -3182,11 +3182,13 @@ class TestAiDetectDensityConversions:
             {"id": 50, "from_qu_id": 10, "to_qu_id": 30, "factor": 1.0, "product_id": 1},
         ]
         products = [{"id": 1, "name": "Vehnäjauho 2kg"}]
-        abbrev = {"piece": 10, "g": 20, "kg": 30, "l": 40, "dl": 50}
+        abbrev = {"piece": 10, "g": 20, "kg": 30, "l": 40, "dl": 50, "ml": 60}
         grocy = self._make_grocy(conversions=conversions)
         count = _ai_detect_density_conversions(grocy, products, abbrev, "key", "model")
-        assert count == 1
-        grocy.create_quantity_unit_conversion.assert_called_once_with(
+        # 1 primary (kg→l) + 5 derived (kg→dl, kg→ml, g→l, g→dl, g→ml)
+        assert count == 6
+        # Primary conversion is the first call
+        grocy.create_quantity_unit_conversion.assert_any_call(
             30, 40, 1.67, product_id=1,
         )
 
@@ -3212,6 +3214,32 @@ class TestAiDetectDensityConversions:
         count = _ai_detect_density_conversions(grocy, products, abbrev, "key", "model")
         assert count == 0
         mock_gemini.assert_not_called()
+
+
+class TestDeriveDensityConversions:
+    def test_kg_to_l_derives_all_pairs(self):
+        from grocy_scraper_addon.main import _derive_density_conversions
+        derived = _derive_density_conversions("kg", "l", 1.67)
+        pairs = {(f, t) for f, t, _ in derived}
+        assert ("kg", "l") not in pairs  # primary excluded
+        assert ("kg", "dl") in pairs
+        assert ("kg", "ml") in pairs
+        assert ("g", "l") in pairs
+        assert ("g", "dl") in pairs
+        assert ("g", "ml") in pairs
+        # Check a specific factor: 1 kg = 16.7 dl
+        kg_dl = next(f for fu, tu, f in derived if fu == "kg" and tu == "dl")
+        assert abs(kg_dl - 16.7) < 0.01
+
+    def test_l_to_kg_derives_all_pairs(self):
+        from grocy_scraper_addon.main import _derive_density_conversions
+        derived = _derive_density_conversions("l", "kg", 1.03)
+        pairs = {(f, t) for f, t, _ in derived}
+        assert ("l", "kg") not in pairs  # primary excluded
+        assert ("kg", "l") in pairs
+        # 1 l = 1.03 kg → 1 kg = 1/1.03 l ≈ 0.9709 l
+        kg_l = next(f for fu, tu, f in derived if fu == "kg" and tu == "l")
+        assert abs(kg_l - 0.9709) < 0.01
 
 
 @patch("grocy_scraper_addon.main._fix_recipe_units", return_value=0)
@@ -3389,6 +3417,23 @@ class TestFixBrokenProductUnits:
             for call in grocy.delete_quantity_unit_conversion.call_args_list
         }
         assert deleted_ids == {100, 101}
+
+    def test_fixes_stocked_product_via_bridging(self):
+        """Stocked product where first update_product fails, bridging fixes it."""
+        from grocy_scraper_addon.main import _fix_broken_product_units
+        units = [{"id": 10, "name": "Kilogramma", "description": "kg"}]
+        products = [
+            {"id": 1, "name": "Vehnäjauho 1 kg", "qu_id_stock": 999,
+             "qu_id_purchase": 999, "qu_id_consume": 999, "qu_id_price": 999},
+        ]
+        grocy = self._make_grocy(units, products)
+        # First call fails (stocked product), second succeeds (after bridging)
+        grocy.update_product.side_effect = [GrocyAPIError("stock constraint"), None]
+        abbrev = {"kg": 10, "kpl": 20}
+        fixed = _fix_broken_product_units(grocy, abbrev)
+        assert fixed == 1
+        # Bridging conversion should have been created
+        grocy.create_quantity_unit_conversion.assert_called()
 
 
 class TestFixRecipeUnits:
