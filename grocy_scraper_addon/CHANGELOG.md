@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.5
+
+- Self-healing density conversions: incremental optimize now runs `_ai_detect_density_conversions()` and checks existing recipes for unit gaps after product discovery
+- `_fix_recipe_units()` attempts density creation (via Gemini) before falling back to stock QU for cross-domain gaps
+- New `_check_recipes_for_unit_gaps()` scans recipes using a newly discovered product and creates missing weight↔volume conversions
+
 ## 1.19.4
 
 - Fix pack handling: add stock to base product when dissolving multi-packs (1 scan = pack_count units)

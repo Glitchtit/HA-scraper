@@ -3622,3 +3622,231 @@ class TestConsolidateBridgingConversions:
         assert len(bridge_calls) == 0
         # Product should still be updated
         grocy.update_product.assert_called_once()
+
+
+class TestCheckRecipesForUnitGaps:
+    """Test _check_recipes_for_unit_gaps: scan recipes for cross-domain unit mismatches."""
+
+    def _make_grocy(self, positions, products, units, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_recipe_positions.return_value = positions
+        grocy.get_all_products.return_value = products
+        grocy.get_quantity_units.return_value = units
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        return grocy
+
+    def test_detects_cross_domain_gap(self):
+        """Recipe uses dl (volume) but product only has kg (weight) conversions."""
+        from grocy_scraper_addon.main import _check_recipes_for_unit_gaps
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+        ]
+        products = [{"id": 10, "name": "Vehnäjauho 1kg", "qu_id_stock": 5}]
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl"},
+            {"id": 7, "name": "Desilitra", "description": "dl"},
+            {"id": 8, "name": "Kilogramma", "description": "kg"},
+        ]
+        # Product has kpl→kg (package size) but no volume conversions
+        conversions = [
+            {"id": 50, "from_qu_id": 5, "to_qu_id": 8, "factor": 1.0, "product_id": 10},
+        ]
+        grocy = self._make_grocy(positions, products, units, conversions)
+        abbrev = {"kpl": 5, "dl": 7, "kg": 8, "g": 9, "l": 10, "ml": 11}
+
+        with patch("grocy_scraper_addon.main._ai_detect_density_conversions", return_value=3) as mock_density:
+            result = _check_recipes_for_unit_gaps(grocy, {10}, abbrev, "key", "model")
+
+        mock_density.assert_called_once()
+        assert result == 3
+
+    def test_no_gap_when_both_domains_present(self):
+        """Product already has weight AND volume conversions — no gap."""
+        from grocy_scraper_addon.main import _check_recipes_for_unit_gaps
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+        ]
+        products = [{"id": 10, "name": "Vehnäjauho 1kg", "qu_id_stock": 5}]
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl"},
+            {"id": 7, "name": "Desilitra", "description": "dl"},
+            {"id": 8, "name": "Kilogramma", "description": "kg"},
+            {"id": 10, "name": "Litra", "description": "l"},
+        ]
+        conversions = [
+            {"id": 50, "from_qu_id": 5, "to_qu_id": 8, "factor": 1.0, "product_id": 10},
+            {"id": 51, "from_qu_id": 8, "to_qu_id": 10, "factor": 1.67, "product_id": 10},
+        ]
+        grocy = self._make_grocy(positions, products, units, conversions)
+        abbrev = {"kpl": 5, "dl": 7, "kg": 8, "l": 10}
+        result = _check_recipes_for_unit_gaps(grocy, {10}, abbrev, "key", "model")
+        assert result == 0
+
+    def test_skips_products_not_in_target_set(self):
+        """Only checks products in the provided product_ids set."""
+        from grocy_scraper_addon.main import _check_recipes_for_unit_gaps
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 99, "qu_id": 7, "amount": 2},
+        ]
+        products = [{"id": 99, "name": "Jauho", "qu_id_stock": 5}]
+        units = [
+            {"id": 5, "name": "Kappale", "description": "kpl"},
+            {"id": 7, "name": "Desilitra", "description": "dl"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"kpl": 5, "dl": 7}
+        # product_ids={10} — product 99 is not in set
+        result = _check_recipes_for_unit_gaps(grocy, {10}, abbrev, "key", "model")
+        assert result == 0
+
+
+class TestFixRecipeUnitsWithDensity:
+    """Test that _fix_recipe_units tries density creation before fallback."""
+
+    def _make_grocy(self, positions, products, units, conversions=None):
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_recipe_positions.return_value = positions
+        grocy.get_all_products.return_value = products
+        grocy.get_quantity_units.return_value = units
+        grocy.get_quantity_unit_conversions.return_value = conversions or []
+        return grocy
+
+    def test_attempts_density_for_cross_domain_gap(self):
+        """When recipe uses dl and product stock is kg, try density before fallback."""
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+        ]
+        products = [{"id": 10, "name": "Vehnäjauho 1kg", "qu_id_stock": 8}]
+        units = [
+            {"id": 7, "name": "Desilitra", "description": "dl"},
+            {"id": 8, "name": "Kilogramma", "description": "kg"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"dl": 7, "kg": 8, "g": 9, "l": 10, "ml": 11}
+
+        # Simulate successful density creation: after _ai_detect_density_conversions,
+        # re-fetch shows the new conversion
+        def refresh_conversions():
+            return [
+                {"from_qu_id": 8, "to_qu_id": 10, "factor": 1.67, "product_id": 10},
+                {"from_qu_id": 8, "to_qu_id": 7, "factor": 16.7, "product_id": 10},
+            ]
+        grocy.get_quantity_unit_conversions.side_effect = [
+            [],  # first call — no conversions
+            refresh_conversions(),  # second call after density creation
+        ]
+
+        with patch("grocy_scraper_addon.main._ai_detect_density_conversions", return_value=2):
+            fixed = _fix_recipe_units(grocy, abbrev, "gemini_key", "model")
+
+        # No fallback needed — density conversion resolved the gap
+        assert fixed == 0
+        grocy.update_recipe_position.assert_not_called()
+
+    def test_falls_back_when_density_fails(self):
+        """When density creation fails, falls back to stock QU."""
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+        ]
+        products = [{"id": 10, "name": "Turskafilee", "qu_id_stock": 8}]
+        units = [
+            {"id": 7, "name": "Desilitra", "description": "dl"},
+            {"id": 8, "name": "Kilogramma", "description": "kg"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"dl": 7, "kg": 8, "g": 9, "l": 10, "ml": 11}
+
+        with patch("grocy_scraper_addon.main._ai_detect_density_conversions", return_value=0):
+            fixed = _fix_recipe_units(grocy, abbrev, "gemini_key", "model")
+
+        # Density failed — should fall back to stock QU
+        assert fixed == 1
+        grocy.update_recipe_position.assert_called_once_with(1, qu_id=8)
+
+    def test_no_density_without_gemini_key(self):
+        """Without gemini credentials, skips density and falls back directly."""
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+        ]
+        products = [{"id": 10, "name": "Vehnäjauho 1kg", "qu_id_stock": 8}]
+        units = [
+            {"id": 7, "name": "Desilitra", "description": "dl"},
+            {"id": 8, "name": "Kilogramma", "description": "kg"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"dl": 7, "kg": 8}
+
+        # No gemini_api_key → no density attempt
+        fixed = _fix_recipe_units(grocy, abbrev)
+        assert fixed == 1
+        grocy.update_recipe_position.assert_called_once_with(1, qu_id=8)
+
+    def test_density_for_weight_recipe_volume_product(self):
+        """Recipe uses g (weight) but product has l (volume) conversions."""
+        from grocy_scraper_addon.main import _fix_recipe_units
+        positions = [
+            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 9, "amount": 500},
+        ]
+        products = [{"id": 10, "name": "Maito 1L", "qu_id_stock": 10}]
+        units = [
+            {"id": 9, "name": "Gramma", "description": "g"},
+            {"id": 10, "name": "Litra", "description": "l"},
+        ]
+        grocy = self._make_grocy(positions, products, units)
+        abbrev = {"g": 9, "l": 10, "kg": 8, "dl": 7, "ml": 11}
+
+        with patch("grocy_scraper_addon.main._ai_detect_density_conversions", return_value=2) as mock_d:
+            # After density creation, conversion exists
+            grocy.get_quantity_unit_conversions.side_effect = [
+                [],
+                [{"from_qu_id": 10, "to_qu_id": 8, "factor": 1.03, "product_id": 10},
+                 {"from_qu_id": 9, "to_qu_id": 10, "factor": 0.00097, "product_id": 10}],
+            ]
+            fixed = _fix_recipe_units(grocy, abbrev, "key", "model")
+
+        mock_d.assert_called_once()
+        assert fixed == 0
+
+
+class TestIncrementalDensityAndRecipeCheck:
+    """Test that incremental optimize calls density detection and recipe gap check."""
+
+    @patch("grocy_scraper_addon.main._check_recipes_for_unit_gaps")
+    @patch("grocy_scraper_addon.main._ai_detect_density_conversions")
+    @patch("grocy_scraper_addon.main._ai_detect_package_sizes")
+    @patch("grocy_scraper_addon.main._ensure_units_and_conversions")
+    def test_incremental_calls_density_and_recipe_check(
+        self, mock_ensure, mock_pkg, mock_density, mock_recipe_check,
+    ):
+        """After package sizes, incremental should call density + recipe check."""
+        from grocy_scraper_addon.main import _ai_optimize_products
+
+        mock_ensure.return_value = {"kpl": 5, "kg": 8, "g": 9, "l": 10, "dl": 7}
+        mock_pkg.return_value = 1
+        mock_density.return_value = 2
+        mock_recipe_check.return_value = 1
+
+        grocy = MagicMock(spec=GrocyClient)
+        grocy.get_all_products.return_value = [
+            {"id": 10, "name": "Vehnäjauho 1kg", "qu_id_stock": 5,
+             "qu_id_purchase": 5, "qu_id_consume": 5, "qu_id_price": 5,
+             "parent_product_id": None, "location_id": 1,
+             "product_group_id": None},
+        ]
+        grocy.get_all_barcodes.return_value = []
+        grocy.get_product_groups.return_value = []
+        grocy.add_stock.return_value = None
+
+        # product_ids=[10] triggers incremental mode (not full)
+        result = _ai_optimize_products(
+            grocy, "gemini_key", "model",
+            product_ids=[10],
+        )
+
+        # All three should be called
+        mock_pkg.assert_called_once()
+        mock_density.assert_called_once()
+        mock_recipe_check.assert_called_once()
