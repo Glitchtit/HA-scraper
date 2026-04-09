@@ -1219,8 +1219,31 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+def _wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) -> None:
+    """Block until Storage addon is reachable."""
+    import time
+    import requests as _req
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            resp = _req.get(f"{base_url}/api/health", timeout=5)
+            if resp.ok:
+                logger.info("Storage addon is ready (%s).", resp.json().get("version", "?"))
+                return
+        except _req.RequestException:
+            pass
+        if attempt < max_retries:
+            logger.info("Storage not ready (attempt %d/%d), retrying in %.0fs…", attempt, max_retries, delay)
+            time.sleep(delay)
+    raise SystemExit("ERROR: Storage addon not reachable after %d attempts." % max_retries)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    opts = _read_options()
+    storage_url = opts.get("storage_url", "")
+    if storage_url:
+        _wait_for_storage(storage_url)
     server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
     print(f"Ingress server listening on port {_PORT}")
     server.serve_forever()

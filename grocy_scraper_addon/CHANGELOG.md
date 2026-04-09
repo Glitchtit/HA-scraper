@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.20.3
+
+- Add Storage retry logic: wait_for_storage() retries 30× with 5s delay on startup
+- Renamed display name from "Grocy Scraper" to "Scraper"
+
 ## 1.20.2
 
 - Simplified AI optimization: pack sizes stored on barcode (no separate pack products)

@@ -1,7 +1,7 @@
-name: "Grocy Scraper"
-version: "1.20.2"
+name: "Scraper"
+version: "1.20.3"
 slug: "grocy_scraper"
-description: "Scrapes k-ruoka.fi for Finnish food products and populates a Grocy database via HA-Storage."
+description: "Scrapes k-ruoka.fi for Finnish food products and populates HA-Storage."
 url: "https://github.com/Glitchtit/grocy_scraper"
 arch:
   - aarch64
@@ -15,7 +15,7 @@ boot: manual
 ingress: true
 ingress_port: 8099
 panel_icon: "mdi:barcode-scan"
-panel_title: "Grocy Scraper"
+panel_title: "Scraper"
 panel_admin: false
 map:
   - config:ro
