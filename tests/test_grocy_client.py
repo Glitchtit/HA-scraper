@@ -132,6 +132,8 @@ class TestCreateProduct:
         assert payload["location_id"] == 3
         assert payload["qu_id_stock"] == 5
         assert payload["qu_id_purchase"] == 5
+        assert payload["qu_id_consume"] == 5
+        assert payload["qu_id_price"] == 5
 
     def test_missing_created_id_raises(self):
         client, session = _make_client()

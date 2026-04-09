@@ -133,6 +133,8 @@ class GrocyClient:
         if quantity_unit_id is not None:
             payload["qu_id_stock"] = quantity_unit_id
             payload["qu_id_purchase"] = quantity_unit_id
+            payload["qu_id_consume"] = quantity_unit_id
+            payload["qu_id_price"] = quantity_unit_id
 
         url = self._url("/api/objects/products")
         try:

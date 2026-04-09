@@ -1840,17 +1840,18 @@ def _optimize_units(
         logger.error("Failed to ensure standard units: %s", exc)
         return 0
 
-    # Step 2: Fix broken products (before consolidation)
-    try:
-        _fix_broken_product_units(grocy, abbrev_to_id)
-    except GrocyAPIError as exc:
-        logger.warning("Failed to fix broken product units: %s", exc)
-
-    # Step 3: Consolidate duplicates
+    # Step 2: Consolidate duplicates
     try:
         abbrev_to_id = _consolidate_duplicate_units(grocy, abbrev_to_id)
     except GrocyAPIError as exc:
         logger.warning("Failed to consolidate duplicate units: %s", exc)
+
+    # Step 3: Fix products with orphaned/empty QU IDs (after consolidation,
+    # so products broken by duplicate QU deletion are also repaired).
+    try:
+        _fix_broken_product_units(grocy, abbrev_to_id)
+    except GrocyAPIError as exc:
+        logger.warning("Failed to fix broken product units: %s", exc)
 
     # Step 4: Fetch products if not provided
     if products is None:
@@ -3545,6 +3546,12 @@ def _ai_optimize_products(
         effective_ids -= deleted_ids
         try:
             abbrev_to_id = _ensure_units_and_conversions(grocy)
+            # Repair products with orphaned/empty QU IDs (e.g. from
+            # prior consolidation or products created with missing fields).
+            try:
+                _fix_broken_product_units(grocy, abbrev_to_id)
+            except GrocyAPIError as exc:
+                logger.warning("Failed to fix broken product units: %s", exc)
             if effective_ids:
                 fresh_products = grocy.get_all_products()
                 new_products = [
