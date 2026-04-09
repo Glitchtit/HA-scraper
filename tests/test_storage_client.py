@@ -1,4 +1,4 @@
-"""Unit tests for the Grocy API client."""
+"""Unit tests for the Storage API client."""
 
 from __future__ import annotations
 
@@ -7,17 +7,18 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from grocy_scraper.grocy_client import GrocyAPIError, GrocyClient
+from grocy_scraper.storage_client import StorageAPIError, StorageClient
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_client(base_url: str = "https://grocy.example.com", api_key: str = "test") -> tuple[GrocyClient, MagicMock]:
+def _make_client(base_url: str = "https://grocy.example.com") -> tuple[StorageClient, MagicMock]:
     session = MagicMock(spec=requests.Session)
     session.headers = {}
-    client = GrocyClient(base_url=base_url, api_key=api_key, session=session)
+    client = StorageClient(base_url=base_url)
+    client._session = session
     return client, session
 
 
@@ -33,50 +34,41 @@ def _mock_response(json_data=None, status_code: int = 200, raise_for: Exception 
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient._url
+# StorageClient._url
 # ---------------------------------------------------------------------------
 
 class TestUrl:
     def test_trailing_slash_stripped(self):
         client, _ = _make_client(base_url="https://grocy.example.com/")
-        assert client._url("/api/objects/products") == "https://grocy.example.com/api/objects/products"
+        assert client._url("/api/products") == "https://grocy.example.com/api/products"
 
     def test_path_without_leading_slash(self):
         client, _ = _make_client()
-        assert client._url("api/objects/products") == "https://grocy.example.com/api/objects/products"
+        assert client._url("api/products") == "https://grocy.example.com/api/products"
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.get_product_by_barcode
+# StorageClient.get_product_by_barcode
 # ---------------------------------------------------------------------------
 
 class TestGetProductByBarcode:
     def test_found(self):
         client, session = _make_client()
         session.get.return_value = _mock_response(
-            json_data={"product": {"id": 1, "name": "Maito"}}
+            json_data={"id": 1, "name": "Maito"}
         )
         result = client.get_product_by_barcode("1234567890123")
         assert result == {"id": 1, "name": "Maito"}
 
-    def test_found_bare_product(self):
-        """Some Grocy versions return the product at top level."""
+    def test_not_found_direct_404(self):
+        """A 404 status code (before raise_for_status) returns None."""
         client, session = _make_client()
-        session.get.return_value = _mock_response(
-            json_data={"id": 2, "name": "Kerma"}
-        )
-        result = client.get_product_by_barcode("111")
-        assert result == {"id": 2, "name": "Kerma"}
-
-    def test_not_found_400(self):
-        """A 400 response means the barcode is not registered."""
-        client, session = _make_client()
-        resp = _mock_response(status_code=400)
+        resp = _mock_response(status_code=404)
         session.get.return_value = resp
         result = client.get_product_by_barcode("999")
         assert result is None
 
-    def test_not_found_404(self):
+    def test_not_found_404_http_error(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=404))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=404)
@@ -87,70 +79,72 @@ class TestGetProductByBarcode:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError):
+        with pytest.raises(StorageAPIError):
             client.get_product_by_barcode("123")
 
     def test_connection_error_raises(self):
         client, session = _make_client()
         session.get.side_effect = requests.ConnectionError("refused")
-        with pytest.raises(GrocyAPIError):
+        with pytest.raises(StorageAPIError):
             client.get_product_by_barcode("123")
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.create_product
+# StorageClient.create_product
 # ---------------------------------------------------------------------------
 
 class TestCreateProduct:
     def test_creates_product_returns_id(self):
         client, session = _make_client()
         session.post.return_value = _mock_response(
-            json_data={"created_object_id": 42}
+            json_data={"id": 42}
         )
-        product_id = client.create_product("Maito", description="Täysmaito")
+        product_id = client.create_product("Maito", description="Täysmaito", unit_id=1)
         assert product_id == 42
 
     def test_payload_includes_name(self):
         client, session = _make_client()
-        session.post.return_value = _mock_response(json_data={"created_object_id": 1})
-        client.create_product("Juusto")
+        session.post.return_value = _mock_response(json_data={"id": 1})
+        client.create_product("Juusto", unit_id=1)
         _, kwargs = session.post.call_args
         assert kwargs["json"]["name"] == "Juusto"
 
     def test_payload_includes_optional_fields(self):
         client, session = _make_client()
-        session.post.return_value = _mock_response(json_data={"created_object_id": 1})
+        session.post.return_value = _mock_response(json_data={"id": 1})
         client.create_product(
             "Jogurtti",
             description="Mansikkajogurtti",
             location_id=3,
-            quantity_unit_id=5,
+            unit_id=5,
         )
         _, kwargs = session.post.call_args
         payload = kwargs["json"]
         assert payload["description"] == "Mansikkajogurtti"
         assert payload["location_id"] == 3
-        assert payload["qu_id_stock"] == 5
-        assert payload["qu_id_purchase"] == 5
-        assert payload["qu_id_consume"] == 5
-        assert payload["qu_id_price"] == 5
+        assert payload["unit_id"] == 5
 
-    def test_missing_created_id_raises(self):
+    def test_missing_unit_id_raises(self):
+        client, session = _make_client()
+        with pytest.raises(StorageAPIError):
+            client.create_product("Voi")
+
+    def test_missing_id_in_response_raises(self):
         client, session = _make_client()
         session.post.return_value = _mock_response(json_data={"other": "data"})
-        with pytest.raises(GrocyAPIError):
-            client.create_product("Voi")
+        with pytest.raises(StorageAPIError):
+            client.create_product("Voi", unit_id=1)
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=422))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=422)
-        with pytest.raises(GrocyAPIError):
-            client.create_product("Voi")
+        with pytest.raises(StorageAPIError):
+            client.create_product("Voi", unit_id=1)
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.add_barcode
+# StorageClient.add_barcode
 # ---------------------------------------------------------------------------
 
 class TestAddBarcode:
@@ -161,25 +155,25 @@ class TestAddBarcode:
         _, kwargs = session.post.call_args
         assert kwargs["json"]["product_id"] == 1
         assert kwargs["json"]["barcode"] == "9876543210987"
-        assert kwargs["json"]["amount"] == 1.0
+        assert kwargs["json"]["pack_size"] == 1.0
 
-    def test_adds_barcode_with_quantity_unit(self):
+    def test_adds_barcode_with_pack_unit(self):
         client, session = _make_client()
         session.post.return_value = _mock_response(json_data={})
-        client.add_barcode(2, "111", quantity_unit_id=7)
+        client.add_barcode(2, "111", pack_unit_id=7)
         _, kwargs = session.post.call_args
-        assert kwargs["json"]["qu_id"] == 7
+        assert kwargs["json"]["pack_unit_id"] == 7
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError):
+        with pytest.raises(StorageAPIError):
             client.add_barcode(1, "123")
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.get_all_products
+# StorageClient.get_all_products
 # ---------------------------------------------------------------------------
 
 class TestGetAllProducts:
@@ -199,12 +193,12 @@ class TestGetAllProducts:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError):
+        with pytest.raises(StorageAPIError):
             client.get_all_products()
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.get_all_barcodes
+# StorageClient.get_all_barcodes
 # ---------------------------------------------------------------------------
 
 class TestGetAllBarcodes:
@@ -220,12 +214,12 @@ class TestGetAllBarcodes:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError):
+        with pytest.raises(StorageAPIError):
             client.get_all_barcodes()
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.delete_product
+# StorageClient.delete_product
 # ---------------------------------------------------------------------------
 
 class TestDeleteProduct:
@@ -235,24 +229,24 @@ class TestDeleteProduct:
         client.delete_product(42)
         session.delete.assert_called_once()
         url = session.delete.call_args[0][0]
-        assert "/api/objects/products/42" in url
+        assert "/api/products/42" in url
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=404))
         session.delete.return_value = _mock_response(raise_for=http_err, status_code=404)
-        with pytest.raises(GrocyAPIError, match="delete product"):
+        with pytest.raises(StorageAPIError, match="delete product"):
             client.delete_product(42)
 
     def test_request_error_raises(self):
         client, session = _make_client()
         session.delete.side_effect = requests.ConnectionError("refused")
-        with pytest.raises(GrocyAPIError, match="delete product"):
+        with pytest.raises(StorageAPIError, match="delete product"):
             client.delete_product(42)
 
 
 # ---------------------------------------------------------------------------
-# GrocyClient.upload_product_image
+# StorageClient.upload_product_image
 # ---------------------------------------------------------------------------
 
 class TestUploadProductImage:
@@ -264,30 +258,29 @@ class TestUploadProductImage:
         assert session.put.call_count == 2
         # First call: file upload
         upload_url = session.put.call_args_list[0][0][0]
-        assert "/api/files/productpictures/" in upload_url
+        assert "/api/files/products/test.jpg" in upload_url
         upload_kwargs = session.put.call_args_list[0][1]
         assert upload_kwargs["data"] == b"\xff\xd8"
         assert upload_kwargs["headers"]["Content-Type"] == "image/jpeg"
-        # Second call: set picture_file_name
+        # Second call: set picture_filename
         set_url = session.put.call_args_list[1][0][0]
-        assert "/api/objects/products/42" in set_url
-        assert session.put.call_args_list[1][1]["json"]["picture_file_name"] == "test.jpg"
+        assert "/api/products/42" in set_url
+        assert session.put.call_args_list[1][1]["json"]["picture_filename"] == "test.jpg"
 
-    def test_filename_is_base64_encoded_in_url(self):
-        import base64
+    def test_filename_in_url_is_plain(self):
+        """Storage API uses plain filenames in the URL (not Base64 encoded)."""
         client, session = _make_client()
         session.put.return_value = _mock_response()
         client.upload_product_image(1, "photo.png", b"\x89PNG")
 
         upload_url = session.put.call_args_list[0][0][0]
-        expected = base64.b64encode(b"photo.png").decode()
-        assert expected in upload_url
+        assert "photo.png" in upload_url
 
     def test_upload_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         session.put.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="upload image"):
+        with pytest.raises(StorageAPIError, match="upload image"):
             client.upload_product_image(1, "x.jpg", b"data")
 
     def test_set_picture_http_error_raises(self):
@@ -296,7 +289,7 @@ class TestUploadProductImage:
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         err_resp = _mock_response(raise_for=http_err, status_code=500)
         session.put.side_effect = [ok_resp, err_resp]
-        with pytest.raises(GrocyAPIError, match="set picture"):
+        with pytest.raises(StorageAPIError, match="set picture"):
             client.upload_product_image(1, "x.jpg", b"data")
 
 
@@ -312,7 +305,7 @@ class TestGetLocations:
         result = client.get_locations()
         assert result == locations
         url = session.get.call_args[0][0]
-        assert "/api/objects/locations" in url
+        assert "/api/locations" in url
 
     def test_returns_empty_list_on_null_response(self):
         client, session = _make_client()
@@ -322,7 +315,7 @@ class TestGetLocations:
     def test_request_error_raises(self):
         client, session = _make_client()
         session.get.side_effect = requests.RequestException("timeout")
-        with pytest.raises(GrocyAPIError, match="locations"):
+        with pytest.raises(StorageAPIError, match="locations"):
             client.get_locations()
 
 
@@ -345,7 +338,7 @@ class TestEnsureProductGroup:
         client, session = _make_client()
         session.get.return_value = _mock_response(json_data=[])
         session.post.return_value = _mock_response(
-            json_data={"created_object_id": 15}
+            json_data={"id": 15}
         )
         result = client.ensure_product_group("Group master")
         assert result == 15
@@ -355,7 +348,7 @@ class TestEnsureProductGroup:
     def test_get_error_raises(self):
         client, session = _make_client()
         session.get.side_effect = requests.RequestException("timeout")
-        with pytest.raises(GrocyAPIError, match="product groups"):
+        with pytest.raises(StorageAPIError, match="product groups"):
             client.ensure_product_group("Group master")
 
     def test_create_http_error_raises(self):
@@ -363,7 +356,7 @@ class TestEnsureProductGroup:
         session.get.return_value = _mock_response(json_data=[])
         http_err = requests.HTTPError(response=MagicMock(status_code=422, text=""))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=422)
-        with pytest.raises(GrocyAPIError, match="create product group"):
+        with pytest.raises(StorageAPIError, match="create product group"):
             client.ensure_product_group("Group master")
 
 
@@ -377,7 +370,7 @@ class TestUpdateProduct:
         session.put.return_value = _mock_response()
         client.update_product(7, location_id=3, default_best_before_days=30)
         url = session.put.call_args[0][0]
-        assert "/api/objects/products/7" in url
+        assert "/api/products/7" in url
         body = session.put.call_args[1]["json"]
         assert body == {"location_id": 3, "default_best_before_days": 30}
 
@@ -385,13 +378,13 @@ class TestUpdateProduct:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=422, text=""))
         session.put.return_value = _mock_response(raise_for=http_err, status_code=422)
-        with pytest.raises(GrocyAPIError, match="update product"):
+        with pytest.raises(StorageAPIError, match="update product"):
             client.update_product(7, location_id=99)
 
     def test_request_error_raises(self):
         client, session = _make_client()
         session.put.side_effect = requests.RequestException("connection refused")
-        with pytest.raises(GrocyAPIError, match="update product"):
+        with pytest.raises(StorageAPIError, match="update product"):
             client.update_product(5, location_id=2)
 
 
@@ -406,10 +399,10 @@ class TestAddStock:
         client.add_stock(42, amount=2.0)
         session.post.assert_called_once()
         url = session.post.call_args[0][0]
-        assert "/api/stock/products/42/add" in url
+        assert "/api/stock/add" in url
         body = session.post.call_args[1]["json"]
+        assert body["product_id"] == 42
         assert body["amount"] == 2.0
-        assert body["transaction_type"] == "purchase"
 
     def test_default_amount_is_one(self):
         client, session = _make_client()
@@ -422,13 +415,13 @@ class TestAddStock:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
-        with pytest.raises(GrocyAPIError, match="add stock"):
+        with pytest.raises(StorageAPIError, match="add stock"):
             client.add_stock(42)
 
     def test_request_error_raises(self):
         client, session = _make_client()
         session.post.side_effect = requests.RequestException("timeout")
-        with pytest.raises(GrocyAPIError, match="add stock"):
+        with pytest.raises(StorageAPIError, match="add stock"):
             client.add_stock(42)
 
 
@@ -447,7 +440,7 @@ class TestGetProductStockLocations:
         result = client.get_product_stock_locations(42)
         assert result == data
         url = session.get.call_args[0][0]
-        assert "/api/stock/products/42/locations" in url
+        assert "/api/stock/product/42" in url
 
     def test_returns_empty_list_on_null(self):
         client, session = _make_client()
@@ -458,13 +451,13 @@ class TestGetProductStockLocations:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="stock locations"):
+        with pytest.raises(StorageAPIError, match="stock locations"):
             client.get_product_stock_locations(42)
 
     def test_request_error_raises(self):
         client, session = _make_client()
         session.get.side_effect = requests.RequestException("timeout")
-        with pytest.raises(GrocyAPIError, match="stock locations"):
+        with pytest.raises(StorageAPIError, match="stock locations"):
             client.get_product_stock_locations(42)
 
 
@@ -479,23 +472,24 @@ class TestTransferStock:
         client.transfer_stock(42, amount=3.0, location_id_from=2, location_id_to=5)
         session.post.assert_called_once()
         url = session.post.call_args[0][0]
-        assert "/api/stock/products/42/transfer" in url
+        assert "/api/stock/transfer" in url
         body = session.post.call_args[1]["json"]
+        assert body["product_id"] == 42
         assert body["amount"] == 3.0
-        assert body["location_id_from"] == 2
-        assert body["location_id_to"] == 5
+        assert body["from_location_id"] == 2
+        assert body["to_location_id"] == 5
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
-        with pytest.raises(GrocyAPIError, match="transfer stock"):
+        with pytest.raises(StorageAPIError, match="transfer stock"):
             client.transfer_stock(42, 1.0, 2, 5)
 
     def test_request_error_raises(self):
         client, session = _make_client()
         session.post.side_effect = requests.RequestException("timeout")
-        with pytest.raises(GrocyAPIError, match="transfer stock"):
+        with pytest.raises(StorageAPIError, match="transfer stock"):
             client.transfer_stock(42, 1.0, 2, 5)
 
 
@@ -511,71 +505,71 @@ class TestGetQuantityUnits:
         session.get.return_value = _mock_response(json_data=units)
         result = client.get_quantity_units()
         assert result == units
-        assert "/api/objects/quantity_units" in session.get.call_args[0][0]
+        assert "/api/units" in session.get.call_args[0][0]
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="quantity units"):
+        with pytest.raises(StorageAPIError, match="quantity units"):
             client.get_quantity_units()
 
 
 class TestGetQuantityUnitConversions:
     def test_returns_conversions(self):
         client, session = _make_client()
-        convs = [{"id": 1, "from_qu_id": 2, "to_qu_id": 3, "factor": 1000}]
+        convs = [{"id": 1, "from_unit_id": 2, "to_unit_id": 3, "factor": 1000}]
         session.get.return_value = _mock_response(json_data=convs)
         result = client.get_quantity_unit_conversions()
-        assert result == convs
+        assert result[0]["from_unit_id"] == 2
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="QU conversions"):
+        with pytest.raises(StorageAPIError, match="QU conversions"):
             client.get_quantity_unit_conversions()
 
 
 class TestCreateQuantityUnit:
     def test_creates_unit(self):
         client, session = _make_client()
-        session.post.return_value = _mock_response(json_data={"created_object_id": 5})
-        uid = client.create_quantity_unit("Gramma", "Grammaa", "g")
+        session.post.return_value = _mock_response(json_data={"id": 5})
+        uid = client.create_quantity_unit("Gramma", abbreviation="g", name_plural="Grammaa")
         assert uid == 5
         payload = session.post.call_args[1]["json"]
         assert payload["name"] == "Gramma"
+        assert payload["abbreviation"] == "g"
         assert payload["name_plural"] == "Grammaa"
-        assert payload["description"] == "g"
 
     def test_minimal_payload(self):
         client, session = _make_client()
-        session.post.return_value = _mock_response(json_data={"created_object_id": 6})
+        session.post.return_value = _mock_response(json_data={"id": 6})
         uid = client.create_quantity_unit("Litra")
         assert uid == 6
         payload = session.post.call_args[1]["json"]
-        assert payload == {"name": "Litra"}
+        assert payload["name"] == "Litra"
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
-        with pytest.raises(GrocyAPIError, match="create QU"):
+        with pytest.raises(StorageAPIError, match="create QU"):
             client.create_quantity_unit("Bad")
 
 
 class TestCreateQuantityUnitConversion:
     def test_creates_global_conversion(self):
         client, session = _make_client()
-        session.post.return_value = _mock_response(json_data={"created_object_id": 10})
+        session.post.return_value = _mock_response(json_data={"id": 10})
         cid = client.create_quantity_unit_conversion(2, 3, 1000.0)
         assert cid == 10
         payload = session.post.call_args[1]["json"]
-        assert payload == {"from_qu_id": 2, "to_qu_id": 3, "factor": 1000.0}
+        assert payload == {"from_unit_id": 2, "to_unit_id": 3, "factor": 1000.0}
 
     def test_creates_product_specific_conversion(self):
         client, session = _make_client()
-        session.post.return_value = _mock_response(json_data={"created_object_id": 11})
+        session.post.return_value = _mock_response(json_data={"id": 11})
         cid = client.create_quantity_unit_conversion(1, 5, 1.0, product_id=42)
         assert cid == 11
         payload = session.post.call_args[1]["json"]
@@ -585,7 +579,7 @@ class TestCreateQuantityUnitConversion:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
         session.post.return_value = _mock_response(raise_for=http_err, status_code=400)
-        with pytest.raises(GrocyAPIError, match="QU conversion"):
+        with pytest.raises(StorageAPIError, match="QU conversion"):
             client.create_quantity_unit_conversion(1, 2, 1.0)
 
 
@@ -594,7 +588,7 @@ class TestDeleteQuantityUnitConversion:
         client, session = _make_client()
         session.delete.return_value = _mock_response(status_code=204)
         client.delete_quantity_unit_conversion(10)
-        assert "/api/objects/quantity_unit_conversions/10" in session.delete.call_args[0][0]
+        assert "/api/conversions/10" in session.delete.call_args[0][0]
 
     def test_404_is_silent(self):
         client, session = _make_client()
@@ -605,7 +599,7 @@ class TestDeleteQuantityUnitConversion:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
         session.delete.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="delete QU conversion"):
+        with pytest.raises(StorageAPIError, match="delete QU conversion"):
             client.delete_quantity_unit_conversion(10)
 
 
@@ -614,7 +608,7 @@ class TestDeleteQuantityUnit:
         client, session = _make_client()
         session.delete.return_value = _mock_response(status_code=204)
         client.delete_quantity_unit(5)
-        assert "/api/objects/quantity_units/5" in session.delete.call_args[0][0]
+        assert "/api/units/5" in session.delete.call_args[0][0]
 
     def test_404_is_silent(self):
         client, session = _make_client()
@@ -625,76 +619,80 @@ class TestDeleteQuantityUnit:
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
         session.delete.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="delete QU"):
+        with pytest.raises(StorageAPIError, match="delete QU"):
             client.delete_quantity_unit(5)
 
 
 class TestGetRecipePositions:
     def test_returns_positions(self):
         client, session = _make_client()
-        data = [{"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 5}]
-        session.get.return_value = _mock_response(json_data=data)
+        # First call returns recipe list, second returns recipe detail with ingredients
+        recipes_resp = _mock_response(json_data=[{"id": 1}])
+        detail_resp = _mock_response(json_data={
+            "id": 1,
+            "ingredients": [{"id": 1, "product_id": 10, "unit_id": 5}]
+        })
+        session.get.side_effect = [recipes_resp, detail_resp]
         result = client.get_recipe_positions()
-        assert result == data
-        assert "/api/objects/recipes_pos" in session.get.call_args[0][0]
+        assert len(result) == 1
+        assert result[0]["recipe_id"] == 1
+        assert result[0]["product_id"] == 10
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="recipe positions"):
+        with pytest.raises(StorageAPIError, match="recipes"):
             client.get_recipe_positions()
 
 
 class TestUpdateRecipePosition:
     def test_updates_position(self):
         client, session = _make_client()
-        session.put.return_value = _mock_response(status_code=204)
+        # Populate the internal mapping first
+        recipes_resp = _mock_response(json_data=[{"id": 5}])
+        detail_resp = _mock_response(json_data={
+            "id": 5,
+            "ingredients": [{"id": 1, "product_id": 10, "unit_id": 7}]
+        })
+        ok_resp = _mock_response(status_code=204)
+        session.get.side_effect = [recipes_resp, detail_resp]
+        session.put.return_value = ok_resp
+        client.get_recipe_positions()
         client.update_recipe_position(1, qu_id=7)
-        assert "/api/objects/recipes_pos/1" in session.put.call_args[0][0]
+        assert "/api/recipes/5/ingredients/1" in session.put.call_args[0][0]
         payload = session.put.call_args[1]["json"]
         assert payload["qu_id"] == 7
 
-    def test_http_error_raises(self):
+    def test_unknown_ingredient_raises(self):
         client, session = _make_client()
-        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
-        session.put.return_value = _mock_response(raise_for=http_err, status_code=400)
-        with pytest.raises(GrocyAPIError, match="recipe position"):
-            client.update_recipe_position(1, qu_id=7)
+        with pytest.raises(StorageAPIError, match="Unknown recipe"):
+            client.update_recipe_position(999, qu_id=7)
 
 
 class TestGetStockEntries:
     def test_returns_entries(self):
         client, session = _make_client()
-        data = [{"id": 1, "product_id": 10, "qu_id": 5, "amount": 1}]
+        data = [{"id": 1, "product_id": 10, "amount": 1}]
         session.get.return_value = _mock_response(json_data=data)
         result = client.get_stock_entries(product_id=10)
         assert result == data
-        assert "/api/objects/stock" in session.get.call_args[0][0]
+        assert "/api/stock/product/10" in session.get.call_args[0][0]
+
+    def test_returns_all_without_product_id(self):
+        client, session = _make_client()
+        data = [{"id": 1, "product_id": 10, "amount": 1}]
+        session.get.return_value = _mock_response(json_data=data)
+        result = client.get_stock_entries()
+        assert result == data
+        assert session.get.call_args[0][0].endswith("/api/stock")
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=500, text=""))
         session.get.return_value = _mock_response(raise_for=http_err, status_code=500)
-        with pytest.raises(GrocyAPIError, match="stock entries"):
+        with pytest.raises(StorageAPIError, match="stock entries"):
             client.get_stock_entries()
-
-
-class TestUpdateStockEntry:
-    def test_updates_entry(self):
-        client, session = _make_client()
-        session.put.return_value = _mock_response(status_code=204)
-        client.update_stock_entry(1, qu_id=7)
-        assert "/api/objects/stock/1" in session.put.call_args[0][0]
-        payload = session.put.call_args[1]["json"]
-        assert payload["qu_id"] == 7
-
-    def test_http_error_raises(self):
-        client, session = _make_client()
-        http_err = requests.HTTPError(response=MagicMock(status_code=400, text=""))
-        session.put.return_value = _mock_response(raise_for=http_err, status_code=400)
-        with pytest.raises(GrocyAPIError, match="stock entry"):
-            client.update_stock_entry(1, qu_id=7)
 
 
 class TestDeleteStockEntry:
@@ -702,11 +700,11 @@ class TestDeleteStockEntry:
         client, session = _make_client()
         session.delete.return_value = _mock_response(status_code=204)
         client.delete_stock_entry(42)
-        assert "/api/objects/stock/42" in session.delete.call_args[0][0]
+        assert "/api/stock/42" in session.delete.call_args[0][0]
 
     def test_http_error_raises(self):
         client, session = _make_client()
         http_err = requests.HTTPError(response=MagicMock(status_code=404, text=""))
         session.delete.return_value = _mock_response(raise_for=http_err, status_code=404)
-        with pytest.raises(GrocyAPIError, match="stock entry"):
+        with pytest.raises(StorageAPIError, match="stock entry"):
             client.delete_stock_entry(42)
