@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.19.10
+
+- Full QU repair for stocked products: delete stock entries, fix all 4 QU fields, then re-add stock
+- Parent products inherit quantity unit from children instead of defaulting to kpl
+- Add delete_stock_entry method to GrocyClient
+
 ## 1.19.9
 
 - Fix products losing default quantity units (stock/purchase/consume/price) when QU consolidation deletes duplicate units

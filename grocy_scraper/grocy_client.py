@@ -761,6 +761,25 @@ class GrocyClient:
                 f"Failed to update stock entry {entry_id}: {exc}"
             ) from exc
 
+    def delete_stock_entry(self, entry_id: int) -> None:
+        """Delete a single stock entry by its ID.
+
+        Uses ``DELETE /api/objects/stock/{id}``.
+        """
+        url = self._url(f"/api/objects/stock/{entry_id}")
+        try:
+            resp = self._session.delete(url, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise GrocyAPIError(
+                f"Failed to delete stock entry {entry_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise GrocyAPIError(
+                f"Failed to delete stock entry {entry_id}: {exc}"
+            ) from exc
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
