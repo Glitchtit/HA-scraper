@@ -3496,15 +3496,24 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         # Add to Grocy stock.
         if grocy_id is not None:
             discovered_ids.append(int(grocy_id))
-            stock_amount = float(entry.get("import_stock_amount") or 0) or 1.0
-            try:
-                grocy.add_stock(int(grocy_id), amount=stock_amount)
+            raw_stock = entry.get("import_stock_amount")
+            is_grocy_import = entry.get("source") == "grocy-import"
+            if is_grocy_import and raw_stock is None:
+                # Grocy import with NULL amount = product had no stock in Grocy — skip.
                 logger.info(
-                    "  → Added %g unit(s) to Grocy stock (product ID %s).",
-                    stock_amount, grocy_id,
+                    "  → Skipping stock for product ID %s (not in Grocy stock).",
+                    grocy_id,
                 )
-            except (StorageAPIError, ValueError) as exc:
-                logger.warning("  Could not add stock for '%s': %s", product.name, exc)
+            else:
+                stock_amount = float(raw_stock) if raw_stock is not None else 1.0
+                try:
+                    grocy.add_stock(int(grocy_id), amount=stock_amount)
+                    logger.info(
+                        "  → Added %g unit(s) to Grocy stock (product ID %s).",
+                        stock_amount, grocy_id,
+                    )
+                except (StorageAPIError, ValueError) as exc:
+                    logger.warning("  Could not add stock for '%s': %s", product.name, exc)
 
         # Mark the queue item as done.
         if queue_id is not None:
