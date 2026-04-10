@@ -883,7 +883,7 @@ RULES:
         try:
             result = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("Gemini package size batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
+            logger.warning("AI package size batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
             continue
 
         if not isinstance(result, list):
@@ -1050,7 +1050,7 @@ RULES:
         try:
             result = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("Gemini density batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
+            logger.warning("AI density batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
             continue
 
         if not isinstance(result, list):
@@ -1695,7 +1695,7 @@ def _ai_sort_products(grocy: StorageClient, gemini_api_key: str, model: str = _G
         f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
     )
     logger.info(
-        "Asking Gemini to assign locations for %d product(s) …", len(products)
+        "Asking AI to assign locations for %d product(s) …", len(products)
     )
 
     updated = 0
@@ -1721,11 +1721,11 @@ def _ai_sort_products(grocy: StorageClient, gemini_api_key: str, model: str = _G
         try:
             mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.error("Gemini sort batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
+            logger.error("AI sort batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
 
         if not isinstance(mapping, dict):
-            logger.error("Gemini sort batch %d: expected JSON object, got %s — skipping.", i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__)
+            logger.error("AI sort batch %d: expected JSON object, got %s — skipping.", i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__)
             continue
 
         for product in batch:
@@ -1810,7 +1810,7 @@ def _ai_assign_due_dates(grocy: StorageClient, gemini_api_key: str, model: str =
         return 0
 
     logger.info(
-        "Asking Gemini to estimate due dates for %d product(s) …", len(products)
+        "Asking AI to estimate due dates for %d product(s) …", len(products)
     )
 
     updated = 0
@@ -1837,11 +1837,11 @@ def _ai_assign_due_dates(grocy: StorageClient, gemini_api_key: str, model: str =
         try:
             mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.error("Gemini date batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
+            logger.error("AI date batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
 
         if not isinstance(mapping, dict):
-            logger.error("Gemini date batch %d: expected JSON object, got %s — skipping.", i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__)
+            logger.error("AI date batch %d: expected JSON object, got %s — skipping.", i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__)
             continue
 
         for product in batch:
@@ -1945,11 +1945,11 @@ def _deduplicate_parent_products(
     try:
         mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
     except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-        logger.warning("Gemini dedup call failed: %s", exc)
+        logger.warning("AI dedup call failed: %s", exc)
         return 0, {}
 
     if not isinstance(mapping, dict):
-        logger.warning("Gemini dedup call: expected JSON object, got %s — skipping.", type(mapping).__name__)
+        logger.warning("AI dedup call: expected JSON object, got %s — skipping.", type(mapping).__name__)
         return 0, {}
 
     # Build canonical → [non-canonical IDs] from the mapping.
@@ -2168,7 +2168,7 @@ def _ai_group_products(
         except StorageAPIError:
             pass
 
-    logger.info("Asking Gemini to group %d product(s) …", len(candidates))
+    logger.info("Asking AI to group %d product(s) …", len(candidates))
 
     updated = 0
     for i in range(0, len(candidates), _GEMINI_BATCH_SIZE):
@@ -2247,14 +2247,14 @@ def _ai_group_products(
             mapping: dict = _call_gemini_json(prompt, gemini_api_key, effective_model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error(
-                "Gemini group batch %d failed: %s",
+                "AI group batch %d failed: %s",
                 i // _GEMINI_BATCH_SIZE + 1, exc,
             )
             continue
 
         if not isinstance(mapping, dict):
             logger.error(
-                "Gemini group batch %d: expected JSON object, got %s — skipping.",
+                "AI group batch %d: expected JSON object, got %s — skipping.",
                 i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__,
             )
             continue
@@ -2618,7 +2618,7 @@ def _ai_optimize_products(
     except StorageAPIError as exc:
         logger.warning("Could not ensure 'Group master' product group: %s", exc)
 
-    logger.info("Asking Gemini to optimize %d product(s) …", len(products))
+    logger.info("Asking AI to optimize %d product(s) …", len(products))
 
     # Pre-load unit map for pack handling (unit abbreviation → ID).
     _unit_abbrev_to_id: dict[str, int] = {}
@@ -2736,14 +2736,14 @@ def _ai_optimize_products(
             mapping: dict = _call_gemini_json(prompt, gemini_api_key, effective_model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
             logger.error(
-                "Gemini optimize batch %d failed: %s",
+                "AI optimize batch %d failed: %s",
                 i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc,
             )
             continue
 
         if not isinstance(mapping, dict):
             logger.error(
-                "Gemini optimize batch %d: expected JSON object, got %s — skipping.",
+                "AI optimize batch %d: expected JSON object, got %s — skipping.",
                 i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, type(mapping).__name__,
             )
             continue

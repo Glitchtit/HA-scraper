@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.21.9
+- Storage version now read dynamically from config.json (fixes "0.1.0" shown on every startup)
+- Log AI provider + model on ingress_server startup (Gemini key/model or Ollama url/model)
+- All "Asking Gemini…" and "Gemini batch…" log messages changed to "AI" (provider-agnostic)
+
 ## 1.21.8
 - Log AI token usage after every successful AI call:
   Gemini: prompt/output/total token counts; Ollama: prompt/output tokens + total duration (ms)

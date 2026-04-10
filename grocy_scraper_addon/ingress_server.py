@@ -1319,6 +1319,22 @@ if __name__ == "__main__":
     storage_url = _resolve_storage_url(opts)
     if storage_url:
         _wait_for_storage(storage_url)
+    # Log configured AI provider
+    provider = opts.get("ai_provider", "gemini")
+    if provider == "ollama":
+        ollama_url = opts.get("ollama_url", "").strip()
+        ollama_model = opts.get("ollama_model", "llama3").strip() or "llama3"
+        if ollama_url:
+            logger.info("AI provider: Ollama (url=%s, model=%s)", ollama_url, ollama_model)
+        else:
+            logger.warning("AI provider: Ollama selected but no URL configured")
+    else:
+        gemini_key = opts.get("gemini_api_key", "")
+        gemini_model = opts.get("gemini_model", "gemini-1.5-flash")
+        if gemini_key:
+            logger.info("AI provider: Gemini (model=%s)", gemini_model)
+        else:
+            logger.warning("AI provider: Gemini selected but no API key configured")
     server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
     print(f"Ingress server listening on port {_PORT}")
     server.serve_forever()
