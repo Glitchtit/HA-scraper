@@ -1303,7 +1303,7 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 def _wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) -> None:
-    """Block until Storage addon is reachable."""
+    """Block until Storage addon is reachable (best-effort; continues if not found)."""
     import time
     import requests as _req
 
@@ -1318,7 +1318,50 @@ def _wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) 
         if attempt < max_retries:
             logger.info("Storage not ready (attempt %d/%d), retrying in %.0fs…", attempt, max_retries, delay)
             time.sleep(delay)
-    raise SystemExit("ERROR: Storage addon not reachable after %d attempts." % max_retries)
+    logger.warning("Storage addon not reachable after %d attempts — background monitor will keep retrying.", max_retries)
+
+
+def _start_storage_health_monitor(interval: float = 30.0) -> None:
+    """Start a daemon thread that periodically health-checks the cached Storage URL.
+
+    - If the URL is unknown: try to detect it (pre-populate the cache).
+    - If the URL is known but unreachable: clear the cache so the next API call
+      triggers re-detection, then immediately attempt re-detection here too.
+    - Runs forever with no upper retry limit.
+    """
+    import time
+    import requests as _req
+
+    def _monitor() -> None:
+        global _cached_storage_url
+        while True:
+            time.sleep(interval)
+            opts = _read_options()
+            current = _cached_storage_url
+            if not current:
+                # Not yet detected — try now.
+                _cached_storage_url = None  # ensure fresh detection
+                detected = _resolve_storage_url(opts)
+                if detected:
+                    logger.info("Storage URL detected by health monitor: %s", detected)
+            else:
+                # Health-check the known URL.
+                try:
+                    resp = _req.get(f"{current}/api/health", timeout=3)
+                    if not resp.ok:
+                        raise _req.RequestException("non-OK status")
+                except _req.RequestException:
+                    logger.warning("Storage at %s unreachable — re-detecting…", current)
+                    _cached_storage_url = None
+                    detected = _resolve_storage_url(opts)
+                    if detected and detected != current:
+                        logger.info("Storage re-detected at %s.", detected)
+                    elif not detected:
+                        logger.warning("Storage not found — will retry next cycle.")
+
+    t = threading.Thread(target=_monitor, daemon=True, name="storage-health-monitor")
+    t.start()
+    logger.info("Storage health monitor started (interval: %.0fs).", interval)
 
 
 if __name__ == "__main__":
@@ -1350,6 +1393,7 @@ if __name__ == "__main__":
             logger.info("AI provider: Gemini (model=%s)", gemini_model)
         else:
             logger.warning("AI provider: Gemini selected but no API key configured")
+    _start_storage_health_monitor()
     server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
     print(f"Ingress server listening on port {_PORT}")
     server.serve_forever()
