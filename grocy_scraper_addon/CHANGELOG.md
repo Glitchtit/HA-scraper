@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.1
+
+- Stop deactivating parent products (they are now visible in Storage UI)
+
 ## 1.21.0
 
 - StorageClient auto-detects default unit ("kpl") when creating products
