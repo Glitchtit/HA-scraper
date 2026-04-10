@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.21.12
+- Add Claude AI provider support (anthropic SDK)
+- `claude_api_key` and `claude_model` options in addon config
+- `_call_claude()` function in main.py routed via `_call_gemini_json()` dispatcher
+- Startup log now reports Claude provider + model
+- `_has_ai()` and `_setup_ai_globals()` updated for claude provider
+
 ## 1.21.11
 - Optimize: 3-phase batched pipeline replaces single 1000-item AI call
   - Phase 1: establish categories + parent products in 100-item batches with

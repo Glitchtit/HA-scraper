@@ -269,6 +269,11 @@ def _setup_ai_globals(opts: dict[str, Any]) -> None:
     if provider == "ollama":
         _main.OLLAMA_URL = opts.get("ollama_url", "").strip()
         _main.OLLAMA_MODEL = opts.get("ollama_model", "llama3").strip() or "llama3"
+    elif provider == "claude":
+        _main.CLAUDE_API_KEY = opts.get("claude_api_key", "").strip()
+        _main.CLAUDE_MODEL = (
+            opts.get("claude_model", "").strip() or "claude-3-5-haiku-20241022"
+        )
 
 
 def _has_ai(opts: dict[str, Any]) -> bool:
@@ -276,6 +281,8 @@ def _has_ai(opts: dict[str, Any]) -> bool:
     provider = opts.get("ai_provider", "gemini")
     if provider == "ollama":
         return bool(opts.get("ollama_url", "").strip())
+    if provider == "claude":
+        return bool(opts.get("claude_api_key", "").strip())
     return bool(opts.get("gemini_api_key", ""))
 
 
@@ -290,7 +297,8 @@ def _ai_not_configured_response() -> dict[str, Any]:
                 "level": "WARNING",
                 "message": (
                     "An AI provider must be configured. "
-                    "Set a Gemini API key or configure an Ollama URL in the add-on settings."
+                    "Set a Gemini API key, configure an Ollama URL, or set a Claude API key "
+                    "in the add-on settings."
                 ),
             }
         ],
@@ -1328,6 +1336,13 @@ if __name__ == "__main__":
             logger.info("AI provider: Ollama (url=%s, model=%s)", ollama_url, ollama_model)
         else:
             logger.warning("AI provider: Ollama selected but no URL configured")
+    elif provider == "claude":
+        claude_key = opts.get("claude_api_key", "").strip()
+        claude_model = opts.get("claude_model", "claude-3-5-haiku-20241022").strip() or "claude-3-5-haiku-20241022"
+        if claude_key:
+            logger.info("AI provider: Claude (model=%s)", claude_model)
+        else:
+            logger.warning("AI provider: Claude selected but no API key configured")
     else:
         gemini_key = opts.get("gemini_api_key", "")
         gemini_model = opts.get("gemini_model", "gemini-1.5-flash")
