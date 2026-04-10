@@ -3,7 +3,7 @@
 Serves a single-page application that lets users:
 
 * Search for K-Ruoka products by keyword
-* Run Discover, Optimize, Sort, Date, Group, and Update operations via action buttons
+* Run Discover and Update operations via action buttons
 * View console/log output in a terminal pane with verbose toggle
 
 API endpoints
@@ -442,94 +442,6 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"success": result_code == 0, "skipped": False, "logs": logs}
 
 
-def _handle_optimize() -> dict[str, Any]:
-    """Run AI combined optimization (sort + date + group + pack)."""
-    opts = _read_options()
-    if not _has_ai(opts):
-        return _ai_not_configured_response()
-
-    from grocy_scraper.storage_client import StorageClient
-    import main as _main
-
-    _setup_ai_globals(opts)
-    grocy = StorageClient(base_url=_resolve_storage_url(opts))
-    gemini_key = opts.get("gemini_api_key", "")
-    model = opts.get("gemini_model", "gemini-1.5-flash")
-    optimize_model = opts.get("gemini_model_optimize", "")
-    with _capture_logs() as logs:
-        updated: int = _main._ai_optimize_products(
-            grocy,
-            gemini_key,
-            model,
-            optimize_model=optimize_model,
-            location_id=None,
-            quantity_unit_id=None,
-        )
-    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
-
-
-def _handle_sort() -> dict[str, Any]:
-    """Run AI product-location sorting."""
-    opts = _read_options()
-    if not _has_ai(opts):
-        return _ai_not_configured_response()
-
-    from grocy_scraper.storage_client import StorageClient
-    import main as _main
-
-    _setup_ai_globals(opts)
-    grocy = StorageClient(base_url=_resolve_storage_url(opts))
-    gemini_key = opts.get("gemini_api_key", "")
-    model = opts.get("gemini_model", "gemini-1.5-flash")
-    with _capture_logs() as logs:
-        updated: int = _main._ai_sort_products(grocy, gemini_key, model)
-    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
-
-
-def _handle_date() -> dict[str, Any]:
-    """Run AI best-before-date assignment."""
-    opts = _read_options()
-    if not _has_ai(opts):
-        return _ai_not_configured_response()
-
-    from grocy_scraper.storage_client import StorageClient
-    import main as _main
-
-    _setup_ai_globals(opts)
-    grocy = StorageClient(base_url=_resolve_storage_url(opts))
-    gemini_key = opts.get("gemini_api_key", "")
-    model = opts.get("gemini_model", "gemini-1.5-flash")
-    with _capture_logs() as logs:
-        updated: int = _main._ai_assign_due_dates(grocy, gemini_key, model)
-    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
-
-
-def _handle_group() -> dict[str, Any]:
-    """Run AI product grouping (parent-product assignment)."""
-    opts = _read_options()
-    if not _has_ai(opts):
-        return _ai_not_configured_response()
-
-    from grocy_scraper.storage_client import StorageClient
-    import main as _main
-
-    _setup_ai_globals(opts)
-    grocy = StorageClient(base_url=_resolve_storage_url(opts))
-    gemini_key = opts.get("gemini_api_key", "")
-    model = opts.get("gemini_model", "gemini-1.5-flash")
-    optimize_model = opts.get("gemini_model_optimize", "")
-    with _capture_logs() as logs:
-        updated: int = _main._ai_group_products(
-            grocy,
-            gemini_key,
-            model,
-            optimize_model=optimize_model,
-            location_id=None,
-            quantity_unit_id=None,
-        )
-    return {"success": True, "skipped": False, "updated": updated, "logs": logs}
-
-
 def _handle_update() -> dict[str, Any]:
     """Update existing Grocy products from K-Ruoka / S-kaupat."""
     opts = _read_options()
@@ -846,10 +758,6 @@ _HTML = """\
     <h2>&#128295; Actions</h2>
     <div class="action-row">
       <button class="btn btn-discover" id="discover-btn">&#128269; Discover</button>
-      <button class="btn btn-optimize" id="optimize-btn">&#10024; Optimize</button>
-      <button class="btn btn-sort"     id="sort-btn">&#128230; Sort</button>
-      <button class="btn btn-date"     id="date-btn">&#128197; Date</button>
-      <button class="btn btn-group"    id="group-btn">&#128279; Group</button>
       <button class="btn btn-update"   id="update-btn">&#128260; Update</button>
     </div>
     <div class="status" id="action-status"></div>
@@ -896,10 +804,6 @@ _HTML = """\
   var selectionCount = $("#selection-count");
   var addStatus   = $("#add-status");
   var discoverBtn = $("#discover-btn");
-  var optimizeBtn = $("#optimize-btn");
-  var sortBtn     = $("#sort-btn");
-  var dateBtn     = $("#date-btn");
-  var groupBtn    = $("#group-btn");
   var updateBtn   = $("#update-btn");
   var actionStat  = $("#action-status");
   var terminal    = $("#terminal");
@@ -908,7 +812,7 @@ _HTML = """\
   var configCard  = $("#config-card");
   var configInfo  = $("#config-info");
 
-  var actionBtns = [discoverBtn, optimizeBtn, sortBtn, dateBtn, groupBtn, updateBtn];
+  var actionBtns = [discoverBtn, updateBtn];
   var lastProducts = [];
 
   // ── Utilities ─────────────────────────────────────────────────────────────
@@ -1155,10 +1059,6 @@ _HTML = """\
     if (e.target.classList.contains("product-check")) updateSelectionCount();
   });
   discoverBtn.addEventListener("click", function () { runAction("discover", "Discover"); });
-  optimizeBtn.addEventListener("click", function () { runAction("optimize", "Optimize"); });
-  sortBtn.addEventListener("click",     function () { runAction("sort", "Sort"); });
-  dateBtn.addEventListener("click",     function () { runAction("date", "Date"); });
-  groupBtn.addEventListener("click",    function () { runAction("group", "Group"); });
   updateBtn.addEventListener("click",   function () { runAction("update", "Update"); });
   verboseChk.addEventListener("change", function () {
     verbose = verboseChk.checked;
@@ -1183,10 +1083,6 @@ _HTML = """\
 _POST_HANDLERS: dict[str, Any] = {
     "/api/search": _handle_search,
     "/api/discover": _handle_discover,
-    "/api/optimize": _handle_optimize,
-    "/api/sort": _handle_sort,
-    "/api/date": _handle_date,
-    "/api/group": _handle_group,
     "/api/update": _handle_update,
     "/api/add_products": _handle_add_products,
 }
