@@ -786,7 +786,7 @@ def _ai_detect_package_sizes(
         if cpid is not None and cpid != "":
             products_with_conv.add(int(cpid))
 
-    # Skip parent-only placeholders (inactive products)
+    # Skip products that already have conversions
     candidates = [
         p for p in products
         if int(p["id"]) not in products_with_conv
@@ -2237,18 +2237,19 @@ def _ai_group_products(
                     continue
 
             # Configure the parent: assign to "Group master" product group.
-            parent_update: dict = {"active": False}
+            parent_update: dict = {}
             if group_master_id is not None:
                 parent_update["product_group_id"] = group_master_id
-            try:
-                grocy.update_product(
-                    parent_name_to_id[parent_name], **parent_update,
-                )
-            except StorageAPIError as exc:
-                logger.warning(
-                    "Could not update parent product '%s': %s",
-                    parent_name, exc,
-                )
+            if parent_update:
+                try:
+                    grocy.update_product(
+                        parent_name_to_id[parent_name], **parent_update,
+                    )
+                except StorageAPIError as exc:
+                    logger.warning(
+                        "Could not update parent product '%s': %s",
+                        parent_name, exc,
+                    )
 
         # Ensure each broad category product group exists.
         category_name_to_group_id: dict[str, int] = {}
@@ -2703,13 +2704,14 @@ def _ai_optimize_products(
                     logger.warning("Could not create parent product '%s': %s", parent_name, exc)
                     continue
 
-            parent_update: dict = {"active": False}
+            parent_update: dict = {}
             if group_master_id is not None:
                 parent_update["product_group_id"] = group_master_id
-            try:
-                grocy.update_product(parent_name_to_id[parent_name], **parent_update)
-            except StorageAPIError as exc:
-                logger.warning("Could not update parent product '%s': %s", parent_name, exc)
+            if parent_update:
+                try:
+                    grocy.update_product(parent_name_to_id[parent_name], **parent_update)
+                except StorageAPIError as exc:
+                    logger.warning("Could not update parent product '%s': %s", parent_name, exc)
 
         # Ensure each broad category product group exists.
         category_name_to_group_id: dict[str, int] = {}

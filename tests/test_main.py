@@ -1001,7 +1001,6 @@ class TestAiGroupProducts:
         # product group, and hidden from the stock overview.
         grocy.update_product.assert_any_call(
             100,
-            active=False,
             product_group_id=self._GROUP_MASTER_ID,
         )
         # Child products should be updated with parent_id and the
@@ -1037,7 +1036,6 @@ class TestAiGroupProducts:
         # Existing parent should still be updated with group / hide flags.
         grocy.update_product.assert_any_call(
             10,
-            active=False,
             product_group_id=self._GROUP_MASTER_ID,
         )
 
@@ -1196,11 +1194,9 @@ class TestAiGroupProducts:
 
         result = _ai_group_products(grocy, "key")
         assert result == 2
-        # Parent should be updated without product_group_id.
-        grocy.update_product.assert_any_call(
-            100,
-            active=False,
-        )
+        # Parent should NOT be updated (no group master, no flags to set).
+        update_calls = [c for c in grocy.update_product.call_args_list if c[0] == (100,)]
+        assert len(update_calls) == 0, f"Unexpected parent update: {update_calls}"
         # Children should be updated without product_group_id.
         grocy.update_product.assert_any_call(1, parent_id=100)
         grocy.update_product.assert_any_call(2, parent_id=100)
