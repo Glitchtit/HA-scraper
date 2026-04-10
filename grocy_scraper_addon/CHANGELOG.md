@@ -1,3 +1,6 @@
+## 1.21.14
+- Persistent Storage health monitoring: background thread runs forever, re-detects Storage if it goes down or moves; startup no longer fatal if Storage is unavailable
+
 # Changelog
 
 ## 1.21.13
