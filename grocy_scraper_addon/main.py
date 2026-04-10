@@ -2055,7 +2055,7 @@ def _ai_group_products(
             ppid = p.get("parent_id")
             if ppid:
                 try:
-                    grocy.update_product(int(p["id"]), parent_id="")
+                    grocy.update_product(int(p["id"]), parent_id=None)
                 except StorageAPIError as exc:
                     logger.warning(
                         "Could not strip parent from '%s': %s",
@@ -2508,7 +2508,7 @@ def _ai_optimize_products(
             ppid = p.get("parent_id")
             if ppid:
                 try:
-                    grocy.update_product(int(p["id"]), parent_id="")
+                    grocy.update_product(int(p["id"]), parent_id=None)
                 except StorageAPIError as exc:
                     logger.warning(
                         "Could not strip parent from '%s': %s",

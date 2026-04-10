@@ -1079,7 +1079,7 @@ class TestAiGroupProducts:
 
         result = _ai_group_products(grocy, "gemini-key")
         # Parent stripping: product 1 had its parent removed.
-        grocy.update_product.assert_any_call(1, parent_id="")
+        grocy.update_product.assert_any_call(1, parent_id=None)
         # Both products sent to Gemini.
         prompt_text = mock_gemini.call_args[0][0]
         assert "Pirkka maito" in prompt_text
@@ -2306,8 +2306,8 @@ class TestAiOptimizeProducts:
 
         _ai_optimize_products(grocy, "gemini-key")
         # Parents should be stripped.
-        grocy.update_product.assert_any_call(11, parent_id="")
-        grocy.update_product.assert_any_call(12, parent_id="")
+        grocy.update_product.assert_any_call(11, parent_id=None)
+        grocy.update_product.assert_any_call(12, parent_id=None)
         # Old parent placeholder (10) should NOT be in the Gemini prompt.
         prompt = mock_gemini.call_args[0][0]
         assert "Mausteet" not in prompt.split("Products:")[-1]

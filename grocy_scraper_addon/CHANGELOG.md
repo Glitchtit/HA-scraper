@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.6
+- Fix: `parent_id=""` (empty string) was sent to Storage during optimize/group, causing
+  422 errors. Now correctly sends `parent_id=null` to clear the parent relationship.
+
 ## 1.21.5
 - Multi-pack products (e.g. "Sprite 6-pack") are now merged into their base product
   during optimize: Gemini identifies the base product name, the multi-pack barcode is
