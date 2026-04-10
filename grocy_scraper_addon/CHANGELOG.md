@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.13
+- Fix Claude JSON parsing: extract JSON from markdown fences or prose-prefixed responses
+- Add `_extract_json_text()` helper used for claude and ollama providers in `_call_gemini_json()`
+
 ## 1.21.12
 - Add Claude AI provider support (anthropic SDK)
 - `claude_api_key` and `claude_model` options in addon config

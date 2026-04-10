@@ -575,6 +575,17 @@ def _call_ollama(prompt: str) -> str:
         raise StorageAPIError(f"Unexpected Ollama response format: {exc}") from exc
 
 
+def _extract_json_text(text: str) -> str:
+    """Extract the JSON portion from an AI response that may include prose or markdown fences."""
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
+    if fence:
+        return fence.group(1)
+    match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
+    if match:
+        return match.group(1)
+    return text.strip()
+
+
 def _call_claude(prompt: str) -> str:
     """Send *prompt* to the Anthropic Claude API and return the text response."""
     if not CLAUDE_API_KEY:
@@ -625,6 +636,9 @@ def _call_gemini_json(
             # Strip control characters (except common whitespace) that
             # AI models occasionally embed in their output.
             sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw)
+            # Extract JSON from Claude/Ollama responses that may include prose or fences
+            if AI_PROVIDER in ("claude", "ollama"):
+                sanitized = _extract_json_text(sanitized)
             return json.loads(sanitized)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
             last_exc = exc
