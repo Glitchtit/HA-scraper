@@ -2649,7 +2649,12 @@ def _ai_optimize_products(
             "product is a multi-pack (e.g. 4 for a '4-pack', 10 for '10 kpl'), "
             "or null if it is not a pack.\n"
             '  "pack_unit": (string) the unit abbreviation for individual items '
-            "in the pack (typically \"kpl\"), or null if not a pack.\n\n"
+            "in the pack (typically \"kpl\"), or null if not a pack.\n"
+            '  "base_product_name": (string) the Finnish name of the base '
+            "single-unit product when pack_size > 1 — i.e. the product name "
+            "without the multi-pack suffix (e.g. \"Sprite Zero Sugar "
+            "virvoitusjuoma 0,33l\" for \"Sprite Zero Sugar virvoitusjuoma "
+            "0,33l 6-pack\"). Must be null when pack_size is null or 1.\n\n"
             "Guidelines:\n"
             "- Location: dairy/meat/fresh produce/drinks/energy drinks/soda → refrigerator; "
             "cleaning/laundry → cleaning cabinet; dry goods/canned/packaged/eggs → cupboard/pantry.\n"
@@ -2664,10 +2669,10 @@ def _ai_optimize_products(
             "Return ONLY valid JSON, for example:\n"
             '{"1": {"location_id": 2, "best_before_days": 14, '
             '"group_name": "Maito", "category": "Maito", '
-            '"pack_size": null, "pack_unit": null}, '
+            '"pack_size": null, "pack_unit": null, "base_product_name": null}, '
             '"2": {"location_id": 3, "best_before_days": 730, '
             '"group_name": null, "category": null, '
-            '"pack_size": 4, "pack_unit": "kpl"}}\n\n'
+            '"pack_size": 4, "pack_unit": "kpl", "base_product_name": "Fanta appelsiini 0,33l"}}\n\n'
             "Products:\n"
             f"{product_lines}"
         )
@@ -2791,6 +2796,79 @@ def _ai_optimize_products(
                             "Could not set pack info for '%s': %s",
                             product.get("name"), exc,
                         )
+
+                # --- Multi-pack merge/rename -----------------------------------
+                base_name = info.get("base_product_name")
+                if base_name and isinstance(base_name, str):
+                    base_name = base_name.strip()
+                    # Find existing product with the base name (not self).
+                    base_product = name_to_product.get(base_name)
+                    if base_product and int(base_product["id"]) != product_id:
+                        # Merge: move barcodes → base product, transfer stock,
+                        # then delete the multi-pack product.
+                        base_pid = int(base_product["id"])
+                        try:
+                            barcodes_to_move = grocy.get_product_barcodes(product_id)
+                            for bc_entry in barcodes_to_move:
+                                bc_id = int(bc_entry["id"])
+                                grocy.update_barcode(
+                                    bc_id,
+                                    product_id=base_pid,
+                                    pack_size=int(pack_size) if pack_size else int(bc_entry.get("pack_size") or 1),
+                                )
+                                logger.info(
+                                    "  → Moved barcode '%s' from '%s' (ID %s) "
+                                    "to '%s' (ID %s) with pack_size=%s.",
+                                    bc_entry.get("barcode", "?"),
+                                    product.get("name"), product_id,
+                                    base_name, base_pid,
+                                    int(pack_size) if pack_size else bc_entry.get("pack_size"),
+                                )
+                            stock_entries = grocy.get_product_stock_locations(product_id)
+                            for entry in stock_entries:
+                                amt = float(entry.get("amount", 0))
+                                loc = int(entry.get("location_id", 0))
+                                if amt > 0:
+                                    converted = amt * int(pack_size) if pack_size else amt
+                                    grocy.add_stock(base_pid, amount=converted, location_id=loc)
+                                    logger.info(
+                                        "  → Transferred %.4g × %d = %.4g unit(s) "
+                                        "from '%s' to '%s'.",
+                                        amt, int(pack_size) if pack_size else 1,
+                                        converted,
+                                        product.get("name"), base_name,
+                                    )
+                            grocy.delete_product(product_id)
+                            logger.info(
+                                "  → Deleted multi-pack product '%s' (ID %s) "
+                                "after merging into '%s' (ID %s).",
+                                product.get("name"), product_id, base_name, base_pid,
+                            )
+                            updated += 1
+                            # Skip remaining handling for this (now-deleted) product.
+                            continue
+                        except StorageAPIError as exc:
+                            logger.warning(
+                                "Could not merge '%s' into '%s': %s",
+                                product.get("name"), base_name, exc,
+                            )
+                    else:
+                        # No existing base product — rename in place.
+                        try:
+                            grocy.update_product(product_id, name=base_name)
+                            logger.info(
+                                "  → Renamed '%s' → '%s' (multi-pack normalised).",
+                                product.get("name"), base_name,
+                            )
+                            # Update in-memory index so later products can find it.
+                            name_to_product[base_name] = {**product, "name": base_name}
+                            name_to_product.pop(product.get("name", ""), None)
+                            updated += 1
+                        except StorageAPIError as exc:
+                            logger.warning(
+                                "Could not rename '%s' to '%s': %s",
+                                product.get("name"), base_name, exc,
+                            )
 
             # --- Sort (location assignment) -------------------------------
             loc_id = info.get("location_id")
