@@ -1,3 +1,7 @@
+## 1.21.15
+- Remove Optimize / Sort / Date / Group bulk AI buttons from ingress UI (moved to Storage app)
+- Full AI optimize now runs in Storage app with live log streaming and progress UI
+
 ## 1.21.14
 - Persistent Storage health monitoring: background thread runs forever, re-detects Storage if it goes down or moves; startup no longer fatal if Storage is unavailable
 
