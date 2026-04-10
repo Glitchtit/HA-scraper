@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.2
+
+- Discover uses import_stock_amount from barcode queue when available (preserves stock during Grocy migration)
+
 ## 1.21.1
 
 - Stop deactivating parent products (they are now visible in Storage UI)
