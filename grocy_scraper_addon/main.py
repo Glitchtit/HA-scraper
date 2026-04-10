@@ -3470,10 +3470,12 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         # Add to Grocy stock.
         if grocy_id is not None:
             discovered_ids.append(int(grocy_id))
+            stock_amount = float(entry.get("import_stock_amount") or 0) or 1.0
             try:
-                grocy.add_stock(int(grocy_id), amount=1.0)
+                grocy.add_stock(int(grocy_id), amount=stock_amount)
                 logger.info(
-                    "  → Added 1 unit to Grocy stock (product ID %s).", grocy_id,
+                    "  → Added %g unit(s) to Grocy stock (product ID %s).",
+                    stock_amount, grocy_id,
                 )
             except (StorageAPIError, ValueError) as exc:
                 logger.warning("  Could not add stock for '%s': %s", product.name, exc)
