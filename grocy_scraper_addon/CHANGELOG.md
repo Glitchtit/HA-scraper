@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.8
+- Log AI token usage after every successful AI call:
+  Gemini: prompt/output/total token counts; Ollama: prompt/output tokens + total duration (ms)
+
 ## 1.21.7
 - Add Ollama support as an alternative AI provider
 - New addon config options: `ai_provider` ("gemini"/"ollama"), `ollama_url`, `ollama_model`
