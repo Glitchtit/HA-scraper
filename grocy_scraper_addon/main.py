@@ -1712,6 +1712,8 @@ def _ai_sort_products(grocy: StorageClient, gemini_api_key: str, model: str = _G
             "from the list above.\n"
             "Consider: dairy / meat / fresh produce / drinks / energy drinks / soda → refrigerator; "
             "cleaning / laundry supplies → cleaning cabinet; "
+            "hygiene / personal care / bathroom items (cotton swabs, toothbrush, toothpaste, "
+            "shampoo, soap, deodorant, etc.) → bathroom; "
             "dry goods / canned / packaged / eggs → cupboard / pantry.\n\n"
             "Return ONLY a JSON object mapping product IDs (as strings) to "
             "location IDs (as integers), e.g. {\"1\": 2, \"5\": 4}.\n\n"
@@ -2638,9 +2640,17 @@ def _ai_optimize_products(
     updated = 0
     for i in range(0, len(products), _GEMINI_OPTIMIZE_BATCH_SIZE):
         batch = products[i : i + _GEMINI_OPTIMIZE_BATCH_SIZE]
-        product_lines = "\n".join(
-            f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
-        )
+
+        def _product_line(p: dict) -> str:
+            line = f"  {p['id']}: {p.get('name', p['id'])}"
+            loc_id = p.get("location_id")
+            if loc_id and location_names:
+                loc_name = location_names.get(int(loc_id))
+                if loc_name:
+                    line += f" [current location: {loc_name}]"
+            return line
+
+        product_lines = "\n".join(_product_line(p) for p in batch)
 
         location_section = ""
         if location_lines:
@@ -2700,9 +2710,15 @@ def _ai_optimize_products(
             "meat → \"Nauta\", \"Sika\", \"Kana\", \"Kala\". "
             "If an existing category name fits, you MUST use that exact name. "
             "Null if the product is unique.\n"
-            '  "pack_size": (integer) the number of individual items if this '
-            "product is a multi-pack (e.g. 4 for a '4-pack', 10 for '10 kpl'), "
-            "or null if it is not a pack.\n"
+            '  "pack_size": (integer) ONLY when the product is N identical, '
+            "separately-sold consumer units bundled under one barcode — e.g. "
+            "'6-pack of 0.33L soda cans', '4-pack of 200g yogurt cups', "
+            "'12-pack of toilet rolls'. "
+            "Do NOT set pack_size when 'N kpl' describes the contents count of "
+            "a single package (e.g. cotton swabs 200kpl, tea bags 100kpl, "
+            "tablets 50kpl, screws 100kpl). Ask yourself: would the store sell "
+            "the individual item on its own? If not, this is not a multi-pack. "
+            "Return null when not a genuine multi-pack.\n"
             '  "pack_unit": (string) the unit abbreviation for individual items '
             "in the pack (typically \"kpl\"), or null if not a pack.\n"
             '  "base_product_name": (string) the Finnish name of the base '
@@ -2712,15 +2728,20 @@ def _ai_optimize_products(
             "0,33l 6-pack\"). Must be null when pack_size is null or 1.\n\n"
             "Guidelines:\n"
             "- Location: dairy/meat/fresh produce/drinks/energy drinks/soda → refrigerator; "
-            "cleaning/laundry → cleaning cabinet; dry goods/canned/packaged/eggs → cupboard/pantry.\n"
+            "cleaning/laundry → cleaning cabinet; "
+            "hygiene/personal care/bathroom items (cotton swabs, toothbrush, toothpaste, "
+            "shampoo, soap, deodorant, etc.) → bathroom; "
+            "dry goods/canned/packaged/eggs → cupboard/pantry. "
+            "If the product already shows a [current location], keep it unless it is clearly wrong.\n"
             "- Best-before: fresh milk ≈ 7–14d; yogurt ≈ 21d; butter ≈ 90d; "
             "hard cheese ≈ 180d; eggs ≈ 28d; bread ≈ 7d; canned ≈ 730d; "
             "dry pasta/rice ≈ 1095d; cooking oil ≈ 365d; frozen ≈ 730d; "
             "cleaning/laundry ≈ 1095d.\n"
             "- Grouping: group ALL grocery categories.  If an existing parent "
             "product name fits, you MUST use that exact name.\n"
-            "- Packs: detect multi-packs from names like '4-pack', '6x0.33l', "
-            "'monipakkaus', '10 kpl', etc.\n\n"
+            "- Packs: detect ONLY genuine multi-packs: names like '4-pack', '6x0.33l', "
+            "'monipakkaus', '6kpl Sprite'. Do NOT mark as multi-pack when the number "
+            "describes contents of one package (cotton swabs, tea bags, tablets, etc.).\n\n"
             "Return ONLY valid JSON, for example:\n"
             '{"1": {"location_id": 2, "best_before_days": 14, '
             '"group_name": "Maito", "category": "Maito", '

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.21.10
+- Fix optimize: pack_size no longer incorrectly set for products like cotton swabs
+  (200kpl = 200 items in one package, not a 200-pack of identical units)
+- Fix optimize: hygiene/personal care products now correctly assigned to Bathroom location
+- Fix optimize: product's current location is shown to AI to prevent overriding correct assignments
+
 ## 1.21.9
 - Storage version now read dynamically from config.json (fixes "0.1.0" shown on every startup)
 - Log AI provider + model on ingress_server startup (Gemini key/model or Ollama url/model)
