@@ -475,6 +475,14 @@ def _canonical_unit(name: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# AI provider globals (set by ingress_server before any AI call)
+# ---------------------------------------------------------------------------
+
+AI_PROVIDER: str = "gemini"  # "gemini" | "ollama"
+OLLAMA_URL: str = ""
+OLLAMA_MODEL: str = "llama3"
+
+# ---------------------------------------------------------------------------
 # Gemini AI helpers
 # ---------------------------------------------------------------------------
 
@@ -522,6 +530,31 @@ def _call_gemini(prompt: str, api_key: str, model: str = _GEMINI_DEFAULT_MODEL) 
         raise StorageAPIError(f"Unexpected Gemini response format: {exc}") from exc
 
 
+def _call_ollama(prompt: str) -> str:
+    """Send *prompt* to the Ollama chat API and return the text response."""
+    if not OLLAMA_URL:
+        raise StorageAPIError("Ollama URL is not configured")
+    try:
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "format": "json",
+                "stream": False,
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+    except requests.HTTPError as exc:
+        raise StorageAPIError(f"Ollama API error: {exc}") from exc
+    except requests.RequestException as exc:
+        raise StorageAPIError(f"Ollama request failed: {exc}") from exc
+    except (KeyError, IndexError, ValueError) as exc:
+        raise StorageAPIError(f"Unexpected Ollama response format: {exc}") from exc
+
+
 def _call_gemini_json(
     prompt: str,
     api_key: str,
@@ -529,19 +562,22 @@ def _call_gemini_json(
     *,
     max_retries: int = _GEMINI_MAX_RETRIES,
 ) -> dict:
-    """Call Gemini, sanitize the response, and parse it as JSON.
+    """Call the configured AI provider, sanitize the response, and parse as JSON.
 
-    Retries up to *max_retries* times with exponential back-off when the
-    response contains invalid control characters, is HTML instead of JSON,
-    or any other transient error occurs.
+    When ``AI_PROVIDER == "ollama"``, ``api_key`` and ``model`` are ignored and
+    Ollama's chat API is used instead of Gemini.  Retries up to *max_retries*
+    times with exponential back-off on transient errors.
     """
     max_retries = max(max_retries, 1)
     last_exc: Exception | None = None
     for attempt in range(1, max_retries + 1):
         try:
-            raw = _call_gemini(prompt, api_key, model)
+            if AI_PROVIDER == "ollama":
+                raw = _call_ollama(prompt)
+            else:
+                raw = _call_gemini(prompt, api_key, model)
             # Strip control characters (except common whitespace) that
-            # Gemini occasionally embeds in its output.
+            # AI models occasionally embed in their output.
             sanitized = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", raw)
             return json.loads(sanitized)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
@@ -549,7 +585,7 @@ def _call_gemini_json(
             if attempt < max_retries:
                 delay = 2 ** attempt
                 logger.warning(
-                    "Gemini attempt %d/%d failed (%s), retrying in %ds …",
+                    "AI attempt %d/%d failed (%s), retrying in %ds …",
                     attempt,
                     max_retries,
                     exc,
