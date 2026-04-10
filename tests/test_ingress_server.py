@@ -34,6 +34,14 @@ def ingress_mod() -> ModuleType:
     return mod
 
 
+@pytest.fixture(autouse=True)
+def _reset_storage_cache(ingress_mod: ModuleType) -> None:
+    """Clear the cached storage URL between tests."""
+    ingress_mod._cached_storage_url = None
+    yield
+    ingress_mod._cached_storage_url = None
+
+
 # ---------------------------------------------------------------------------
 # _read_options
 # ---------------------------------------------------------------------------
@@ -69,15 +77,12 @@ class TestBuildArgs:
         opts = {
             "store_id": "N110",
             "storage_url": "http://grocy:9283",
-            "location_id": 5,
-            "quantity_unit_id": 3,
         }
         ns = ingress_mod._build_args(opts)
         assert ns.store == "N110"
         assert ns.storage_url == "http://grocy:9283"
-        # grocy_key removed
-        assert ns.location_id == 5
-        assert ns.quantity_unit_id == 3
+        assert ns.location_id is None
+        assert ns.quantity_unit_id is None
 
     def test_defaults(self, ingress_mod: ModuleType) -> None:
         ns = ingress_mod._build_args({})
@@ -134,20 +139,17 @@ class TestHandleConfig:
             cfg = ingress_mod._handle_config()
         assert cfg["configured"] is False
         assert cfg["gemini_configured"] is False
-        assert cfg["discover_interval"] == 60
 
     def test_fully_configured(self, ingress_mod: ModuleType) -> None:
         opts = {
             "storage_url": "http://grocy",
             "store_id": "N110",
-            "discover_interval": 30,
             "gemini_api_key": "gem-key",
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             cfg = ingress_mod._handle_config()
         assert cfg["configured"] is True
         assert cfg["store_id"] == "N110"
-        assert cfg["discover_interval"] == 30
         assert cfg["gemini_configured"] is True
 
 
@@ -409,6 +411,7 @@ class TestHandleAddProducts:
         assert result["success"] is False
 
     def test_missing_grocy_config(self, ingress_mod: ModuleType) -> None:
+        """With no storage_url and no auto-detection, add_products fails."""
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             result = ingress_mod._handle_add_products(
                 {"products": [{"name": "Test"}]}
@@ -419,8 +422,6 @@ class TestHandleAddProducts:
     def test_adds_product_successfully(self, ingress_mod: ModuleType) -> None:
         opts = {
             "storage_url": "http://grocy",
-            "location_id": 2,
-            "quantity_unit_id": 3,
         }
         mock_grocy = mock.MagicMock()
         mock_grocy.get_product_by_barcode.return_value = None
@@ -442,7 +443,7 @@ class TestHandleAddProducts:
         assert result["added"] == 1
         assert result["errors"] == []
         mock_grocy.create_product.assert_called_once_with(
-            "Maito 1L", description="Kevytmaito", location_id=2, unit_id=3
+            "Maito 1L", description="Kevytmaito", location_id=None, unit_id=None
         )
         mock_grocy.add_barcode.assert_called_once_with(42, "6411234000001")
 
@@ -615,8 +616,6 @@ class TestHandleAddProducts:
             "storage_url": "http://grocy",
             "gemini_api_key": "gem-key",
             "gemini_model": "gemini-2.0-flash",
-            "location_id": 2,
-            "quantity_unit_id": 3,
         }
         mock_grocy = mock.MagicMock()
         mock_grocy.get_product_by_barcode.return_value = None
@@ -641,8 +640,8 @@ class TestHandleAddProducts:
             mock_grocy,
             "gem-key",
             "gemini-2.0-flash",
-            location_id=2,
-            quantity_unit_id=3,
+            location_id=None,
+            quantity_unit_id=None,
             product_ids=[10, 20],
         )
 
@@ -787,12 +786,13 @@ class TestHTTPHandler:
         assert response_status[0] == 400
 
     def test_post_discover_no_config(self, ingress_mod: ModuleType) -> None:
+        """Discover with no config runs but finds nothing (0 barcodes → success)."""
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             status, body = self._make_handler(ingress_mod, "POST", "/api/discover")
         assert status == 200
         assert body["status"] == "running"
         task_id = body["task_id"]
-        time.sleep(0.1)
+        time.sleep(0.2)
         status2, result = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
         assert status2 == 200
         assert result["success"] is True

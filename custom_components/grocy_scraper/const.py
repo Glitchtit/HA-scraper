@@ -8,14 +8,10 @@ PANEL_ICON = "mdi:barcode-scan"
 PANEL_URL = "grocy-scraper"
 
 # Config-entry data keys (required, set during initial config flow)
-CONF_GROCY_URL = "grocy_url"
-CONF_GROCY_KEY = "grocy_key"
+CONF_STORAGE_URL = "storage_url"
 CONF_STORE_ID = "store_id"
-CONF_LOCATION_ID = "location_id"
-CONF_QUANTITY_UNIT_ID = "quantity_unit_id"
 
 # Options-flow keys (optional, can be changed after setup)
-CONF_DISCOVER_INTERVAL = "discover_interval"
 CONF_UPLOAD_IMAGES = "upload_images"
 CONF_USE_GRAPHQL = "use_graphql"
 CONF_GEMINI_API_KEY = "gemini_api_key"
@@ -23,7 +19,6 @@ CONF_GEMINI_MODEL = "gemini_model"
 CONF_GEMINI_MODEL_OPTIMIZE = "gemini_model_optimize"
 
 # Defaults
-DEFAULT_DISCOVER_INTERVAL = 60  # minutes
 DEFAULT_UPLOAD_IMAGES = True
 DEFAULT_USE_GRAPHQL = True
 DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"

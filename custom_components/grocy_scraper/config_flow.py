@@ -9,18 +9,13 @@ import homeassistant.helpers.config_validation as cv
 
 from .const import (
     DOMAIN,
-    CONF_GROCY_URL,
-    CONF_GROCY_KEY,
+    CONF_STORAGE_URL,
     CONF_STORE_ID,
-    CONF_LOCATION_ID,
-    CONF_QUANTITY_UNIT_ID,
-    CONF_DISCOVER_INTERVAL,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
     CONF_GEMINI_API_KEY,
     CONF_GEMINI_MODEL,
     CONF_GEMINI_MODEL_OPTIMIZE,
-    DEFAULT_DISCOVER_INTERVAL,
     DEFAULT_UPLOAD_IMAGES,
     DEFAULT_USE_GRAPHQL,
     DEFAULT_GEMINI_MODEL,
@@ -28,11 +23,8 @@ from .const import (
 
 _USER_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_GROCY_URL): str,
-        vol.Required(CONF_GROCY_KEY): str,
+        vol.Required(CONF_STORAGE_URL): str,
         vol.Required(CONF_STORE_ID): str,
-        vol.Required(CONF_LOCATION_ID): vol.Coerce(int),
-        vol.Required(CONF_QUANTITY_UNIT_ID): vol.Coerce(int),
     }
 )
 
@@ -40,7 +32,7 @@ _USER_SCHEMA = vol.Schema(
 class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the initial configuration flow for Grocy Scraper."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict | None = None
@@ -49,14 +41,13 @@ class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Basic validation
-            for field in (CONF_GROCY_URL, CONF_GROCY_KEY, CONF_STORE_ID):
+            for field in (CONF_STORAGE_URL, CONF_STORE_ID):
                 if not str(user_input.get(field, "")).strip():
                     errors[field] = "required"
 
             if not errors:
                 await self.async_set_unique_id(
-                    f"{user_input[CONF_GROCY_URL]}_{user_input[CONF_STORE_ID]}"
+                    f"{user_input[CONF_STORAGE_URL]}_{user_input[CONF_STORE_ID]}"
                 )
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
@@ -80,7 +71,7 @@ class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
-    """Handle the options flow (discover interval + AI settings)."""
+    """Handle the options flow (AI settings)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         """Initialise with current options."""
@@ -96,10 +87,6 @@ class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
         opts = self.config_entry.options
         schema = vol.Schema(
             {
-                vol.Optional(
-                    CONF_DISCOVER_INTERVAL,
-                    default=opts.get(CONF_DISCOVER_INTERVAL, DEFAULT_DISCOVER_INTERVAL),
-                ): vol.All(vol.Coerce(int), vol.Range(min=1)),
                 vol.Optional(
                     CONF_UPLOAD_IMAGES,
                     default=opts.get(CONF_UPLOAD_IMAGES, DEFAULT_UPLOAD_IMAGES),

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.21.0
+
+- StorageClient auto-detects default unit ("kpl") when creating products
+- Storage URL auto-detection via container hostname and Supervisor API
+- Removed legacy config: location_id, quantity_unit_id, discover_interval
+- Replaced storage_url (required) with storage_hostname (optional) in addon config
+- Removed periodic discover scheduler from custom component
+- Replaced GrocyClient with StorageClient in custom component
+- Simplified s6 run script (no more background discover loop)
+
 ## 1.20.3
 
 - Add Storage retry logic: wait_for_storage() retries 30× with 5s delay on startup

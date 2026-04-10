@@ -95,6 +95,98 @@ def _read_options() -> dict[str, Any]:
         return {}
 
 
+_cached_storage_url: str | None = None
+
+
+def _resolve_storage_url(opts: dict[str, Any]) -> str:
+    """Derive the Storage addon URL from config, auto-detecting if needed.
+
+    Priority:
+    1. Explicit ``storage_url`` (backward compat).
+    2. ``storage_hostname`` → ``http://<hostname>:8099``.
+    3. Auto-detect from container hostname (derive ``<hash>-ha-storage``).
+    4. Supervisor API fallback.
+    """
+    global _cached_storage_url
+    if _cached_storage_url is not None:
+        return _cached_storage_url
+
+    # 1. Explicit full URL (legacy / backward compat)
+    url = opts.get("storage_url", "").strip()
+    if url:
+        _cached_storage_url = url
+        return url
+
+    # 2. Bare hostname from config
+    hostname = opts.get("storage_hostname", "").strip()
+    if hostname:
+        _cached_storage_url = f"http://{hostname}:8099"
+        return _cached_storage_url
+
+    # 3. Derive from our own container hostname
+    import socket
+    import subprocess
+
+    my_hostname = os.environ.get("HOSTNAME", "")
+    if not my_hostname:
+        try:
+            my_hostname = socket.gethostname()
+        except Exception:
+            pass
+
+    if my_hostname:
+        normalised = my_hostname.replace("_", "-")
+        # Strip our slug suffix to get the repo hash prefix
+        for suffix in ("-grocy-scraper", ):
+            if normalised.endswith(suffix):
+                prefix = normalised[: -len(suffix)]
+                if prefix:
+                    for candidate in (f"{prefix}-ha-storage", f"{prefix}_ha_storage"):
+                        probe = f"http://{candidate}:8099"
+                        try:
+                            import requests as _req
+                            r = _req.get(f"{probe}/api/health", timeout=3)
+                            if r.ok:
+                                logger.info("Storage URL auto-detected via hostname: %s", probe)
+                                _cached_storage_url = probe
+                                return probe
+                        except Exception:
+                            pass
+                break
+
+    # 4. Supervisor API fallback
+    sup_token = os.environ.get("SUPERVISOR_TOKEN", "")
+    if sup_token:
+        try:
+            import requests as _req
+            resp = _req.get(
+                "http://supervisor/addons",
+                headers={"Authorization": f"Bearer {sup_token}"},
+                timeout=5,
+            )
+            if resp.ok:
+                for addon in resp.json().get("data", {}).get("addons", []):
+                    slug = addon.get("slug", "")
+                    if "ha_storage" in slug.lower() or "ha-storage" in slug.lower():
+                        info = _req.get(
+                            f"http://supervisor/addons/{slug}/info",
+                            headers={"Authorization": f"Bearer {sup_token}"},
+                            timeout=5,
+                        )
+                        if info.ok:
+                            ip = info.json().get("data", {}).get("ip_address", "")
+                            if ip:
+                                probe = f"http://{ip}:8099"
+                                logger.info("Storage URL auto-detected via Supervisor API: %s", probe)
+                                _cached_storage_url = probe
+                                return probe
+        except Exception:
+            pass
+
+    logger.warning("Could not auto-detect Storage URL — please set storage_hostname or storage_url in config.")
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Log-capturing helpers (mirrors ws_api._CapturingHandler)
 # ---------------------------------------------------------------------------
@@ -150,9 +242,9 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
     """Build an ``argparse.Namespace`` from add-on options."""
     ns = argparse.Namespace(
         store=opts.get("store_id", ""),
-        storage_url=opts.get("storage_url", ""),
-        location_id=opts.get("location_id", 0),
-        quantity_unit_id=opts.get("quantity_unit_id", 0),
+        storage_url=_resolve_storage_url(opts),
+        location_id=None,
+        quantity_unit_id=None,
         upload_images=opts.get("upload_images", True),
         use_graphql=opts.get("use_graphql", True),
         gemini_api_key=opts.get("gemini_api_key", ""),
@@ -177,9 +269,8 @@ def _handle_config() -> dict[str, Any]:
     """Return a config summary for the settings badge area."""
     opts = _read_options()
     return {
-        "configured": bool(opts.get("storage_url")),
+        "configured": bool(_resolve_storage_url(opts)),
         "store_id": opts.get("store_id", ""),
-        "discover_interval": opts.get("discover_interval", 60),
         "gemini_configured": bool(opts.get("gemini_api_key")),
     }
 
@@ -262,17 +353,15 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
                 from grocy_scraper.storage_client import StorageClient as _SC
 
                 grocy = _SC(
-                    base_url=opts.get("storage_url", ""),
+                    base_url=_resolve_storage_url(opts),
                 )
                 model = opts.get("gemini_model", "gemini-1.5-flash")
-                location_id = int(opts.get("location_id", 0)) or None
-                quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
                 _main._ai_optimize_products(
                     grocy,
                     gemini_key,
                     model,
-                    location_id=location_id,
-                    quantity_unit_id=quantity_unit_id,
+                    location_id=None,
+                    quantity_unit_id=None,
                     product_ids=[int(grocy_id)],
                 )
 
@@ -290,17 +379,15 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
         gemini_key = opts.get("gemini_api_key", "")
         if result_code == 0 and gemini_key and discovered_ids:
             grocy = StorageClient(
-                base_url=opts.get("storage_url", ""),
+                base_url=_resolve_storage_url(opts),
             )
             model = opts.get("gemini_model", "gemini-1.5-flash")
-            location_id = int(opts.get("location_id", 0)) or None
-            quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
             _main._ai_optimize_products(
                 grocy,
                 gemini_key,
                 model,
-                location_id=location_id,
-                quantity_unit_id=quantity_unit_id,
+                location_id=None,
+                quantity_unit_id=None,
                 product_ids=discovered_ids,
             )
     return {"success": result_code == 0, "skipped": False, "logs": logs}
@@ -328,20 +415,18 @@ def _handle_optimize() -> dict[str, Any]:
     import main as _main
 
     grocy = StorageClient(
-        base_url=opts.get("storage_url", ""),
+        base_url=_resolve_storage_url(opts),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     optimize_model = opts.get("gemini_model_optimize", "")
-    location_id = int(opts.get("location_id", 0)) or None
-    quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
     with _capture_logs() as logs:
         updated: int = _main._ai_optimize_products(
             grocy,
             gemini_key,
             model,
             optimize_model=optimize_model,
-            location_id=location_id,
-            quantity_unit_id=quantity_unit_id,
+            location_id=None,
+            quantity_unit_id=None,
         )
     return {"success": True, "skipped": False, "updated": updated, "logs": logs}
 
@@ -368,7 +453,7 @@ def _handle_sort() -> dict[str, Any]:
     import main as _main
 
     grocy = StorageClient(
-        base_url=opts.get("storage_url", ""),
+        base_url=_resolve_storage_url(opts),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     with _capture_logs() as logs:
@@ -398,7 +483,7 @@ def _handle_date() -> dict[str, Any]:
     import main as _main
 
     grocy = StorageClient(
-        base_url=opts.get("storage_url", ""),
+        base_url=_resolve_storage_url(opts),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     with _capture_logs() as logs:
@@ -428,20 +513,18 @@ def _handle_group() -> dict[str, Any]:
     import main as _main
 
     grocy = StorageClient(
-        base_url=opts.get("storage_url", ""),
+        base_url=_resolve_storage_url(opts),
     )
     model = opts.get("gemini_model", "gemini-1.5-flash")
     optimize_model = opts.get("gemini_model_optimize", "")
-    location_id = int(opts.get("location_id", 0)) or None
-    quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
     with _capture_logs() as logs:
         updated: int = _main._ai_group_products(
             grocy,
             gemini_key,
             model,
             optimize_model=optimize_model,
-            location_id=location_id,
-            quantity_unit_id=quantity_unit_id,
+            location_id=None,
+            quantity_unit_id=None,
         )
     return {"success": True, "skipped": False, "updated": updated, "logs": logs}
 
@@ -465,7 +548,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "No products provided."}
 
     opts = _read_options()
-    storage_url = opts.get("storage_url", "")
+    storage_url = _resolve_storage_url(opts)
     if not storage_url:
         return {"success": False, "error": "Storage URL must be configured."}
 
@@ -475,8 +558,6 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
     import main as _main
 
     grocy = StorageClient(base_url=storage_url)
-    location_id = int(opts.get("location_id", 0)) or None
-    quantity_unit_id = int(opts.get("quantity_unit_id", 0)) or None
     upload_images = opts.get("upload_images", True)
 
     added = 0
@@ -499,8 +580,8 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 product_id = grocy.create_product(
                     name,
                     description=description,
-                    location_id=location_id,
-                    unit_id=quantity_unit_id,
+                    location_id=None,
+                    unit_id=None,
                 )
                 if ean:
                     grocy.add_barcode(product_id, ean)
@@ -531,8 +612,8 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 grocy,
                 gemini_key,
                 model,
-                location_id=location_id,
-                quantity_unit_id=quantity_unit_id,
+                location_id=None,
+                quantity_unit_id=None,
                 product_ids=added_ids,
             )
 
@@ -1051,7 +1132,7 @@ _HTML = """\
         if (!cfg.configured) return;
         configCard.style.display = "";
 
-        var disc = '<span class="badge ok">&#128260; Auto-discover every ' + cfg.discover_interval + ' min</span>';
+        var disc = '<span class="badge ok">&#128260; On-demand discover</span>';
         var gem = cfg.gemini_configured
           ? '<span class="badge ok">&#129302; Gemini AI ready</span>'
           : '<span class="badge warn">&#9888;&#65039; Gemini API key not set</span>';
@@ -1241,7 +1322,7 @@ def _wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     opts = _read_options()
-    storage_url = opts.get("storage_url", "")
+    storage_url = _resolve_storage_url(opts)
     if storage_url:
         _wait_for_storage(storage_url)
     server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)

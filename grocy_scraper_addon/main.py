@@ -3052,16 +3052,7 @@ def _validate_args(args: argparse.Namespace) -> int:
             return 1
 
     if (scrape_mode and not args.dry_run) or discover_mode:
-        if args.location_id is None:
-            logger.error(
-                "Location ID is required.  Use --location-id or set GROCY_LOCATION_ID."
-            )
-            return 1
-        if args.quantity_unit_id is None:
-            logger.error(
-                "Quantity unit ID is required.  Use --quantity-unit-id or set GROCY_QUANTITY_UNIT_ID."
-            )
-            return 1
+        pass  # location_id/quantity_unit_id are now auto-detected by StorageClient
 
     return 0
 

@@ -1,5 +1,5 @@
 name: "Scraper"
-version: "1.20.3"
+version: "1.21.0"
 slug: "grocy_scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates HA-Storage."
 url: "https://github.com/Glitchtit/grocy_scraper"
@@ -20,11 +20,8 @@ panel_admin: false
 map:
   - config:ro
 options:
-  storage_url: "http://a0a9ed235_ha_storage:8099"
+  storage_hostname: ""
   store_id: "N110"
-  location_id: 0
-  quantity_unit_id: 0
-  discover_interval: 60
   upload_images: true
   use_graphql: true
   flaresolverr_url: ""
@@ -33,11 +30,9 @@ options:
   gemini_model_optimize: ""
   searxng_url: ""
 schema:
-  storage_url: str
+  storage_hostname: str?
+  storage_url: str?
   store_id: str
-  location_id: int
-  quantity_unit_id: int
-  discover_interval: int
   upload_images: bool
   use_graphql: bool
   flaresolverr_url: str?
