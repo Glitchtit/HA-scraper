@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.21.3
+- Fix crash in AI optimize/sort/date/group/dedup steps when Gemini returns a JSON
+  array instead of an object; now logs an error and skips the batch instead of crashing
+
 ## 1.21.2
 
 - Discover uses import_stock_amount from barcode queue when available (preserves stock during Grocy migration)
