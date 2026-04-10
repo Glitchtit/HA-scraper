@@ -521,6 +521,15 @@ def _call_gemini(prompt: str, api_key: str, model: str = _GEMINI_DEFAULT_MODEL) 
         )
         resp.raise_for_status()
         data = resp.json()
+        # Log token usage when available
+        usage = data.get("usageMetadata", {})
+        if usage:
+            logger.info(
+                "Gemini usage — prompt tokens: %s, output tokens: %s, total: %s",
+                usage.get("promptTokenCount", "?"),
+                usage.get("candidatesTokenCount", "?"),
+                usage.get("totalTokenCount", "?"),
+            )
         return data["candidates"][0]["content"]["parts"][0]["text"]
     except requests.HTTPError as exc:
         raise StorageAPIError(f"Gemini API error: {exc}") from exc
@@ -546,7 +555,17 @@ def _call_ollama(prompt: str) -> str:
             timeout=300,
         )
         resp.raise_for_status()
-        return resp.json()["message"]["content"]
+        data = resp.json()
+        # Log token/timing usage
+        prompt_tokens = data.get("prompt_eval_count", "?")
+        output_tokens = data.get("eval_count", "?")
+        total_ns = data.get("total_duration")
+        total_ms = round(total_ns / 1_000_000) if total_ns else "?"
+        logger.info(
+            "Ollama usage — prompt tokens: %s, output tokens: %s, total duration: %sms",
+            prompt_tokens, output_tokens, total_ms,
+        )
+        return data["message"]["content"]
     except requests.HTTPError as exc:
         raise StorageAPIError(f"Ollama API error: {exc}") from exc
     except requests.RequestException as exc:
