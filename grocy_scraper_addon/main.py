@@ -1669,6 +1669,10 @@ def _ai_sort_products(grocy: StorageClient, gemini_api_key: str, model: str = _G
             logger.error("Gemini sort batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
 
+        if not isinstance(mapping, dict):
+            logger.error("Gemini sort batch %d: expected JSON object, got %s — skipping.", i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__)
+            continue
+
         for product in batch:
             pid = str(product["id"])
             location_id = mapping.get(pid)
@@ -1781,6 +1785,10 @@ def _ai_assign_due_dates(grocy: StorageClient, gemini_api_key: str, model: str =
             logger.error("Gemini date batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
 
+        if not isinstance(mapping, dict):
+            logger.error("Gemini date batch %d: expected JSON object, got %s — skipping.", i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__)
+            continue
+
         for product in batch:
             pid = str(product["id"])
             days = mapping.get(pid)
@@ -1883,6 +1891,10 @@ def _deduplicate_parent_products(
         mapping: dict = _call_gemini_json(prompt, gemini_api_key, model)
     except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
         logger.warning("Gemini dedup call failed: %s", exc)
+        return 0, {}
+
+    if not isinstance(mapping, dict):
+        logger.warning("Gemini dedup call: expected JSON object, got %s — skipping.", type(mapping).__name__)
         return 0, {}
 
     # Build canonical → [non-canonical IDs] from the mapping.
@@ -2182,6 +2194,13 @@ def _ai_group_products(
             logger.error(
                 "Gemini group batch %d failed: %s",
                 i // _GEMINI_BATCH_SIZE + 1, exc,
+            )
+            continue
+
+        if not isinstance(mapping, dict):
+            logger.error(
+                "Gemini group batch %d: expected JSON object, got %s — skipping.",
+                i // _GEMINI_BATCH_SIZE + 1, type(mapping).__name__,
             )
             continue
 
@@ -2659,6 +2678,13 @@ def _ai_optimize_products(
             logger.error(
                 "Gemini optimize batch %d failed: %s",
                 i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc,
+            )
+            continue
+
+        if not isinstance(mapping, dict):
+            logger.error(
+                "Gemini optimize batch %d: expected JSON object, got %s — skipping.",
+                i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, type(mapping).__name__,
             )
             continue
 
