@@ -1,5 +1,6 @@
 requests>=2.31.0
 python-dotenv>=1.0.0
+anthropic>=0.40.0
 # curl_cffi is optional: only required for the kr-api fallback backend
 # (use_graphql=False).  Install with: pip install curl_cffi
 # curl_cffi>=0.7.0

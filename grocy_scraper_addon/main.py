@@ -478,9 +478,11 @@ def _canonical_unit(name: str) -> str | None:
 # AI provider globals (set by ingress_server before any AI call)
 # ---------------------------------------------------------------------------
 
-AI_PROVIDER: str = "gemini"  # "gemini" | "ollama"
+AI_PROVIDER: str = "gemini"  # "gemini" | "ollama" | "claude"
 OLLAMA_URL: str = ""
 OLLAMA_MODEL: str = "llama3"
+CLAUDE_API_KEY: str = ""
+CLAUDE_MODEL: str = "claude-3-5-haiku-20241022"
 
 # ---------------------------------------------------------------------------
 # Gemini AI helpers
@@ -573,6 +575,29 @@ def _call_ollama(prompt: str) -> str:
         raise StorageAPIError(f"Unexpected Ollama response format: {exc}") from exc
 
 
+def _call_claude(prompt: str) -> str:
+    """Send *prompt* to the Anthropic Claude API and return the text response."""
+    if not CLAUDE_API_KEY:
+        raise StorageAPIError("Claude API key is not configured")
+    try:
+        import anthropic as _anthropic
+
+        client = _anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        response = client.messages.create(
+            model=CLAUDE_MODEL or "claude-3-5-haiku-20241022",
+            max_tokens=8192,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        usage = response.usage
+        logger.info(
+            "Claude usage — input tokens: %s, output tokens: %s",
+            usage.input_tokens, usage.output_tokens,
+        )
+        return response.content[0].text
+    except Exception as exc:  # anthropic raises its own exception hierarchy
+        raise StorageAPIError(f"Claude API error: {exc}") from exc
+
+
 def _call_gemini_json(
     prompt: str,
     api_key: str,
@@ -583,8 +608,9 @@ def _call_gemini_json(
     """Call the configured AI provider, sanitize the response, and parse as JSON.
 
     When ``AI_PROVIDER == "ollama"``, ``api_key`` and ``model`` are ignored and
-    Ollama's chat API is used instead of Gemini.  Retries up to *max_retries*
-    times with exponential back-off on transient errors.
+    Ollama's chat API is used instead of Gemini.  When ``AI_PROVIDER == "claude"``,
+    the global ``CLAUDE_API_KEY`` / ``CLAUDE_MODEL`` are used instead.
+    Retries up to *max_retries* times with exponential back-off on transient errors.
     """
     max_retries = max(max_retries, 1)
     last_exc: Exception | None = None
@@ -592,6 +618,8 @@ def _call_gemini_json(
         try:
             if AI_PROVIDER == "ollama":
                 raw = _call_ollama(prompt)
+            elif AI_PROVIDER == "claude":
+                raw = _call_claude(prompt)
             else:
                 raw = _call_gemini(prompt, api_key, model)
             # Strip control characters (except common whitespace) that
