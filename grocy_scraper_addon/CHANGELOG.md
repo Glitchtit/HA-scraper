@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.21.5
+- Multi-pack products (e.g. "Sprite 6-pack") are now merged into their base product
+  during optimize: Gemini identifies the base product name, the multi-pack barcode is
+  moved (with pack_size set) to the base product, stock is converted (×pack_size), and
+  the duplicate multi-pack product is deleted. If no base product exists yet, the
+  multi-pack product is renamed to the base name in place.
+
 ## 1.21.4
 - Fix: during Grocy import, products with no Grocy stock (import_stock_amount=NULL)
   no longer get 1 unit added to stock. Only barcodes that had stock in Grocy get
