@@ -491,7 +491,6 @@ _GEMINI_BASE_URL = (
 )
 _GEMINI_DEFAULT_MODEL = "gemini-1.5-flash"
 _GEMINI_BATCH_SIZE = 100
-_GEMINI_OPTIMIZE_BATCH_SIZE = 1000
 _GEMINI_MAX_RETRIES = 3
 
 
@@ -852,8 +851,8 @@ def _ai_detect_package_sizes(
         return 0
 
     created = 0
-    for i in range(0, len(candidates), _GEMINI_OPTIMIZE_BATCH_SIZE):
-        batch = candidates[i:i + _GEMINI_OPTIMIZE_BATCH_SIZE]
+    for i in range(0, len(candidates), _GEMINI_BATCH_SIZE):
+        batch = candidates[i:i + _GEMINI_BATCH_SIZE]
         product_list = json.dumps(
             [{"product_id": int(p["id"]), "name": p.get("name", "")} for p in batch],
             ensure_ascii=False,
@@ -883,7 +882,7 @@ RULES:
         try:
             result = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("AI package size batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
+            logger.warning("AI package size batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
 
         if not isinstance(result, list):
@@ -1018,8 +1017,8 @@ def _ai_detect_density_conversions(
         return 0
 
     created = 0
-    for i in range(0, len(need_density), _GEMINI_OPTIMIZE_BATCH_SIZE):
-        batch = need_density[i:i + _GEMINI_OPTIMIZE_BATCH_SIZE]
+    for i in range(0, len(need_density), _GEMINI_BATCH_SIZE):
+        batch = need_density[i:i + _GEMINI_BATCH_SIZE]
         product_list = json.dumps(batch, ensure_ascii=False)
 
         prompt = f"""For each Finnish grocery product below, estimate the density conversion
@@ -1050,7 +1049,7 @@ RULES:
         try:
             result = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.warning("AI density batch %d failed: %s", i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc)
+            logger.warning("AI density batch %d failed: %s", i // _GEMINI_BATCH_SIZE + 1, exc)
             continue
 
         if not isinstance(result, list):
@@ -2470,178 +2469,207 @@ def _ai_group_products(
     return updated
 
 
-def _ai_optimize_products(
-    grocy: StorageClient,
-    gemini_api_key: str,
-    model: str = _GEMINI_DEFAULT_MODEL,
+def _optimize_phase1_structure(
+    grocy,
+    products,
+    gemini_api_key,
+    model,
     *,
-    optimize_model: str = "",
-    location_id: int | None = None,
-    quantity_unit_id: int | None = None,
-    product_ids: list[int] | None = None,
-) -> int:
-    """Use Gemini AI to optimize the Grocy product database in a single pass.
+    location_id=None,
+    quantity_unit_id=None,
+    name_to_product,
+    group_master_id,
+    initial_parent_names=None,
+    initial_category_names=None,
+):
+    """Phase 1: determine categories and parent products in 100-item batches.
 
-    Combines sorting (location assignment), best-before date estimation,
-    product grouping, and multi-pack detection into one Gemini prompt per
-    batch.  Uses a larger batch size (1000) to give the model a broad view
-    of the catalogue.
+    Uses progressive chaining: each batch sees names established by
+    prior batches so naming stays consistent across the catalogue.
 
-    **Clean-slate mode** (``product_ids`` is ``None``): Strips all existing
-    parent product assignments and product groups, sends every real product
-    to Gemini, and rebuilds the parent/group structure from scratch.  Old
-    parent-only placeholder products are deleted after rebuilding.
+    Returns:
+        product_category:          product_id -> category name
+        product_group_name:        product_id -> parent product name
+        category_name_to_group_id: category name -> Storage product group ID
+        parent_name_to_id:         parent name -> Storage product ID
+    """
+    product_category = {}
+    product_group_name = {}
+    category_name_to_group_id = {}
+    parent_name_to_id = {}
+    established_parent_names = list(initial_parent_names or [])
+    established_category_names = list(initial_category_names or [])
 
-    **Incremental mode** (``product_ids`` is set): Only the listed products
-    are processed; existing parents and categories are provided as hints so
-    that Gemini slots new products into the existing structure.
+    for batch_idx, i in enumerate(range(0, len(products), _GEMINI_BATCH_SIZE)):
+        batch = products[i : i + _GEMINI_BATCH_SIZE]
+        product_lines = "\n".join(
+            f"  {p['id']}: {p.get('name', p['id'])}" for p in batch
+        )
 
-    **Pack handling**: when the model identifies a product as a multi-pack
-    (e.g. "10 kpl"), the barcode's ``pack_size`` and ``pack_unit_id`` are
-    set directly.  The product itself is kept as-is.
+        parents_section = ""
+        if established_parent_names:
+            parents_str = ", ".join(f'"{n}"' for n in established_parent_names)
+            parents_section = (
+                "Established parent products (use these EXACT names when a "
+                "product fits -- do NOT invent synonyms):\n"
+                f"  {parents_str}\n\n"
+            )
+
+        cats_section = ""
+        if established_category_names:
+            cats_str = ", ".join(f'"{n}"' for n in established_category_names)
+            cats_section = (
+                "Established product categories (use these EXACT names when a "
+                "product fits):\n"
+                f"  {cats_str}\n\n"
+            )
+
+        prompt = (
+            "You are a grocery database expert organising a Finnish home "
+            "pantry.\n\n"
+            f"{parents_section}"
+            f"{cats_section}"
+            "For each product below, return a JSON object mapping the product "
+            "ID (as a string) to an object with:\n"
+            '  "group_name": (string) a SPECIFIC Finnish parent product name '
+            "that closely matches the product type. Be detailed: use separate "
+            'parents for each distinct product (e.g. \"Mustapippuri\" for black '
+            'pepper, \"Maito\" for milk, \"Olut\" for beer). If an established '
+            "parent name fits, you MUST use that exact name. Null if the "
+            "product is truly unique.\n"
+            '  "category": (string) a product category in Finnish at a practical '
+            "kitchen-shelf level. If an established category fits, you MUST use "
+            "that exact name. Good examples: "
+            'Mausteet for all spices, Maitotuotteet for dairy, Liha for meat, '
+            'Juomat for drinks, Siivous for cleaning products, '
+            'Hygienia for personal care/bathroom items. Null if truly '
+            "one-of-a-kind.\n\n"
+            "Return ONLY valid JSON, e.g.:\n"
+            '{\"1\": {\"group_name\": \"Maito\", \"category\": \"Maitotuotteet\"}, '
+            '  \"2\": {\"group_name\": null, \"category\": \"Siivous\"}}\n\n'
+            "Products:\n"
+            f"{product_lines}"
+        )
+
+        try:
+            mapping = _call_gemini_json(prompt, gemini_api_key, model)
+        except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
+            logger.error("AI structure batch %d failed: %s", batch_idx + 1, exc)
+            continue
+
+        if not isinstance(mapping, dict):
+            logger.error(
+                "AI structure batch %d: expected JSON object, got %s -- skipping.",
+                batch_idx + 1, type(mapping).__name__,
+            )
+            continue
+
+        batch_parent_names = set()
+        batch_category_names = set()
+        for product in batch:
+            pid = str(product["id"])
+            info = mapping.get(pid)
+            if not isinstance(info, dict):
+                continue
+            gn = info.get("group_name")
+            if gn and isinstance(gn, str) and gn.strip():
+                product_group_name[int(product["id"])] = gn.strip()
+                batch_parent_names.add(gn.strip())
+            cat = info.get("category")
+            if cat and isinstance(cat, str) and cat.strip():
+                product_category[int(product["id"])] = cat.strip()
+                batch_category_names.add(cat.strip())
+
+        for cat_name in sorted(batch_category_names):
+            if cat_name not in category_name_to_group_id:
+                try:
+                    gid = grocy.ensure_product_group(cat_name)
+                    category_name_to_group_id[cat_name] = gid
+                    if cat_name not in established_category_names:
+                        established_category_names.append(cat_name)
+                except StorageAPIError as exc:
+                    logger.warning("Could not ensure product group '%s': %s", cat_name, exc)
+
+        for parent_name in sorted(batch_parent_names):
+            if parent_name in parent_name_to_id:
+                continue
+            existing = name_to_product.get(parent_name)
+            if existing and not existing.get("parent_id"):
+                parent_name_to_id[parent_name] = int(existing["id"])
+            elif existing:
+                logger.debug("Skipping '%s' as parent - already a child.", parent_name)
+                continue
+            else:
+                try:
+                    pid_new = grocy.create_product(
+                        parent_name,
+                        location_id=location_id,
+                        unit_id=quantity_unit_id,
+                    )
+                    logger.info("  -> Created parent product '%s' (ID %d).", parent_name, pid_new)
+                    parent_name_to_id[parent_name] = pid_new
+                    name_to_product[parent_name] = {
+                        "id": pid_new, "name": parent_name,
+                        "parent_id": None, "active": False,
+                    }
+                except StorageAPIError as exc:
+                    logger.warning("Could not create parent product '%s': %s", parent_name, exc)
+                    continue
+            if group_master_id is not None and parent_name in parent_name_to_id:
+                try:
+                    grocy.update_product(parent_name_to_id[parent_name], product_group_id=group_master_id)
+                except StorageAPIError as exc:
+                    logger.warning("Could not set Group master on parent '%s': %s", parent_name, exc)
+            if parent_name not in established_parent_names:
+                established_parent_names.append(parent_name)
+
+    logger.info(
+        "Phase 1 complete: %d unique categories, %d parent products established.",
+        len(category_name_to_group_id), len(parent_name_to_id),
+    )
+    return product_category, product_group_name, category_name_to_group_id, parent_name_to_id
+
+
+def _optimize_phase2_details(
+    grocy,
+    products,
+    product_category,
+    product_group_name,
+    category_name_to_group_id,
+    parent_name_to_id,
+    locations,
+    location_names,
+    unit_abbrev_to_id,
+    gemini_api_key,
+    model,
+    *,
+    name_to_product,
+):
+    """Phase 2: assign locations, best-before, and packs in 100-item batches.
+
+    The AI is given the full parent list from Phase 1 as read-only context.
+    Phase 1 group/parent assignments are applied during this pass.
 
     Returns the number of products updated.
     """
-    full_mode = product_ids is None
-    effective_model = (optimize_model or model) if full_mode else model
-
-    # --- Fetch locations -------------------------------------------------
-    try:
-        locations = grocy.get_locations()
-    except StorageAPIError as exc:
-        logger.error("Could not fetch locations from Grocy: %s", exc)
-        return 0
-
-    location_names: dict[int, str] = {}
-    location_lines = ""
-    if locations:
-        location_names = {
-            int(loc["id"]): loc.get("name", str(loc["id"])) for loc in locations
-        }
-        location_lines = "\n".join(
-            f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
-        )
-
-    # --- Incremental mode: skip heavy dedup (runs on full --optimize) -----
-    dedup_map: dict[str, str] = {}
-
-    # --- Fetch products --------------------------------------------------
-    try:
-        products = grocy.get_all_products()
-    except StorageAPIError as exc:
-        logger.error("Could not fetch products from Grocy: %s", exc)
-        return 0
-
-    if not products:
-        logger.info("No products found in Grocy – nothing to optimize.")
-        return 0
-
-    # Build a name→product index (used for grouping & pack handling).
-    name_to_product: dict[str, dict] = {}
-    for p in products:
-        name_to_product[p.get("name", "")] = p
-
-    # --- Clean-slate mode: strip parents & identify old parent products ---
-    old_parent_ids: set[int] = set()
-    if full_mode:
-        # Identify products that are parent-only placeholders (inactive,
-        # created by previous optimize runs).
-        has_children: set[int] = set()
-        for p in products:
-            ppid = p.get("parent_id")
-            if ppid:
-                has_children.add(int(ppid))
-
-        for p in products:
-            pid_int = int(p["id"])
-            if (
-                pid_int in has_children
-                and not p.get("active", True)
-            ):
-                old_parent_ids.add(pid_int)
-
-        # Strip parent_id from all child products.
-        for p in products:
-            ppid = p.get("parent_id")
-            if ppid:
-                try:
-                    grocy.update_product(int(p["id"]), parent_id=None)
-                except StorageAPIError as exc:
-                    logger.warning(
-                        "Could not strip parent from '%s': %s",
-                        p.get("name"), exc,
-                    )
-                p["parent_id"] = None  # Clear in-memory too.
-
-        # Filter to leaf products only (exclude old parent-only placeholders).
-        products = [p for p in products if int(p["id"]) not in old_parent_ids]
-        logger.info(
-            "Clean-slate mode: stripped parents from all products, "
-            "%d old parent placeholder(s) identified for cleanup.",
-            len(old_parent_ids),
-        )
-
-    # --- Incremental mode: collect existing context ----------------------
-    existing_parent_names: list[str] = []
-    existing_category_names: list[str] = []
-    if not full_mode:
-        has_children_inc: set[int] = set()
-        for p in products:
-            ppid = p.get("parent_id")
-            if ppid:
-                has_children_inc.add(int(ppid))
-        existing_parent_names = sorted({
-            p.get("name", "")
-            for p in products
-            if int(p["id"]) in has_children_inc and p.get("name")
-        })
-        try:
-            all_groups = grocy.get_product_groups()
-            existing_category_names = sorted({
-                g.get("name", "")
-                for g in all_groups
-                if g.get("name") and g.get("name") != "Group master"
-            })
-        except StorageAPIError:
-            pass
-
-        # Filter to requested product_ids.
-        allowed = set(product_ids)
-        products = [p for p in products if int(p["id"]) in allowed]
-
-    if not products:
-        logger.info("No matching products – nothing to optimize.")
-        return 0
-
-    # Ensure "Group master" product group for parent products.
-    group_master_id: int | None = None
-    try:
-        group_master_id = grocy.ensure_product_group("Group master")
-    except StorageAPIError as exc:
-        logger.warning("Could not ensure 'Group master' product group: %s", exc)
-
-    logger.info("Asking AI to optimize %d product(s) …", len(products))
-
-    # Pre-load unit map for pack handling (unit abbreviation → ID).
-    _unit_abbrev_to_id: dict[str, int] = {}
-    try:
-        all_units = grocy.get_quantity_units()
-        for u in all_units:
-            desc = (u.get("description") or "").lower().strip()
-            if desc:
-                _unit_abbrev_to_id[desc] = int(u["id"])
-            name_lower = (u.get("name") or "").lower().strip()
-            canonical = _canonical_unit(name_lower)
-            if canonical and canonical not in _unit_abbrev_to_id:
-                _unit_abbrev_to_id[canonical] = int(u["id"])
-    except StorageAPIError:
-        pass
-
     updated = 0
-    for i in range(0, len(products), _GEMINI_OPTIMIZE_BATCH_SIZE):
-        batch = products[i : i + _GEMINI_OPTIMIZE_BATCH_SIZE]
+    location_lines = "\n".join(
+        f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations
+    ) if locations else ""
 
-        def _product_line(p: dict) -> str:
+    parent_context = ""
+    if parent_name_to_id:
+        parents_str = ", ".join(f'"{n}"' for n in sorted(parent_name_to_id))
+        parent_context = (
+            "Established parent products (for context only -- do not return "
+            "these in your response):\n"
+            f"  {parents_str}\n\n"
+        )
+
+    for batch_idx, i in enumerate(range(0, len(products), _GEMINI_BATCH_SIZE)):
+        batch = products[i : i + _GEMINI_BATCH_SIZE]
+
+        def _product_line(p):
             line = f"  {p['id']}: {p.get('name', p['id'])}"
             loc_id = p.get("location_id")
             if loc_id and location_names:
@@ -2651,477 +2679,641 @@ def _ai_optimize_products(
             return line
 
         product_lines = "\n".join(_product_line(p) for p in batch)
-
-        location_section = ""
-        if location_lines:
-            location_section = (
-                "Available storage locations:\n"
-                f"{location_lines}\n\n"
-            )
-
-        existing_parents_section = ""
-        if existing_parent_names:
-            existing_parents_lines = ", ".join(
-                f'"{n}"' for n in existing_parent_names
-            )
-            existing_parents_section = (
-                "Existing parent products (reuse these exact names when "
-                "a product fits — do NOT create synonyms or variants like "
-                '"Mauste" when "Mausteet" already exists):\n'
-                f"  {existing_parents_lines}\n\n"
-            )
-
-        existing_categories_section = ""
-        if existing_category_names:
-            existing_categories_lines = ", ".join(
-                f'"{n}"' for n in existing_category_names
-            )
-            existing_categories_section = (
-                "Existing product categories (reuse these exact names "
-                "when a product fits):\n"
-                f"  {existing_categories_lines}\n\n"
-            )
+        location_section = f"Available storage locations:\n{location_lines}\n\n" if location_lines else ""
 
         prompt = (
-            "You are a grocery database expert helping to organise a home pantry.\n\n"
+            "You are a grocery database expert organising a Finnish home pantry.\n\n"
             f"{location_section}"
-            f"{existing_parents_section}"
-            f"{existing_categories_section}"
-            "For each product below, return a JSON object mapping the product ID "
-            "(as a string) to an object with these fields:\n"
-            '  "location_id": (integer) the most appropriate storage location ID '
-            "from the list above, or null if no locations are available.\n"
-            '  "best_before_days": (integer) estimated days until best-before date '
-            "for an unopened product under normal home storage.\n"
-            '  "group_name": (string) a SPECIFIC Finnish parent product name '
-            "that closely matches the product type. Be detailed: use separate "
-            'parents for each distinct product (e.g. "Mustapippuri" for '
-            'black pepper, "Oregano" for oregano, "Maito" for milk). '
-            "If an existing parent product name fits, you MUST use that "
-            "exact name. Null if the product is unique.\n"
-            '  "category": (string) a product category in Finnish at a practical, '
-            "kitchen-shelf level of detail. Think about how a home cook would "
-            "organise their kitchen — not industrial taxonomy. Keep a single "
-            "broad category for truly homogeneous groups (e.g. \"Mausteet\" for "
-            "all spices, \"Makeiset\" for all candy, \"Siivous\" for cleaning). "
-            "Split large heterogeneous groups into meaningful sub-categories: "
-            "dairy → \"Maito\", \"Voi\", \"Juusto\", \"Kerma\", \"Jogurtti\"; "
-            "drinks → \"Mehu\", \"Limu\", \"Energiajuoma\", \"Kahvi\", \"Tee\"; "
-            "meat → \"Nauta\", \"Sika\", \"Kana\", \"Kala\". "
-            "If an existing category name fits, you MUST use that exact name. "
-            "Null if the product is unique.\n"
-            '  "pack_size": (integer) ONLY when the product is N identical, '
-            "separately-sold consumer units bundled under one barcode — e.g. "
-            "'6-pack of 0.33L soda cans', '4-pack of 200g yogurt cups', "
-            "'12-pack of toilet rolls'. "
-            "Do NOT set pack_size when 'N kpl' describes the contents count of "
-            "a single package (e.g. cotton swabs 200kpl, tea bags 100kpl, "
-            "tablets 50kpl, screws 100kpl). Ask yourself: would the store sell "
-            "the individual item on its own? If not, this is not a multi-pack. "
-            "Return null when not a genuine multi-pack.\n"
-            '  "pack_unit": (string) the unit abbreviation for individual items '
-            "in the pack (typically \"kpl\"), or null if not a pack.\n"
-            '  "base_product_name": (string) the Finnish name of the base '
-            "single-unit product when pack_size > 1 — i.e. the product name "
-            "without the multi-pack suffix (e.g. \"Sprite Zero Sugar "
-            "virvoitusjuoma 0,33l\" for \"Sprite Zero Sugar virvoitusjuoma "
-            "0,33l 6-pack\"). Must be null when pack_size is null or 1.\n\n"
+            f"{parent_context}"
+            "For each product below, return a JSON object mapping the product "
+            "ID (as a string) to an object with:\n"
+            '  "location_id": (integer) the most appropriate storage location ID, or null.\n'
+            '  "best_before_days": (integer) estimated days until best-before for an unopened product.\n'
+            '  "pack_size": (integer) ONLY when N identical, separately-sold consumer units are '
+            "bundled under one barcode -- e.g. 6-pack of 0.33L soda cans, 4-pack of 200g yogurt "
+            "cups, 12-pack of toilet rolls. Do NOT set when the number describes contents of one "
+            "package (cotton swabs 200kpl, tea bags 100kpl, tablets 50kpl). Ask: would the store "
+            "sell the individual item on its own? If no -> not a multi-pack. Return null when not "
+            "a genuine multi-pack.\n"
+            '  "pack_unit": (string) unit abbreviation for individual items in the pack (typically '
+            '"kpl"), or null if not a pack.\n'
+            '  "base_product_name": (string) Finnish name of the base single-unit product when '
+            "pack_size > 1, else null.\n\n"
             "Guidelines:\n"
-            "- Location: dairy/meat/fresh produce/drinks/energy drinks/soda → refrigerator; "
-            "cleaning/laundry → cleaning cabinet; "
-            "hygiene/personal care/bathroom items (cotton swabs, toothbrush, toothpaste, "
-            "shampoo, soap, deodorant, etc.) → bathroom; "
-            "dry goods/canned/packaged/eggs → cupboard/pantry. "
-            "If the product already shows a [current location], keep it unless it is clearly wrong.\n"
-            "- Best-before: fresh milk ≈ 7–14d; yogurt ≈ 21d; butter ≈ 90d; "
-            "hard cheese ≈ 180d; eggs ≈ 28d; bread ≈ 7d; canned ≈ 730d; "
-            "dry pasta/rice ≈ 1095d; cooking oil ≈ 365d; frozen ≈ 730d; "
-            "cleaning/laundry ≈ 1095d.\n"
-            "- Grouping: group ALL grocery categories.  If an existing parent "
-            "product name fits, you MUST use that exact name.\n"
-            "- Packs: detect ONLY genuine multi-packs: names like '4-pack', '6x0.33l', "
-            "'monipakkaus', '6kpl Sprite'. Do NOT mark as multi-pack when the number "
-            "describes contents of one package (cotton swabs, tea bags, tablets, etc.).\n\n"
-            "Return ONLY valid JSON, for example:\n"
-            '{"1": {"location_id": 2, "best_before_days": 14, '
-            '"group_name": "Maito", "category": "Maito", '
-            '"pack_size": null, "pack_unit": null, "base_product_name": null}, '
-            '"2": {"location_id": 3, "best_before_days": 730, '
-            '"group_name": null, "category": null, '
-            '"pack_size": 4, "pack_unit": "kpl", "base_product_name": "Fanta appelsiini 0,33l"}}\n\n'
+            "- Location: dairy/meat/fresh produce/drinks -> refrigerator; cleaning/laundry -> "
+            "cleaning cabinet; hygiene/personal care/bathroom items (cotton swabs, toothbrush, "
+            "toothpaste, shampoo, soap, deodorant, etc.) -> bathroom; dry goods/canned/packaged/"
+            "eggs -> pantry/cupboard. If a product shows [current location], preserve it unless "
+            "it is clearly incorrect.\n"
+            "- Best-before: fresh milk ~7-14d; yogurt ~21d; butter ~90d; hard cheese ~180d; "
+            "eggs ~28d; bread ~7d; canned ~730d; dry pasta/rice ~1095d; oil ~365d; frozen ~730d; "
+            "cleaning/laundry ~1095d.\n"
+            "- Pack: detect ONLY genuine multi-packs: 4-pack, 6x0.33l, monipakkaus, 6kpl Sprite. "
+            "NOT when number describes package contents.\n\n"
+            "Return ONLY valid JSON.\n\n"
             "Products:\n"
             f"{product_lines}"
         )
 
         try:
-            mapping: dict = _call_gemini_json(prompt, gemini_api_key, effective_model)
+            mapping = _call_gemini_json(prompt, gemini_api_key, model)
         except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
-            logger.error(
-                "AI optimize batch %d failed: %s",
-                i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, exc,
-            )
+            logger.error("AI details batch %d failed: %s", batch_idx + 1, exc)
             continue
 
         if not isinstance(mapping, dict):
             logger.error(
-                "AI optimize batch %d: expected JSON object, got %s — skipping.",
-                i // _GEMINI_OPTIMIZE_BATCH_SIZE + 1, type(mapping).__name__,
+                "AI details batch %d: expected JSON object, got %s -- skipping.",
+                batch_idx + 1, type(mapping).__name__,
             )
             continue
 
-        # --- Apply results -----------------------------------------------
-        # First pass: collect parent names and category names.
-        # In incremental mode, redirect merged-away names via dedup_map.
-        parent_names: set[str] = set()
-        category_names: set[str] = set()
         for product in batch:
             pid = str(product["id"])
-            info = mapping.get(pid)
-            if not isinstance(info, dict):
-                continue
-            gn = info.get("group_name")
-            if gn:
-                gn = dedup_map.get(str(gn), str(gn))
-                info["group_name"] = gn
-                parent_names.add(gn)
-            cat = info.get("category")
-            if cat:
-                category_names.add(str(cat))
-
-        # Ensure parent products exist (for grouping).
-        parent_name_to_id: dict[str, int] = {}
-        for parent_name in parent_names:
-            existing = name_to_product.get(parent_name)
-            if existing and not existing.get("parent_id"):
-                parent_name_to_id[parent_name] = int(existing["id"])
-            elif existing:
-                logger.debug("Skipping '%s' as parent – already a child.", parent_name)
-                continue
-            else:
-                try:
-                    pid_new = grocy.create_product(
-                        parent_name,
-                        location_id=location_id,
-                        unit_id=quantity_unit_id,
-                    )
-                    logger.info("  → Created parent product '%s' (ID %d).", parent_name, pid_new)
-                    parent_name_to_id[parent_name] = pid_new
-                    name_to_product[parent_name] = {"id": pid_new, "name": parent_name}
-                except StorageAPIError as exc:
-                    logger.warning("Could not create parent product '%s': %s", parent_name, exc)
-                    continue
-
-            parent_update: dict = {}
-            if group_master_id is not None:
-                parent_update["product_group_id"] = group_master_id
-            if parent_update:
-                try:
-                    grocy.update_product(parent_name_to_id[parent_name], **parent_update)
-                except StorageAPIError as exc:
-                    logger.warning("Could not update parent product '%s': %s", parent_name, exc)
-
-        # Ensure each broad category product group exists.
-        category_name_to_group_id: dict[str, int] = {}
-        for cat_name in category_names:
-            try:
-                category_name_to_group_id[cat_name] = (
-                    grocy.ensure_product_group(cat_name)
-                )
-            except StorageAPIError as exc:
-                logger.warning("Could not ensure product group '%s': %s", cat_name, exc)
-
-        # Second pass: apply sort, date, group, and pack for each product.
-        for product in batch:
-            pid = str(product["id"])
-            info = mapping.get(pid)
-            if not isinstance(info, dict):
-                logger.debug("No optimize info for product %s ('%s').", pid, product.get("name"))
-                continue
-
             product_id = int(product["id"])
+            info = mapping.get(pid) or {}
+            if not isinstance(info, dict):
+                info = {}
 
-            # --- Pack handling: set pack_size/pack_unit_id on barcode ---
+            # Pack handling
             pack_size = info.get("pack_size")
             pack_unit = info.get("pack_unit")
             if pack_size and pack_unit:
                 canonical = _canonical_unit(str(pack_unit))
-                pack_unit_id = (
-                    _unit_abbrev_to_id.get(canonical)
-                    if canonical else None
-                )
+                pack_unit_id = unit_abbrev_to_id.get(canonical) if canonical else None
                 if pack_unit_id is not None:
                     try:
                         barcodes = grocy.get_product_barcodes(product_id)
                         for bc_entry in barcodes:
                             bc_id = int(bc_entry["id"])
-                            grocy.update_barcode(
-                                bc_id,
-                                pack_size=int(pack_size),
-                                pack_unit_id=pack_unit_id,
-                            )
+                            grocy.update_barcode(bc_id, pack_size=int(pack_size), pack_unit_id=pack_unit_id)
                             logger.info(
-                                "  → Set pack_size=%d, pack_unit=%s on "
-                                "barcode '%s' for '%s'.",
-                                int(pack_size), pack_unit,
-                                bc_entry.get("barcode", "?"),
-                                product.get("name"),
+                                "  -> Set pack_size=%d, pack_unit=%s on barcode '%s' for '%s'.",
+                                int(pack_size), pack_unit, bc_entry.get("barcode", "?"), product.get("name"),
                             )
                             updated += 1
                     except StorageAPIError as exc:
-                        logger.warning(
-                            "Could not set pack info for '%s': %s",
-                            product.get("name"), exc,
-                        )
+                        logger.warning("Could not set pack info for '%s': %s", product.get("name"), exc)
 
-                # --- Multi-pack merge/rename -----------------------------------
                 base_name = info.get("base_product_name")
                 if base_name and isinstance(base_name, str):
                     base_name = base_name.strip()
-                    # Find existing product with the base name (not self).
                     base_product = name_to_product.get(base_name)
                     if base_product and int(base_product["id"]) != product_id:
-                        # Merge: move barcodes → base product, transfer stock,
-                        # then delete the multi-pack product.
                         base_pid = int(base_product["id"])
                         try:
-                            barcodes_to_move = grocy.get_product_barcodes(product_id)
-                            for bc_entry in barcodes_to_move:
-                                bc_id = int(bc_entry["id"])
+                            for bc_entry in grocy.get_product_barcodes(product_id):
                                 grocy.update_barcode(
-                                    bc_id,
+                                    int(bc_entry["id"]),
                                     product_id=base_pid,
                                     pack_size=int(pack_size) if pack_size else int(bc_entry.get("pack_size") or 1),
                                 )
                                 logger.info(
-                                    "  → Moved barcode '%s' from '%s' (ID %s) "
-                                    "to '%s' (ID %s) with pack_size=%s.",
-                                    bc_entry.get("barcode", "?"),
-                                    product.get("name"), product_id,
-                                    base_name, base_pid,
+                                    "  -> Moved barcode '%s' from '%s' to '%s' with pack_size=%s.",
+                                    bc_entry.get("barcode", "?"), product.get("name"), base_name,
                                     int(pack_size) if pack_size else bc_entry.get("pack_size"),
                                 )
-                            stock_entries = grocy.get_product_stock_locations(product_id)
-                            for entry in stock_entries:
+                            for entry in grocy.get_product_stock_locations(product_id):
                                 amt = float(entry.get("amount", 0))
                                 loc = int(entry.get("location_id", 0))
                                 if amt > 0:
                                     converted = amt * int(pack_size) if pack_size else amt
                                     grocy.add_stock(base_pid, amount=converted, location_id=loc)
                                     logger.info(
-                                        "  → Transferred %.4g × %d = %.4g unit(s) "
-                                        "from '%s' to '%s'.",
-                                        amt, int(pack_size) if pack_size else 1,
-                                        converted,
+                                        "  -> Transferred %.4g x %d = %.4g unit(s) from '%s' to '%s'.",
+                                        amt, int(pack_size) if pack_size else 1, converted,
                                         product.get("name"), base_name,
                                     )
                             grocy.delete_product(product_id)
                             logger.info(
-                                "  → Deleted multi-pack product '%s' (ID %s) "
-                                "after merging into '%s' (ID %s).",
+                                "  -> Deleted multi-pack product '%s' (ID %s) after merging into '%s' (ID %s).",
                                 product.get("name"), product_id, base_name, base_pid,
                             )
                             updated += 1
-                            # Skip remaining handling for this (now-deleted) product.
                             continue
                         except StorageAPIError as exc:
-                            logger.warning(
-                                "Could not merge '%s' into '%s': %s",
-                                product.get("name"), base_name, exc,
-                            )
+                            logger.warning("Could not merge '%s' into '%s': %s", product.get("name"), base_name, exc)
                     else:
-                        # No existing base product — rename in place.
                         try:
                             grocy.update_product(product_id, name=base_name)
-                            logger.info(
-                                "  → Renamed '%s' → '%s' (multi-pack normalised).",
-                                product.get("name"), base_name,
-                            )
-                            # Update in-memory index so later products can find it.
+                            logger.info("  -> Renamed '%s' -> '%s' (multi-pack normalised).", product.get("name"), base_name)
                             name_to_product[base_name] = {**product, "name": base_name}
                             name_to_product.pop(product.get("name", ""), None)
                             updated += 1
                         except StorageAPIError as exc:
-                            logger.warning(
-                                "Could not rename '%s' to '%s': %s",
-                                product.get("name"), base_name, exc,
-                            )
+                            logger.warning("Could not rename '%s' to '%s': %s", product.get("name"), base_name, exc)
 
-            # --- Sort (location assignment) -------------------------------
+            # Location
             loc_id = info.get("location_id")
             if loc_id is not None and locations:
                 try:
                     grocy.update_product(product_id, location_id=int(loc_id))
                     logger.info(
-                        "  → Set location '%s' for '%s' (ID %s).",
-                        location_names.get(int(loc_id), loc_id),
-                        product.get("name"), pid,
+                        "  -> Set location '%s' for '%s' (ID %s).",
+                        location_names.get(int(loc_id), loc_id), product.get("name"), pid,
                     )
                     updated += 1
                 except (StorageAPIError, ValueError) as exc:
-                    logger.warning(
-                        "Could not update location for '%s': %s",
-                        product.get("name"), exc,
-                    )
-
-                # Transfer existing stock to the new location.
+                    logger.warning("Could not update location for '%s': %s", product.get("name"), exc)
                 try:
-                    stock_locs = grocy.get_product_stock_locations(product_id)
                     target = int(loc_id)
-                    for entry in stock_locs:
+                    for entry in grocy.get_product_stock_locations(product_id):
                         entry_loc = int(entry.get("location_id", 0))
                         entry_amount = float(entry.get("amount", 0))
                         if entry_loc == target or entry_amount <= 0:
                             continue
                         grocy.transfer_stock(product_id, entry_amount, entry_loc, target)
                         logger.info(
-                            "    ↳ Moved %.4g unit(s) from '%s' → '%s' for '%s'.",
-                            entry_amount,
-                            location_names.get(entry_loc, entry_loc),
-                            location_names.get(target, target),
-                            product.get("name"),
+                            "    -> Moved %.4g unit(s) from '%s' -> '%s' for '%s'.",
+                            entry_amount, location_names.get(entry_loc, entry_loc),
+                            location_names.get(target, target), product.get("name"),
                         )
                 except StorageAPIError as exc:
-                    logger.debug(
-                        "Could not transfer stock for '%s': %s",
-                        product.get("name"), exc,
-                    )
+                    logger.debug("Could not transfer stock for '%s': %s", product.get("name"), exc)
 
-            # --- Date (best-before days) ----------------------------------
+            # Best-before
             days = info.get("best_before_days")
             if days is not None:
                 try:
                     grocy.update_product(product_id, default_best_before_days=int(days))
-                    logger.info(
-                        "  → Set %d best-before days for '%s' (ID %s).",
-                        int(days), product.get("name"), pid,
-                    )
+                    logger.info("  -> Set %d best-before days for '%s' (ID %s).", int(days), product.get("name"), pid)
                     updated += 1
                 except (StorageAPIError, ValueError) as exc:
-                    logger.warning(
-                        "Could not update due days for '%s': %s",
-                        product.get("name"), exc,
-                    )
+                    logger.warning("Could not update due days for '%s': %s", product.get("name"), exc)
 
-            # --- Group (parent product assignment) ------------------------
-            group_name = info.get("group_name")
+            # Parent + category (from Phase 1)
+            group_name = product_group_name.get(product_id)
             if group_name:
-                parent_id = parent_name_to_id.get(str(group_name))
+                parent_id = parent_name_to_id.get(group_name)
                 if parent_id is not None and parent_id != product_id:
-                    # Don't re-parent products the user explicitly keeps
-                    # in stock.
                     if float(product.get("min_stock_amount") or 0) > 0:
                         logger.info(
-                            "  ⊘ Skipping parent for '%s' (ID %s) — "
-                            "min_stock_amount > 0.",
+                            "  X Skipping parent for '%s' (ID %s) - min_stock_amount > 0.",
                             product.get("name"), pid,
                         )
-                        # Still apply product group (category).
-                        cat_name = info.get("category")
+                        cat_name = product_category.get(product_id)
                         if cat_name:
-                            cg_id = category_name_to_group_id.get(
-                                str(cat_name)
-                            )
+                            cg_id = category_name_to_group_id.get(cat_name)
                             if cg_id is not None:
                                 try:
-                                    grocy.update_product(
-                                        product_id,
-                                        product_group_id=cg_id,
-                                    )
+                                    grocy.update_product(product_id, product_group_id=cg_id)
                                     updated += 1
                                 except (StorageAPIError, ValueError) as exc:
-                                    logger.warning(
-                                        "Could not set group for '%s': %s",
-                                        product.get("name"), exc,
-                                    )
+                                    logger.warning("Could not set group for '%s': %s", product.get("name"), exc)
                     else:
-                        child_update: dict = {"parent_id": parent_id}
-                        cat_name = info.get("category")
+                        child_update = {"parent_id": parent_id}
+                        cat_name = product_category.get(product_id)
                         if cat_name:
-                            child_group_id = category_name_to_group_id.get(str(cat_name))
-                            if child_group_id is not None:
-                                child_update["product_group_id"] = child_group_id
+                            cg_id = category_name_to_group_id.get(cat_name)
+                            if cg_id is not None:
+                                child_update["product_group_id"] = cg_id
                         try:
                             grocy.update_product(product_id, **child_update)
                             logger.info(
-                                "  → Grouped '%s' (ID %s) under '%s'.",
+                                "  -> Grouped '%s' (ID %s) under '%s'.",
                                 product.get("name"), pid, group_name,
                             )
                             updated += 1
                         except (StorageAPIError, ValueError) as exc:
-                            logger.warning(
-                                "Could not group '%s': %s", product.get("name"), exc,
-                            )
+                            logger.warning("Could not group '%s': %s", product.get("name"), exc)
 
-    # --- Clean up old parent-only placeholder products -------------------
+    return updated
+
+
+def _ai_optimize_products(
+    grocy,
+    gemini_api_key,
+    model=_GEMINI_DEFAULT_MODEL,
+    *,
+    optimize_model="",
+    location_id=None,
+    quantity_unit_id=None,
+    product_ids=None,
+):
+    """Use AI to optimize the product database in two phases.
+
+    Full mode (product_ids is None):
+      Phase 1 -- determine categories and parent products for all products
+                 in batches of 100 with progressive chaining.
+      Phase 2 -- assign locations, best-before dates, and pack info in
+                 batches of 100, applying Phase 1 structure.
+
+    Incremental mode (product_ids is set, e.g. after discover):
+      Fetches existing parents/categories as context and runs a combined
+      (structure + details) call in batches of 100 for the new products.
+
+    Returns the number of products updated.
+    """
+    full_mode = product_ids is None
+    effective_model = (optimize_model or model) if full_mode else model
+
+    try:
+        locations = grocy.get_locations()
+    except StorageAPIError as exc:
+        logger.error("Could not fetch locations from Grocy: %s", exc)
+        return 0
+
+    location_names = {}
+    location_lines = ""
+    if locations:
+        location_names = {int(loc["id"]): loc.get("name", str(loc["id"])) for loc in locations}
+        location_lines = "\n".join(f"  {loc['id']}: {loc.get('name', loc['id'])}" for loc in locations)
+
+    try:
+        all_products = grocy.get_all_products()
+    except StorageAPIError as exc:
+        logger.error("Could not fetch products from Grocy: %s", exc)
+        return 0
+
+    if not all_products:
+        logger.info("No products found in Grocy - nothing to optimize.")
+        return 0
+
+    name_to_product = {p.get("name", ""): p for p in all_products}
+
+    old_parent_ids = set()
+    if full_mode:
+        has_children = set()
+        for p in all_products:
+            ppid = p.get("parent_id")
+            if ppid:
+                has_children.add(int(ppid))
+
+        for p in all_products:
+            pid_int = int(p["id"])
+            if pid_int in has_children and not p.get("active", True):
+                old_parent_ids.add(pid_int)
+
+        for p in all_products:
+            if p.get("parent_id"):
+                try:
+                    grocy.update_product(int(p["id"]), parent_id=None)
+                except StorageAPIError as exc:
+                    logger.warning("Could not strip parent from '%s': %s", p.get("name"), exc)
+                p["parent_id"] = None
+
+        products = [p for p in all_products if int(p["id"]) not in old_parent_ids]
+        logger.info(
+            "Clean-slate mode: stripped parents from all products, "
+            "%d old parent placeholder(s) identified for cleanup.",
+            len(old_parent_ids),
+        )
+    else:
+        allowed = set(product_ids)
+        products = [p for p in all_products if int(p["id"]) in allowed]
+
+    if not products:
+        logger.info("No matching products - nothing to optimize.")
+        return 0
+
+    group_master_id = None
+    try:
+        group_master_id = grocy.ensure_product_group("Group master")
+    except StorageAPIError as exc:
+        logger.warning("Could not ensure 'Group master' product group: %s", exc)
+
+    logger.info("Asking AI to optimize %d product(s) ...", len(products))
+
+    unit_abbrev_to_id = {}
+    try:
+        for u in grocy.get_quantity_units():
+            desc = (u.get("description") or "").lower().strip()
+            if desc:
+                unit_abbrev_to_id[desc] = int(u["id"])
+            canonical = _canonical_unit((u.get("name") or "").lower().strip())
+            if canonical and canonical not in unit_abbrev_to_id:
+                unit_abbrev_to_id[canonical] = int(u["id"])
+    except StorageAPIError:
+        pass
+
+    updated = 0
+
+    if full_mode:
+        product_category, product_group_name, category_name_to_group_id, parent_name_to_id = \
+            _optimize_phase1_structure(
+                grocy, products, gemini_api_key, effective_model,
+                location_id=location_id,
+                quantity_unit_id=quantity_unit_id,
+                name_to_product=name_to_product,
+                group_master_id=group_master_id,
+            )
+        updated = _optimize_phase2_details(
+            grocy, products,
+            product_category, product_group_name,
+            category_name_to_group_id, parent_name_to_id,
+            locations, location_names, unit_abbrev_to_id,
+            gemini_api_key, effective_model,
+            name_to_product=name_to_product,
+        )
+    else:
+        # Incremental mode: combined structure+details call per batch of 100
+        has_children_inc = set()
+        for p in all_products:
+            ppid = p.get("parent_id")
+            if ppid:
+                has_children_inc.add(int(ppid))
+
+        existing_parent_names = sorted({
+            p.get("name", "") for p in all_products
+            if int(p["id"]) in has_children_inc and p.get("name")
+        })
+        existing_category_names = []
+        try:
+            existing_category_names = sorted({
+                g.get("name", "") for g in grocy.get_product_groups()
+                if g.get("name") and g.get("name") != "Group master"
+            })
+        except StorageAPIError:
+            pass
+
+        parent_name_to_id = {
+            p.get("name", ""): int(p["id"])
+            for p in all_products if int(p["id"]) in has_children_inc
+        }
+        category_name_to_group_id = {}
+        try:
+            for g in grocy.get_product_groups():
+                if g.get("name"):
+                    category_name_to_group_id[g["name"]] = int(g["id"])
+        except StorageAPIError:
+            pass
+
+        for batch_idx, i in enumerate(range(0, len(products), _GEMINI_BATCH_SIZE)):
+            batch = products[i : i + _GEMINI_BATCH_SIZE]
+
+            def _product_line(p):
+                line = f"  {p['id']}: {p.get('name', p['id'])}"
+                loc_id = p.get("location_id")
+                if loc_id and location_names:
+                    loc_name = location_names.get(int(loc_id))
+                    if loc_name:
+                        line += f" [current location: {loc_name}]"
+                return line
+
+            product_lines = "\n".join(_product_line(p) for p in batch)
+            location_section = f"Available storage locations:\n{location_lines}\n\n" if location_lines else ""
+
+            existing_parents_section = ""
+            if existing_parent_names:
+                parents_str = ", ".join(f'"{n}"' for n in existing_parent_names)
+                existing_parents_section = (
+                    "Existing parent products (reuse these EXACT names when "
+                    "a product fits - do NOT create synonyms):\n"
+                    f"  {parents_str}\n\n"
+                )
+
+            existing_categories_section = ""
+            if existing_category_names:
+                cats_str = ", ".join(f'"{n}"' for n in existing_category_names)
+                existing_categories_section = (
+                    "Existing product categories (reuse these EXACT names when a product fits):\n"
+                    f"  {cats_str}\n\n"
+                )
+
+            prompt = (
+                "You are a grocery database expert helping to organise a Finnish home pantry.\n\n"
+                f"{location_section}"
+                f"{existing_parents_section}"
+                f"{existing_categories_section}"
+                "For each product below, return a JSON object mapping the product ID (as a string) "
+                "to an object with:\n"
+                '  "location_id": (integer) best storage location ID, or null.\n'
+                '  "best_before_days": (integer) estimated days until best-before for an unopened product.\n'
+                '  "group_name": (string) SPECIFIC Finnish parent product name. If an existing parent fits, '
+                "use that EXACT name. Null if unique.\n"
+                '  "category": (string) Finnish product category. If an existing category fits, use that EXACT name. Null if unique.\n'
+                '  "pack_size": (integer) ONLY when N identical separately-sold consumer units are bundled '
+                "(e.g. 6-pack soda). NOT for contents count (cotton swabs 200kpl, tea bags 100kpl). Null otherwise.\n"
+                '  "pack_unit": (string) unit abbreviation, e.g. "kpl", or null.\n'
+                '  "base_product_name": (string) base product name for multi-packs, null otherwise.\n\n'
+                "Guidelines:\n"
+                "- Location: dairy/meat/fresh/drinks -> refrigerator; cleaning/laundry -> cleaning cabinet; "
+                "hygiene/personal care/bathroom (cotton swabs, toothbrush, toothpaste, shampoo, soap, deodorant, etc.) -> bathroom; "
+                "dry/canned/packaged/eggs -> pantry. Preserve [current location] unless clearly wrong.\n"
+                "- Best-before: fresh milk ~7-14d; yogurt ~21d; butter ~90d; hard cheese ~180d; "
+                "eggs ~28d; bread ~7d; canned ~730d; dry pasta/rice ~1095d; oil ~365d; frozen ~730d; cleaning ~1095d.\n"
+                "- Pack: genuine multi-packs only (4-pack, 6x0.33l, monipakkaus). NOT contents of one package.\n\n"
+                "Return ONLY valid JSON.\n\n"
+                "Products:\n"
+                f"{product_lines}"
+            )
+
+            try:
+                mapping = _call_gemini_json(prompt, gemini_api_key, effective_model)
+            except (StorageAPIError, json.JSONDecodeError, ValueError) as exc:
+                logger.error("AI optimize batch %d failed: %s", batch_idx + 1, exc)
+                continue
+
+            if not isinstance(mapping, dict):
+                logger.error(
+                    "AI optimize batch %d: expected JSON object, got %s - skipping.",
+                    batch_idx + 1, type(mapping).__name__,
+                )
+                continue
+
+            batch_parent_names = set()
+            batch_category_names = set()
+            for product in batch:
+                pid = str(product["id"])
+                info = mapping.get(pid)
+                if not isinstance(info, dict):
+                    continue
+                gn = info.get("group_name")
+                if gn and isinstance(gn, str):
+                    batch_parent_names.add(gn.strip())
+                cat = info.get("category")
+                if cat and isinstance(cat, str):
+                    batch_category_names.add(cat.strip())
+
+            for cat_name in sorted(batch_category_names):
+                if cat_name not in category_name_to_group_id:
+                    try:
+                        gid = grocy.ensure_product_group(cat_name)
+                        category_name_to_group_id[cat_name] = gid
+                        if cat_name not in existing_category_names:
+                            existing_category_names.append(cat_name)
+                    except StorageAPIError as exc:
+                        logger.warning("Could not ensure product group '%s': %s", cat_name, exc)
+
+            for parent_name in sorted(batch_parent_names):
+                if parent_name in parent_name_to_id:
+                    continue
+                existing_p = name_to_product.get(parent_name)
+                if existing_p and not existing_p.get("parent_id"):
+                    parent_name_to_id[parent_name] = int(existing_p["id"])
+                elif not existing_p:
+                    try:
+                        pid_new = grocy.create_product(parent_name, location_id=location_id, unit_id=quantity_unit_id)
+                        logger.info("  -> Created parent product '%s' (ID %d).", parent_name, pid_new)
+                        parent_name_to_id[parent_name] = pid_new
+                        name_to_product[parent_name] = {
+                            "id": pid_new, "name": parent_name, "parent_id": None, "active": False,
+                        }
+                        if group_master_id is not None:
+                            grocy.update_product(pid_new, product_group_id=group_master_id)
+                        if parent_name not in existing_parent_names:
+                            existing_parent_names.append(parent_name)
+                    except StorageAPIError as exc:
+                        logger.warning("Could not create parent product '%s': %s", parent_name, exc)
+
+            for product in batch:
+                pid = str(product["id"])
+                product_id = int(product["id"])
+                info = mapping.get(pid)
+                if not isinstance(info, dict):
+                    continue
+
+                pack_size = info.get("pack_size")
+                pack_unit = info.get("pack_unit")
+                if pack_size and pack_unit:
+                    canonical = _canonical_unit(str(pack_unit))
+                    pack_unit_id = unit_abbrev_to_id.get(canonical) if canonical else None
+                    if pack_unit_id is not None:
+                        try:
+                            for bc_entry in grocy.get_product_barcodes(product_id):
+                                grocy.update_barcode(
+                                    int(bc_entry["id"]),
+                                    pack_size=int(pack_size), pack_unit_id=pack_unit_id,
+                                )
+                                logger.info(
+                                    "  -> Set pack_size=%d, pack_unit=%s on barcode '%s' for '%s'.",
+                                    int(pack_size), pack_unit, bc_entry.get("barcode", "?"), product.get("name"),
+                                )
+                                updated += 1
+                        except StorageAPIError as exc:
+                            logger.warning("Could not set pack info for '%s': %s", product.get("name"), exc)
+
+                    base_name = info.get("base_product_name")
+                    if base_name and isinstance(base_name, str):
+                        base_name = base_name.strip()
+                        base_product = name_to_product.get(base_name)
+                        if base_product and int(base_product["id"]) != product_id:
+                            base_pid = int(base_product["id"])
+                            try:
+                                for bc_entry in grocy.get_product_barcodes(product_id):
+                                    grocy.update_barcode(
+                                        int(bc_entry["id"]), product_id=base_pid,
+                                        pack_size=int(pack_size) if pack_size else int(bc_entry.get("pack_size") or 1),
+                                    )
+                                for entry in grocy.get_product_stock_locations(product_id):
+                                    amt = float(entry.get("amount", 0))
+                                    loc = int(entry.get("location_id", 0))
+                                    if amt > 0:
+                                        converted = amt * int(pack_size) if pack_size else amt
+                                        grocy.add_stock(base_pid, amount=converted, location_id=loc)
+                                grocy.delete_product(product_id)
+                                logger.info(
+                                    "  -> Merged multi-pack '%s' into '%s'.", product.get("name"), base_name,
+                                )
+                                updated += 1
+                                continue
+                            except StorageAPIError as exc:
+                                logger.warning("Could not merge '%s' into '%s': %s", product.get("name"), base_name, exc)
+                        elif not base_product:
+                            try:
+                                grocy.update_product(product_id, name=base_name)
+                                logger.info("  -> Renamed '%s' -> '%s'.", product.get("name"), base_name)
+                                name_to_product[base_name] = {**product, "name": base_name}
+                                name_to_product.pop(product.get("name", ""), None)
+                                updated += 1
+                            except StorageAPIError as exc:
+                                logger.warning("Could not rename '%s' to '%s': %s", product.get("name"), base_name, exc)
+
+                loc_id = info.get("location_id")
+                if loc_id is not None and locations:
+                    try:
+                        grocy.update_product(product_id, location_id=int(loc_id))
+                        logger.info(
+                            "  -> Set location '%s' for '%s' (ID %s).",
+                            location_names.get(int(loc_id), loc_id), product.get("name"), pid,
+                        )
+                        updated += 1
+                    except (StorageAPIError, ValueError) as exc:
+                        logger.warning("Could not update location for '%s': %s", product.get("name"), exc)
+                    try:
+                        target = int(loc_id)
+                        for entry in grocy.get_product_stock_locations(product_id):
+                            entry_loc = int(entry.get("location_id", 0))
+                            entry_amount = float(entry.get("amount", 0))
+                            if entry_loc == target or entry_amount <= 0:
+                                continue
+                            grocy.transfer_stock(product_id, entry_amount, entry_loc, target)
+                            logger.info(
+                                "    -> Moved %.4g unit(s) from '%s' -> '%s' for '%s'.",
+                                entry_amount, location_names.get(entry_loc, entry_loc),
+                                location_names.get(target, target), product.get("name"),
+                            )
+                    except StorageAPIError as exc:
+                        logger.debug("Could not transfer stock for '%s': %s", product.get("name"), exc)
+
+                days = info.get("best_before_days")
+                if days is not None:
+                    try:
+                        grocy.update_product(product_id, default_best_before_days=int(days))
+                        logger.info("  -> Set %d best-before days for '%s' (ID %s).", int(days), product.get("name"), pid)
+                        updated += 1
+                    except (StorageAPIError, ValueError) as exc:
+                        logger.warning("Could not update due days for '%s': %s", product.get("name"), exc)
+
+                group_name = info.get("group_name")
+                if group_name and isinstance(group_name, str):
+                    parent_id = parent_name_to_id.get(group_name.strip())
+                    if parent_id is not None and parent_id != product_id:
+                        if float(product.get("min_stock_amount") or 0) > 0:
+                            logger.info(
+                                "  X Skipping parent for '%s' - min_stock_amount > 0.", product.get("name"),
+                            )
+                            cat_name = info.get("category")
+                            if cat_name:
+                                cg_id = category_name_to_group_id.get(str(cat_name))
+                                if cg_id is not None:
+                                    try:
+                                        grocy.update_product(product_id, product_group_id=cg_id)
+                                        updated += 1
+                                    except (StorageAPIError, ValueError) as exc:
+                                        logger.warning("Could not set group for '%s': %s", product.get("name"), exc)
+                        else:
+                            child_update = {"parent_id": parent_id}
+                            cat_name = info.get("category")
+                            if cat_name:
+                                cg_id = category_name_to_group_id.get(str(cat_name))
+                                if cg_id is not None:
+                                    child_update["product_group_id"] = cg_id
+                            try:
+                                grocy.update_product(product_id, **child_update)
+                                logger.info(
+                                    "  -> Grouped '%s' (ID %s) under '%s'.",
+                                    product.get("name"), pid, group_name,
+                                )
+                                updated += 1
+                            except (StorageAPIError, ValueError) as exc:
+                                logger.warning("Could not group '%s': %s", product.get("name"), exc)
+
+    # Cleanup: delete old parent-only placeholders (full mode)
     if full_mode and old_parent_ids:
-        # Re-check which old parents are now truly unused (no new children).
         try:
             all_products_after = grocy.get_all_products()
         except StorageAPIError:
             all_products_after = []
-
-        new_children_of: set[int] = set()
+        new_children_of = set()
         for p in all_products_after:
             ppid = p.get("parent_id")
             if ppid:
                 new_children_of.add(int(ppid))
-
         for old_pid in old_parent_ids:
             if old_pid in new_children_of:
                 continue
-            old_prod = next(
-                (p for p in all_products_after if int(p["id"]) == old_pid),
-                None,
-            )
+            old_prod = next((p for p in all_products_after if int(p["id"]) == old_pid), None)
             if old_prod is None:
                 continue
             try:
                 grocy.delete_product(old_pid)
-                logger.info(
-                    "  → Deleted old parent '%s' (ID %d).",
-                    old_prod.get("name"), old_pid,
-                )
+                logger.info("  -> Deleted old parent '%s' (ID %d).", old_prod.get("name"), old_pid)
                 updated += 1
             except StorageAPIError as exc:
-                logger.warning(
-                    "Could not delete old parent '%s': %s",
-                    old_prod.get("name"), exc,
-                )
+                logger.warning("Could not delete old parent '%s': %s", old_prod.get("name"), exc)
 
-    # --- Incremental mode: clean up empty parents (legacy behavior) ------
-    if not full_mode:
-        try:
-            all_products_after = grocy.get_all_products()
-        except StorageAPIError:
-            all_products_after = []
-
-        if all_products_after:
-            children_of: dict[int, list] = {}
-            for p in all_products_after:
-                ppid = p.get("parent_id")
-                if ppid:
-                    children_of.setdefault(int(ppid), []).append(p)
-
-            for p in all_products_after:
-                pid_int = int(p["id"])
-                if (
-                    pid_int not in children_of
-                    and not p.get("active", True)
-                ):
-                    try:
-                        grocy.delete_product(pid_int)
-                        logger.info(
-                            "  → Deleted empty parent '%s' (ID %d).",
-                            p.get("name"), pid_int,
-                        )
-                        updated += 1
-                    except StorageAPIError as exc:
-                        logger.warning(
-                            "Could not delete empty parent '%s': %s",
-                            p.get("name"), exc,
-                        )
-
-    # --- Clean up unused product groups (full mode only) -----------------
+    # Cleanup: unused product groups (full mode)
     if full_mode:
         try:
             all_products_final = grocy.get_all_products()
@@ -3129,13 +3321,8 @@ def _ai_optimize_products(
         except StorageAPIError:
             all_products_final = []
             all_groups = []
-
         if all_groups and all_products_final:
-            used_group_ids: set[int] = set()
-            for p in all_products_final:
-                gid = p.get("product_group_id")
-                if gid:
-                    used_group_ids.add(int(gid))
+            used_group_ids = {int(p["product_group_id"]) for p in all_products_final if p.get("product_group_id")}
             for grp in all_groups:
                 grp_id = int(grp["id"])
                 grp_name = grp.get("name", "")
@@ -3144,20 +3331,14 @@ def _ai_optimize_products(
                 if grp_id not in used_group_ids:
                     try:
                         grocy.delete_product_group(grp_id)
-                        logger.info("  → Deleted unused product group '%s'.", grp_name)
+                        logger.info("  -> Deleted unused product group '%s'.", grp_name)
                     except StorageAPIError as exc:
-                        logger.warning(
-                            "Could not delete product group '%s': %s",
-                            grp_name, exc,
-                        )
+                        logger.warning("Could not delete product group '%s': %s", grp_name, exc)
 
-    # --- Unit optimization -----------------------------------------------
+    # Unit optimization
     if full_mode:
         _optimize_units(grocy, gemini_api_key, effective_model)
     else:
-        # Incremental: ensure standard units, detect package sizes and
-        # density conversions for newly discovered products, then check
-        # existing recipes for unit gaps with these products.
         target_ids = set(product_ids)
         try:
             abbrev_to_id = _ensure_units_and_conversions(grocy)
@@ -3167,30 +3348,17 @@ def _ai_optimize_products(
                 logger.warning("Failed to fix broken product units: %s", exc)
             if target_ids:
                 fresh_products = grocy.get_all_products()
-                new_products = [
-                    p for p in fresh_products
-                    if int(p["id"]) in target_ids
-                ]
+                new_products = [p for p in fresh_products if int(p["id"]) in target_ids]
                 if new_products:
-                    _ai_detect_package_sizes(
-                        grocy, new_products, abbrev_to_id,
-                        gemini_api_key, effective_model,
-                    )
-                    _ai_detect_density_conversions(
-                        grocy, new_products, abbrev_to_id,
-                        gemini_api_key, effective_model,
-                    )
-                    _check_recipes_for_unit_gaps(
-                        grocy, target_ids, abbrev_to_id,
-                        gemini_api_key, effective_model,
-                    )
+                    _ai_detect_package_sizes(grocy, new_products, abbrev_to_id, gemini_api_key, effective_model)
+                    _ai_detect_density_conversions(grocy, new_products, abbrev_to_id, gemini_api_key, effective_model)
+                    _check_recipes_for_unit_gaps(grocy, target_ids, abbrev_to_id, gemini_api_key, effective_model)
             _merge_recipe_stubs(grocy)
         except StorageAPIError as exc:
             logger.warning("Incremental unit setup failed: %s", exc)
 
     logger.info("--optimize complete: %d product(s) updated.", updated)
     return updated
-
 
 def _validate_args(args: argparse.Namespace) -> int:
     """Return 0 if arguments are valid, 1 otherwise."""

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.21.11
+- Optimize: 3-phase batched pipeline replaces single 1000-item AI call
+  - Phase 1: establish categories + parent products in 100-item batches with
+    progressive chaining (each batch reuses names from prior batches)
+  - Phase 2: assign locations, best-before dates, pack info in 100-item batches
+  - Incremental mode: combined structure+details call in 100-item batches
+  - Eliminates timeout failures on large catalogues
+
 ## 1.21.10
 - Fix optimize: pack_size no longer incorrectly set for products like cotton swabs
   (200kpl = 200 items in one package, not a 200-pack of identical units)
