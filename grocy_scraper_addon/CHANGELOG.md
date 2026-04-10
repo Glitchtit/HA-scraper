@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.21.4
+- Fix: during Grocy import, products with no Grocy stock (import_stock_amount=NULL)
+  no longer get 1 unit added to stock. Only barcodes that had stock in Grocy get
+  their stock amount restored. Manual/scanner barcodes still default to 1 unit.
+
 ## 1.21.3
 - Fix crash in AI optimize/sort/date/group/dedup steps when Gemini returns a JSON
   array instead of an object; now logs an error and skips the batch instead of crashing
