@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 
@@ -33,6 +33,23 @@ _KRUOKA_URL_RE = re.compile(
     r"https?://(?:www\.)?k-ruoka\.fi/kauppa/tuote/(?P<slug>[a-z0-9-]+)-(?P<ean>\d{8,14})(?:\?|#|$)",
     re.IGNORECASE,
 )
+
+# Only trust product/food domains for Strategy-2 name extraction.
+# Trademark, patent, and legal databases return irrelevant titles even though
+# the EAN number may appear in their content or URLs.
+_TRUSTED_PRODUCT_DOMAINS: frozenset[str] = frozenset({
+    "k-ruoka.fi",
+    "s-kaupat.fi",
+    "foodie.fi",
+    "prisma.fi",
+    "k-citymarket.fi",
+    "alepa.fi",
+    "herkku.net",
+    "openfoodfacts.org",
+    "barcodelookup.com",
+    "ean-search.org",
+    "open.fda.gov",
+})
 
 _REQUEST_TIMEOUT = 15  # seconds
 
@@ -130,15 +147,25 @@ def lookup_ean(
                 source_url=result_url,
             )
 
-    # Strategy 2: use the first result's title as the product name,
-    # but only if the EAN appears somewhere in the result (URL or content)
-    # to avoid false positives.
+    # Strategy 2: use a result's title as the product name, but only from
+    # trusted product/food domains — trademark and patent databases also contain
+    # EAN-like numbers, producing completely wrong names with a correct image.
     for result in results:
         result_url = result.get("url", "")
         content = result.get("content", "")
         title = result.get("title", "").strip()
         if ean in result_url or ean in content:
             if title:
+                netloc = urlparse(result_url).netloc.lower().lstrip("www.")
+                if not any(
+                    netloc == d or netloc.endswith("." + d)
+                    for d in _TRUSTED_PRODUCT_DOMAINS
+                ):
+                    logger.debug(
+                        "SearXNG: skipping untrusted domain '%s' for EAN %s",
+                        netloc, ean,
+                    )
+                    continue
                 image_url = _check_kesko_cdn(ean, sess) or ""
                 logger.info(
                     "SearXNG: using result title for EAN %s: '%s'",

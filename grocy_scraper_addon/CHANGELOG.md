@@ -1,3 +1,6 @@
+## 1.21.16
+- Fix: SearXNG Strategy 2 now rejects untrusted domains (trademark/patent/legal databases) as product name sources; only known grocery and product sites are trusted — previously EAN numbers appearing in trademark documents caused correct images but completely wrong product names
+
 ## 1.21.15
 - Remove Optimize / Sort / Date / Group bulk AI buttons from ingress UI (moved to Storage app)
 - Full AI optimize now runs in Storage app with live log streaming and progress UI

@@ -128,11 +128,11 @@ class TestLookupEan:
         assert result.ean == EAN
 
     def test_strategy2_ean_in_content(self):
-        """EAN appears in content, not URL."""
+        """EAN appears in content from a trusted product domain."""
         data = {
             "results": [
                 {
-                    "url": "https://example.com/product",
+                    "url": f"https://barcodelookup.com/product/{EAN}",
                     "title": "Some Product",
                     "content": f"EAN: {EAN} available at ...",
                 },
@@ -143,6 +143,25 @@ class TestLookupEan:
 
         assert result is not None
         assert result.name == "Some Product"
+
+    def test_strategy2_untrusted_domain_skipped(self):
+        """Untrusted domains (e.g. trademark databases) are skipped in Strategy 2."""
+        data = {
+            "results": [
+                {
+                    "url": f"https://trademarks.justia.com/search?q={EAN}",
+                    "title": "GODLY GOAL-GETTER Trademark Application of Reynolds, Sabrina D",
+                    "content": f"Serial number {EAN}",
+                },
+            ]
+        }
+        sess = _make_session(data)
+        result = lookup_ean(EAN, searxng_url=SEARXNG, session=sess)
+
+        # Should fall through to Strategy 3 (CDN image only, not the trademark title)
+        assert result is not None
+        assert "GODLY" not in result.name
+        assert result.name == f"Unknown product ({EAN})"
 
     def test_strategy3_cdn_only(self):
         """No good name but Kesko CDN has the image."""
