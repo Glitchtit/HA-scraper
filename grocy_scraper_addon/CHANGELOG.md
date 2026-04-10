@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.21.7
+- Add Ollama support as an alternative AI provider
+- New addon config options: `ai_provider` ("gemini"/"ollama"), `ollama_url`, `ollama_model`
+- `_call_gemini_json()` routes to `_call_ollama()` when `AI_PROVIDER == "ollama"`
+- ingress_server: `_setup_ai_globals()`, `_has_ai()`, `_ai_not_configured_response()` helpers
+  so all AI handlers work with either Gemini or Ollama
+
 ## 1.21.6
 - Fix: `parent_id=""` (empty string) was sent to Storage during optimize/group, causing
   422 errors. Now correctly sends `parent_id=null` to clear the parent relationship.

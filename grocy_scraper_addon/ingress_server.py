@@ -260,6 +260,43 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
     return ns
 
 
+def _setup_ai_globals(opts: dict[str, Any]) -> None:
+    """Set AI provider globals on the main module from add-on options."""
+    import main as _main
+
+    provider = opts.get("ai_provider", "gemini")
+    _main.AI_PROVIDER = provider
+    if provider == "ollama":
+        _main.OLLAMA_URL = opts.get("ollama_url", "").strip()
+        _main.OLLAMA_MODEL = opts.get("ollama_model", "llama3").strip() or "llama3"
+
+
+def _has_ai(opts: dict[str, Any]) -> bool:
+    """Return True if an AI provider is fully configured."""
+    provider = opts.get("ai_provider", "gemini")
+    if provider == "ollama":
+        return bool(opts.get("ollama_url", "").strip())
+    return bool(opts.get("gemini_api_key", ""))
+
+
+def _ai_not_configured_response() -> dict[str, Any]:
+    """Standard response when AI is not configured."""
+    return {
+        "success": False,
+        "skipped": True,
+        "updated": 0,
+        "logs": [
+            {
+                "level": "WARNING",
+                "message": (
+                    "An AI provider must be configured. "
+                    "Set a Gemini API key or configure an Ollama URL in the add-on settings."
+                ),
+            }
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # API handlers
 # ---------------------------------------------------------------------------
@@ -272,6 +309,8 @@ def _handle_config() -> dict[str, Any]:
         "configured": bool(_resolve_storage_url(opts)),
         "store_id": opts.get("store_id", ""),
         "gemini_configured": bool(opts.get("gemini_api_key")),
+        "ai_configured": _has_ai(opts),
+        "ai_provider": opts.get("ai_provider", "gemini"),
     }
 
 
@@ -342,14 +381,15 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
         # --- Single-barcode mode -----------------------------------------------
         import main as _main
 
+        _setup_ai_globals(opts)
         args = _build_args(opts)
         with _capture_logs() as logs:
             result = _main._discover_single_barcode(args, single_barcode)
 
-            # Chain AI optimize for the new product when Gemini is available.
+            # Chain AI optimize for the new product when AI is available.
             grocy_id = result.get("grocy_id")
             gemini_key = opts.get("gemini_api_key", "")
-            if result.get("success") and gemini_key and grocy_id and not result.get("already_existed"):
+            if result.get("success") and _has_ai(opts) and grocy_id and not result.get("already_existed"):
                 from grocy_scraper.storage_client import StorageClient as _SC
 
                 grocy = _SC(
@@ -372,12 +412,13 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
     from grocy_scraper.storage_client import StorageClient
     import main as _main
 
+    _setup_ai_globals(opts)
     args = _build_args(opts)
     with _capture_logs() as logs:
         result_code, discovered_ids = _main._discover_products(args)
-        # Chain AI optimize when Gemini key is available.
+        # Chain AI optimize when AI is available.
         gemini_key = opts.get("gemini_api_key", "")
-        if result_code == 0 and gemini_key and discovered_ids:
+        if result_code == 0 and _has_ai(opts) and discovered_ids:
             grocy = StorageClient(
                 base_url=_resolve_storage_url(opts),
             )
@@ -394,29 +435,17 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _handle_optimize() -> dict[str, Any]:
-    """Run Gemini AI combined optimization (sort + date + group + pack)."""
+    """Run AI combined optimization (sort + date + group + pack)."""
     opts = _read_options()
-    gemini_key = opts.get("gemini_api_key", "")
-    if not gemini_key:
-        return {
-            "success": False,
-            "skipped": True,
-            "updated": 0,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "A Gemini API key is required for Optimize. "
-                    "Add it in the add-on configuration.",
-                }
-            ],
-        }
+    if not _has_ai(opts):
+        return _ai_not_configured_response()
 
     from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = StorageClient(
-        base_url=_resolve_storage_url(opts),
-    )
+    _setup_ai_globals(opts)
+    grocy = StorageClient(base_url=_resolve_storage_url(opts))
+    gemini_key = opts.get("gemini_api_key", "")
     model = opts.get("gemini_model", "gemini-1.5-flash")
     optimize_model = opts.get("gemini_model_optimize", "")
     with _capture_logs() as logs:
@@ -432,29 +461,17 @@ def _handle_optimize() -> dict[str, Any]:
 
 
 def _handle_sort() -> dict[str, Any]:
-    """Run Gemini AI product-location sorting."""
+    """Run AI product-location sorting."""
     opts = _read_options()
-    gemini_key = opts.get("gemini_api_key", "")
-    if not gemini_key:
-        return {
-            "success": False,
-            "skipped": True,
-            "updated": 0,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "A Gemini API key is required for Sort. "
-                    "Add it in the add-on configuration.",
-                }
-            ],
-        }
+    if not _has_ai(opts):
+        return _ai_not_configured_response()
 
     from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = StorageClient(
-        base_url=_resolve_storage_url(opts),
-    )
+    _setup_ai_globals(opts)
+    grocy = StorageClient(base_url=_resolve_storage_url(opts))
+    gemini_key = opts.get("gemini_api_key", "")
     model = opts.get("gemini_model", "gemini-1.5-flash")
     with _capture_logs() as logs:
         updated: int = _main._ai_sort_products(grocy, gemini_key, model)
@@ -462,29 +479,17 @@ def _handle_sort() -> dict[str, Any]:
 
 
 def _handle_date() -> dict[str, Any]:
-    """Run Gemini AI best-before-date assignment."""
+    """Run AI best-before-date assignment."""
     opts = _read_options()
-    gemini_key = opts.get("gemini_api_key", "")
-    if not gemini_key:
-        return {
-            "success": False,
-            "skipped": True,
-            "updated": 0,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "A Gemini API key is required for Date. "
-                    "Add it in the add-on configuration.",
-                }
-            ],
-        }
+    if not _has_ai(opts):
+        return _ai_not_configured_response()
 
     from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = StorageClient(
-        base_url=_resolve_storage_url(opts),
-    )
+    _setup_ai_globals(opts)
+    grocy = StorageClient(base_url=_resolve_storage_url(opts))
+    gemini_key = opts.get("gemini_api_key", "")
     model = opts.get("gemini_model", "gemini-1.5-flash")
     with _capture_logs() as logs:
         updated: int = _main._ai_assign_due_dates(grocy, gemini_key, model)
@@ -492,29 +497,17 @@ def _handle_date() -> dict[str, Any]:
 
 
 def _handle_group() -> dict[str, Any]:
-    """Run Gemini AI product grouping (parent-product assignment)."""
+    """Run AI product grouping (parent-product assignment)."""
     opts = _read_options()
-    gemini_key = opts.get("gemini_api_key", "")
-    if not gemini_key:
-        return {
-            "success": False,
-            "skipped": True,
-            "updated": 0,
-            "logs": [
-                {
-                    "level": "WARNING",
-                    "message": "A Gemini API key is required for Group. "
-                    "Add it in the add-on configuration.",
-                }
-            ],
-        }
+    if not _has_ai(opts):
+        return _ai_not_configured_response()
 
     from grocy_scraper.storage_client import StorageClient
     import main as _main
 
-    grocy = StorageClient(
-        base_url=_resolve_storage_url(opts),
-    )
+    _setup_ai_globals(opts)
+    grocy = StorageClient(base_url=_resolve_storage_url(opts))
+    gemini_key = opts.get("gemini_api_key", "")
     model = opts.get("gemini_model", "gemini-1.5-flash")
     optimize_model = opts.get("gemini_model_optimize", "")
     with _capture_logs() as logs:
@@ -557,6 +550,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
 
     import main as _main
 
+    _setup_ai_globals(opts)
     grocy = StorageClient(base_url=storage_url)
     upload_images = opts.get("upload_images", True)
 
@@ -603,10 +597,10 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 logger.exception(msg)
                 errors.append(msg)
 
-        # Chain AI optimize for newly added products when Gemini key
-        # is available – mirrors the behaviour of _handle_discover.
+        # Chain AI optimize for newly added products when AI is available
+        # – mirrors the behaviour of _handle_discover.
         gemini_key = opts.get("gemini_api_key", "")
-        if gemini_key and added_ids:
+        if _has_ai(opts) and added_ids:
             model = opts.get("gemini_model", "gemini-1.5-flash")
             _main._ai_optimize_products(
                 grocy,
