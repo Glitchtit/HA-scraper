@@ -124,10 +124,20 @@ class TestCreateProduct:
         assert payload["location_id"] == 3
         assert payload["unit_id"] == 5
 
-    def test_missing_unit_id_raises(self):
+    def test_missing_unit_id_auto_detects(self):
+        """create_product() no longer raises on unit_id=None; it auto-detects."""
         client, session = _make_client()
-        with pytest.raises(StorageAPIError):
-            client.create_product("Voi")
+        # Mock get_quantity_units to return a unit with abbreviation "kpl"
+        session.get.return_value = _mock_response(json_data=[
+            {"id": 9, "name": "kappale", "abbreviation": "kpl"}
+        ])
+        session.post.return_value = _mock_response(json_data={"id": 42})
+        product_id = client.create_product("Voi")
+        assert product_id == 42
+        # Verify the auto-detected unit was used
+        call_kwargs = session.post.call_args
+        payload = call_kwargs[1].get("json") or call_kwargs[0][1] if len(call_kwargs[0]) > 1 else call_kwargs[1]["json"]
+        assert payload["unit_id"] == 9
 
     def test_missing_id_in_response_raises(self):
         client, session = _make_client()

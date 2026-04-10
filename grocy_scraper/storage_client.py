@@ -86,9 +86,33 @@ class StorageClient:
         # can route to the correct nested endpoint.
         self._ingredient_to_recipe: dict[int, int] = {}
 
+        # Cached default unit ID (lazy-loaded on first use).
+        self._default_unit_id: int | None = None
+
     # ------------------------------------------------------------------
     # Products
     # ------------------------------------------------------------------
+
+    def get_default_unit_id(self) -> int:
+        """Return the ID of the default quantity unit ("kpl" / piece).
+
+        Lazily fetches the unit list from Storage on the first call and
+        caches the result for the session.  Falls back to the first
+        available unit if "kpl" is not found.
+        """
+        if self._default_unit_id is not None:
+            return self._default_unit_id
+
+        units = self.get_quantity_units()
+        for u in units:
+            if u.get("abbreviation", "").lower() == "kpl":
+                self._default_unit_id = int(u["id"])
+                return self._default_unit_id
+        # Fallback: first unit in the database.
+        if units:
+            self._default_unit_id = int(units[0]["id"])
+            return self._default_unit_id
+        raise StorageAPIError("No quantity units found in Storage")
 
     def get_product_by_barcode(self, barcode: str) -> Optional[dict]:
         """Return the product dict for *barcode*, or ``None`` if not found."""
@@ -130,15 +154,14 @@ class StorageClient:
         location_id:
             Storage location ID.
         unit_id:
-            Quantity unit ID.  **Required** by the Storage API – raises
-            :class:`StorageAPIError` if ``None``.
+            Quantity unit ID.  If ``None``, auto-detects the default unit
+            ("kpl") from Storage.
         **kwargs:
             Extra fields forwarded to the API (e.g. ``product_group_id``).
         """
         if unit_id is None:
-            raise StorageAPIError(
-                f"Cannot create product '{name}': unit_id is required"
-            )
+            unit_id = self.get_default_unit_id()
+            logger.debug("Auto-detected default unit_id=%d for '%s'.", unit_id, name)
 
         payload: dict = {
             "name": name,

@@ -1702,13 +1702,15 @@ class TestValidateArgsDiscover:
         from grocy_scraper_addon.main import _validate_args
         assert _validate_args(self._base_discover_args(storage_url="")) == 1
 
-    def test_missing_location_id_fails(self):
+    def test_missing_location_id_ok(self):
+        """location_id=None is now allowed (auto-detected by StorageClient)."""
         from grocy_scraper_addon.main import _validate_args
-        assert _validate_args(self._base_discover_args(location_id=None)) == 1
+        assert _validate_args(self._base_discover_args(location_id=None)) == 0
 
-    def test_missing_quantity_unit_id_fails(self):
+    def test_missing_quantity_unit_id_ok(self):
+        """quantity_unit_id=None is now allowed (auto-detected by StorageClient)."""
         from grocy_scraper_addon.main import _validate_args
-        assert _validate_args(self._base_discover_args(quantity_unit_id=None)) == 1
+        assert _validate_args(self._base_discover_args(quantity_unit_id=None)) == 0
 
 
 # ---------------------------------------------------------------------------

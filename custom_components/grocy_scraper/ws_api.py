@@ -15,19 +15,14 @@ from homeassistant.core import HomeAssistant, callback
 
 from .const import (
     DOMAIN,
-    CONF_GROCY_URL,
-    CONF_GROCY_KEY,
+    CONF_STORAGE_URL,
     CONF_STORE_ID,
-    CONF_LOCATION_ID,
-    CONF_QUANTITY_UNIT_ID,
-    CONF_DISCOVER_INTERVAL,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
     CONF_GEMINI_API_KEY,
     CONF_GEMINI_MODEL,
     CONF_GEMINI_MODEL_OPTIMIZE,
     DEFAULT_USE_GRAPHQL,
-    DEFAULT_DISCOVER_INTERVAL,
     DEFAULT_UPLOAD_IMAGES,
     DEFAULT_GEMINI_MODEL,
 )
@@ -221,9 +216,6 @@ async def ws_get_config(
         {
             "configured": True,
             "store_id": entry.data.get(CONF_STORE_ID, ""),
-            "discover_interval": entry.options.get(
-                CONF_DISCOVER_INTERVAL, DEFAULT_DISCOVER_INTERVAL
-            ),
             "gemini_configured": bool(entry.options.get(CONF_GEMINI_API_KEY)),
         },
     )
@@ -275,14 +267,14 @@ async def ws_run_discover(
 
 
 def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
-    """Execute the barcode queue → K-Ruoka → Grocy discovery pipeline."""
+    """Execute the barcode queue → K-Ruoka → Storage discovery pipeline."""
     _ensure_repo_on_path()
 
     args = argparse.Namespace(
         store=config.get(CONF_STORE_ID, ""),
-        storage_url=config.get(CONF_GROCY_URL, ""),
-        location_id=config.get(CONF_LOCATION_ID),
-        quantity_unit_id=config.get(CONF_QUANTITY_UNIT_ID),
+        storage_url=config.get(CONF_STORAGE_URL, ""),
+        location_id=None,
+        quantity_unit_id=None,
         upload_images=options.get(CONF_UPLOAD_IMAGES, DEFAULT_UPLOAD_IMAGES),
         use_graphql=options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
     )
@@ -354,12 +346,11 @@ def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
 
     _ensure_repo_on_path()
 
-    from grocy_scraper.grocy_client import GrocyClient  # noqa: PLC0415
+    from grocy_scraper.storage_client import StorageClient  # noqa: PLC0415
     from grocy_scraper_addon import main as _main  # noqa: PLC0415
 
-    grocy = GrocyClient(
-        base_url=config.get(CONF_GROCY_URL, ""),
-        api_key=config.get(CONF_GROCY_KEY, ""),
+    grocy = StorageClient(
+        base_url=config.get(CONF_STORAGE_URL, ""),
     )
     model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
 
@@ -428,12 +419,11 @@ def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
 
     _ensure_repo_on_path()
 
-    from grocy_scraper.grocy_client import GrocyClient  # noqa: PLC0415
+    from grocy_scraper.storage_client import StorageClient  # noqa: PLC0415
     from grocy_scraper_addon import main as _main  # noqa: PLC0415
 
-    grocy = GrocyClient(
-        base_url=config.get(CONF_GROCY_URL, ""),
-        api_key=config.get(CONF_GROCY_KEY, ""),
+    grocy = StorageClient(
+        base_url=config.get(CONF_STORAGE_URL, ""),
     )
     model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
 
