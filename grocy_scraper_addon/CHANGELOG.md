@@ -1,3 +1,6 @@
+## 1.21.17
+- Optimizer: ALL drinks of any kind always assigned to Fridge/refrigerator (explicit rule, no exceptions)
+
 ## 1.21.16
 - Fix: SearXNG Strategy 2 now rejects untrusted domains (trademark/patent/legal databases) as product name sources; only known grocery and product sites are trusted — previously EAN numbers appearing in trademark documents caused correct images but completely wrong product names
 
