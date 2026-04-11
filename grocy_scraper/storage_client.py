@@ -1,17 +1,14 @@
 """HA-Storage REST API client.
 
-Provides the same public interface as :class:`GrocyClient` but talks to the
-custom HA-Storage addon (FastAPI) instead of the upstream Grocy API.
+Talks to the custom HA-Storage addon (FastAPI) running inside the trusted
+HA network.
 
-Key differences from GrocyClient
----------------------------------
-* No API key – the Storage addon runs inside the trusted HA network.
-* Created objects return ``{"id": …}`` (not ``created_object_id``).
+Key characteristics
+-------------------
+* No API key required — Storage runs inside the trusted HA network.
+* Created objects return ``{"id": …}``.
 * File uploads use plain filenames (no Base64 encoding).
 * Error responses follow the FastAPI ``{"detail": "…"}`` convention.
-* Backward-compatibility aliases are injected for fields that
-  ``main.py`` still reads under the old Grocy names (``from_qu_id``,
-  ``to_qu_id``, ``qu_id``, ``description``).
 """
 
 from __future__ import annotations
@@ -662,11 +659,7 @@ class StorageClient:
     # ------------------------------------------------------------------
 
     def get_quantity_units(self) -> list[dict]:
-        """Return all quantity units.
-
-        Adds a ``description`` alias mapped from ``abbreviation`` for
-        backward compatibility with code that reads the Grocy field name.
-        """
+        """Return all quantity units."""
         url = self._url("/api/units")
         try:
             resp = self._session.get(url, timeout=self.timeout)
@@ -682,8 +675,6 @@ class StorageClient:
                 f"Failed to fetch quantity units: {exc}"
             ) from exc
 
-        for unit in units:
-            unit.setdefault("description", unit.get("abbreviation", ""))
         return units
 
     def create_quantity_unit(
@@ -720,11 +711,7 @@ class StorageClient:
             ) from exc
 
     def get_quantity_unit_conversions(self) -> list[dict]:
-        """Return all quantity unit conversions.
-
-        Adds ``from_qu_id`` / ``to_qu_id`` aliases for backward
-        compatibility with code that reads the Grocy field names.
-        """
+        """Return all quantity unit conversions."""
         url = self._url("/api/conversions")
         try:
             resp = self._session.get(url, timeout=self.timeout)
@@ -740,9 +727,6 @@ class StorageClient:
                 f"Failed to fetch QU conversions: {exc}"
             ) from exc
 
-        for conv in conversions:
-            conv.setdefault("from_qu_id", conv.get("from_unit_id"))
-            conv.setdefault("to_qu_id", conv.get("to_unit_id"))
         return conversions
 
     def create_quantity_unit_conversion(
@@ -829,8 +813,8 @@ class StorageClient:
 
         Fetches every recipe, then every recipe's ingredients, and
         flattens them into a single list.  Each dict gets a ``recipe_id``
-        field and a ``qu_id`` alias for ``unit_id``.  An internal mapping
-        is cached so :meth:`update_recipe_position` can route updates.
+        field.  An internal mapping is cached so
+        :meth:`update_recipe_position` can route updates.
         """
         recipes_url = self._url("/api/recipes")
         try:
@@ -868,7 +852,6 @@ class StorageClient:
             ingredients = detail.get("ingredients") or []
             for ing in ingredients:
                 ing["recipe_id"] = recipe_id
-                ing.setdefault("qu_id", ing.get("unit_id"))
                 ingredient_id = int(ing["id"])
                 self._ingredient_to_recipe[ingredient_id] = recipe_id
                 positions.append(ing)
@@ -886,7 +869,7 @@ class StorageClient:
         pos_id:
             Ingredient ID (as returned in ``get_recipe_positions``).
         **fields:
-            Fields to update (e.g. ``qu_id=7``).
+            Fields to update (e.g. ``unit_id=7``).
         """
         recipe_id = self._ingredient_to_recipe.get(pos_id)
         if recipe_id is None:

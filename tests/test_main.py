@@ -2228,7 +2228,7 @@ class TestAiOptimizeProducts:
         locations = [{"id": 2, "name": "Fridge"}]
         grocy = self._make_grocy(products, locations)
         grocy.get_quantity_units.return_value = [
-            {"id": 5, "name": "Piece", "description": "kpl"},
+            {"id": 5, "name": "Piece", "abbreviation": "kpl"},
         ]
         grocy.get_product_barcodes.return_value = [
             {"id": 10, "barcode": "1234567890123", "product_id": 2, "amount": 1},
@@ -2659,7 +2659,7 @@ class TestAiOptimizeProducts:
         locations = [{"id": 2, "name": "Fridge"}]
         grocy = self._make_grocy(products, locations)
         grocy.get_quantity_units.return_value = [
-            {"id": 5, "name": "Piece", "description": "kpl"},
+            {"id": 5, "name": "Piece", "abbreviation": "kpl"},
         ]
         grocy.get_product_barcodes.return_value = [
             {"id": 10, "barcode": "1234567890123", "product_id": 2, "amount": 1},
@@ -2693,7 +2693,7 @@ class TestAiOptimizeProducts:
         locations = [{"id": 3, "name": "Pantry"}]
         grocy = self._make_grocy(products, locations)
         grocy.get_quantity_units.return_value = [
-            {"id": 5, "name": "Piece", "description": "kpl"},
+            {"id": 5, "name": "Piece", "abbreviation": "kpl"},
         ]
         grocy.get_product_barcodes.return_value = [
             {"id": 10, "barcode": "6410402016242", "product_id": 2, "amount": 1},
@@ -2770,9 +2770,9 @@ class TestEnsureUnitsAndConversions:
         assert "kg" in result
         assert "l" in result
 
-    def test_skips_existing_units_by_description(self):
+    def test_skips_existing_units_by_abbreviation(self):
         from grocy_scraper_addon.main import _ensure_units_and_conversions
-        existing = [{"id": 5, "name": "Gramma", "description": "g"}]
+        existing = [{"id": 5, "name": "Gramma", "abbreviation": "g"}]
         grocy = self._make_grocy(existing_units=existing)
         result = _ensure_units_and_conversions(grocy)
         assert result["g"] == 5
@@ -2782,7 +2782,7 @@ class TestEnsureUnitsAndConversions:
 
     def test_skips_existing_units_by_name(self):
         from grocy_scraper_addon.main import _ensure_units_and_conversions
-        existing = [{"id": 7, "name": "Gramma", "description": ""}]
+        existing = [{"id": 7, "name": "Gramma", "abbreviation": ""}]
         grocy = self._make_grocy(existing_units=existing)
         result = _ensure_units_and_conversions(grocy)
         assert result["g"] == 7
@@ -2796,11 +2796,11 @@ class TestEnsureUnitsAndConversions:
     def test_skips_existing_conversions(self):
         from grocy_scraper_addon.main import _ensure_units_and_conversions
         existing_units = [
-            {"id": 1, "name": "Kilogramma", "description": "kg"},
-            {"id": 2, "name": "Gramma", "description": "g"},
+            {"id": 1, "name": "Kilogramma", "abbreviation": "kg"},
+            {"id": 2, "name": "Gramma", "abbreviation": "g"},
         ]
         existing_convs = [
-            {"id": 10, "from_qu_id": 1, "to_qu_id": 2, "factor": 1000, "product_id": None},
+            {"id": 10, "from_unit_id": 1, "to_unit_id": 2, "factor": 1000, "product_id": None},
         ]
         grocy = self._make_grocy(existing_units=existing_units, existing_conversions=existing_convs)
         _ensure_units_and_conversions(grocy)
@@ -2810,7 +2810,7 @@ class TestEnsureUnitsAndConversions:
 
     def test_maps_piece_unit(self):
         from grocy_scraper_addon.main import _ensure_units_and_conversions
-        existing = [{"id": 1, "name": "Piece", "description": ""}]
+        existing = [{"id": 1, "name": "Piece", "abbreviation": ""}]
         grocy = self._make_grocy(existing_units=existing)
         result = _ensure_units_and_conversions(grocy)
         assert result.get("piece") == 1
@@ -2844,7 +2844,7 @@ class TestAiDetectPackageSizes:
         from grocy_scraper_addon.main import _ai_detect_package_sizes
         products = [{"id": 1, "name": "Maito 1L",
                      "active": True}]
-        existing_convs = [{"id": 50, "from_qu_id": 10, "to_qu_id": 20,
+        existing_convs = [{"id": 50, "from_unit_id": 10, "to_unit_id": 20,
                           "factor": 1.0, "product_id": 1}]
         grocy = self._make_grocy(products, conversions=existing_convs)
         abbrev = {"piece": 10, "l": 20}
@@ -2899,7 +2899,7 @@ class TestAiDetectDensityConversions:
             {"product_id": 1, "from_unit": "kg", "to_unit": "l", "factor": 1.67},
         ]
         conversions = [
-            {"id": 50, "from_qu_id": 10, "to_qu_id": 30, "factor": 1.0, "product_id": 1},
+            {"id": 50, "from_unit_id": 10, "to_unit_id": 30, "factor": 1.0, "product_id": 1},
         ]
         products = [{"id": 1, "name": "Vehnäjauho 2kg"}]
         abbrev = {"piece": 10, "g": 20, "kg": 30, "l": 40, "dl": 50, "ml": 60}
@@ -2916,8 +2916,8 @@ class TestAiDetectDensityConversions:
         from grocy_scraper_addon.main import _ai_detect_density_conversions
         # Product has both weight and volume conversions already
         conversions = [
-            {"id": 50, "from_qu_id": 10, "to_qu_id": 30, "factor": 2.0, "product_id": 1},  # piece→kg
-            {"id": 51, "from_qu_id": 10, "to_qu_id": 40, "factor": 3.0, "product_id": 1},  # piece→l
+            {"id": 50, "from_unit_id": 10, "to_unit_id": 30, "factor": 2.0, "product_id": 1},  # piece→kg
+            {"id": 51, "from_unit_id": 10, "to_unit_id": 40, "factor": 3.0, "product_id": 1},  # piece→l
         ]
         products = [{"id": 1, "name": "Maito"}]
         abbrev = {"piece": 10, "kg": 30, "l": 40}
@@ -3018,7 +3018,7 @@ class TestFixBrokenProductUnits:
 
     def test_fixes_orphaned_weight_product(self):
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 5, "name": "Gramma", "description": "g"}]
+        units = [{"id": 5, "name": "Gramma", "abbreviation": "g"}]
         products = [
             {"id": 1, "name": "Vehnäjauho 2kg", "unit_id": 999},
         ]
@@ -3031,7 +3031,7 @@ class TestFixBrokenProductUnits:
 
     def test_fixes_orphaned_volume_product(self):
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 5, "name": "Litra", "description": "l"}]
+        units = [{"id": 5, "name": "Litra", "abbreviation": "l"}]
         products = [
             {"id": 1, "name": "Maito 1L", "unit_id": 999},
         ]
@@ -3047,7 +3047,7 @@ class TestFixBrokenProductUnits:
 
     def test_defaults_to_kpl_for_packaged(self):
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 10, "name": "Kappale", "description": "kpl"}]
+        units = [{"id": 10, "name": "Kappale", "abbreviation": "kpl"}]
         products = [
             {"id": 1, "name": "Hapankorppu", "unit_id": 999},
         ]
@@ -3060,7 +3060,7 @@ class TestFixBrokenProductUnits:
 
     def test_no_orphans_is_noop(self):
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 5, "name": "Gramma", "description": "g"}]
+        units = [{"id": 5, "name": "Gramma", "abbreviation": "g"}]
         products = [
             {"id": 1, "name": "Maito", "unit_id": 5},
         ]
@@ -3072,7 +3072,7 @@ class TestFixBrokenProductUnits:
 
     def test_handles_update_failure(self):
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 10, "name": "Kappale", "description": "kpl"}]
+        units = [{"id": 10, "name": "Kappale", "abbreviation": "kpl"}]
         products = [
             {"id": 1, "name": "Tuote", "unit_id": 999},
         ]
@@ -3085,7 +3085,7 @@ class TestFixBrokenProductUnits:
     def test_fixes_null_empty_qu_fields(self):
         """Products with null/empty QU fields should also be repaired."""
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 10, "name": "Kappale", "description": "kpl"}]
+        units = [{"id": 10, "name": "Kappale", "abbreviation": "kpl"}]
         products = [
             {"id": 1, "name": "Tuote", "unit_id": None},
         ]
@@ -3099,14 +3099,14 @@ class TestFixBrokenProductUnits:
     def test_cleans_orphaned_conversions(self):
         """Conversions referencing deleted units should be removed."""
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 5, "name": "Kappale", "description": "kpl"}]
+        units = [{"id": 5, "name": "Kappale", "abbreviation": "kpl"}]
         # Conversion references deleted unit 999
         conversions = [
-            {"id": 100, "from_qu_id": 999, "to_qu_id": 5, "factor": 1,
+            {"id": 100, "from_unit_id": 999, "to_unit_id": 5, "factor": 1,
              "product_id": 1},
-            {"id": 101, "from_qu_id": 5, "to_qu_id": 999, "factor": 1,
+            {"id": 101, "from_unit_id": 5, "to_unit_id": 999, "factor": 1,
              "product_id": 1},
-            {"id": 102, "from_qu_id": 5, "to_qu_id": 5, "factor": 1,
+            {"id": 102, "from_unit_id": 5, "to_unit_id": 5, "factor": 1,
              "product_id": None},  # valid, should not be deleted
         ]
         products = [
@@ -3126,7 +3126,7 @@ class TestFixBrokenProductUnits:
     def test_fixes_stocked_product_directly(self):
         """Storage has no stock constraint — product update always succeeds."""
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 10, "name": "Kilogramma", "description": "kg"}]
+        units = [{"id": 10, "name": "Kilogramma", "abbreviation": "kg"}]
         products = [
             {"id": 1, "name": "Vehnäjauho 1 kg", "unit_id": 999},
         ]
@@ -3139,7 +3139,7 @@ class TestFixBrokenProductUnits:
     def test_fixes_product_with_volume_unit(self):
         """Product with volume unit in name gets correct unit_id."""
         from grocy_scraper_addon.main import _fix_broken_product_units
-        units = [{"id": 17, "name": "Litra", "description": "l"}]
+        units = [{"id": 17, "name": "Litra", "abbreviation": "l"}]
         products = [
             {"id": 50, "name": "Keiju rypsiöljy 0,5l", "unit_id": 999},
         ]
@@ -3153,8 +3153,8 @@ class TestFixBrokenProductUnits:
         """Parent product with no size hint should inherit QU from children."""
         from grocy_scraper_addon.main import _fix_broken_product_units
         units = [
-            {"id": 17, "name": "Litra", "description": "l"},
-            {"id": 21, "name": "Kappale", "description": "kpl"},
+            {"id": 17, "name": "Litra", "abbreviation": "l"},
+            {"id": 21, "name": "Kappale", "abbreviation": "kpl"},
         ]
         products = [
             # Parent with orphaned QU — name has no size hint
@@ -3175,8 +3175,8 @@ class TestFixBrokenProductUnits:
         """Parent product with no children and no size hint defaults to kpl."""
         from grocy_scraper_addon.main import _fix_broken_product_units
         units = [
-            {"id": 17, "name": "Litra", "description": "l"},
-            {"id": 21, "name": "Kappale", "description": "kpl"},
+            {"id": 17, "name": "Litra", "abbreviation": "l"},
+            {"id": 21, "name": "Kappale", "abbreviation": "kpl"},
         ]
         products = [
             {"id": 51, "name": "Rypsiöljy", "unit_id": 999},
@@ -3201,25 +3201,25 @@ class TestFixRecipeUnits:
     def test_fixes_invalid_qu_id(self):
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 999, "amount": 1},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 999, "amount": 1},
         ]
         products = [
             {"id": 10, "name": "Maito", "unit_id": 5},
         ]
-        units = [{"id": 5, "name": "Kappale", "description": "kpl"}]
+        units = [{"id": 5, "name": "Kappale", "abbreviation": "kpl"}]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"kpl": 5}
         fixed = _fix_recipe_units(grocy, abbrev)
         assert fixed == 1
-        grocy.update_recipe_position.assert_called_once_with(1, qu_id=5)
+        grocy.update_recipe_position.assert_called_once_with(1, unit_id=5)
 
     def test_same_unit_is_noop(self):
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 5, "amount": 1},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 5, "amount": 1},
         ]
         products = [{"id": 10, "name": "Maito", "unit_id": 5}]
-        units = [{"id": 5, "name": "Kappale", "description": "kpl"}]
+        units = [{"id": 5, "name": "Kappale", "abbreviation": "kpl"}]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"kpl": 5}
         fixed = _fix_recipe_units(grocy, abbrev)
@@ -3229,15 +3229,15 @@ class TestFixRecipeUnits:
     def test_skips_when_conversion_exists(self):
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 500},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 500},
         ]
         products = [{"id": 10, "name": "Vehnäjauho 2kg", "unit_id": 5}]
         units = [
-            {"id": 5, "name": "Kappale", "description": "kpl"},
-            {"id": 7, "name": "Gramma", "description": "g"},
+            {"id": 5, "name": "Kappale", "abbreviation": "kpl"},
+            {"id": 7, "name": "Gramma", "abbreviation": "g"},
         ]
         conversions = [
-            {"id": 50, "from_qu_id": 5, "to_qu_id": 7, "factor": 2000.0, "product_id": 10},
+            {"id": 50, "from_unit_id": 5, "to_unit_id": 7, "factor": 2000.0, "product_id": 10},
         ]
         grocy = self._make_grocy(positions, products, units, conversions)
         abbrev = {"kpl": 5, "g": 7}
@@ -3249,12 +3249,12 @@ class TestFixRecipeUnits:
         """Units in the same domain (e.g., g→kg) have global conversions."""
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 500},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 500},
         ]
         products = [{"id": 10, "name": "Vehnäjauho", "unit_id": 8}]
         units = [
-            {"id": 7, "name": "Gramma", "description": "g"},
-            {"id": 8, "name": "Kilogramma", "description": "kg"},
+            {"id": 7, "name": "Gramma", "abbreviation": "g"},
+            {"id": 8, "name": "Kilogramma", "abbreviation": "kg"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"g": 7, "kg": 8}
@@ -3265,18 +3265,18 @@ class TestFixRecipeUnits:
     def test_falls_back_to_stock_qu_when_no_conversion(self):
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 600},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 600},
         ]
         products = [{"id": 10, "name": "Turskafilee", "unit_id": 5}]
         units = [
-            {"id": 5, "name": "Kappale", "description": "kpl"},
-            {"id": 7, "name": "Gramma", "description": "g"},
+            {"id": 5, "name": "Kappale", "abbreviation": "kpl"},
+            {"id": 7, "name": "Gramma", "abbreviation": "g"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"kpl": 5, "g": 7}
         fixed = _fix_recipe_units(grocy, abbrev)
         assert fixed == 1
-        grocy.update_recipe_position.assert_called_once_with(1, qu_id=5)
+        grocy.update_recipe_position.assert_called_once_with(1, unit_id=5)
 
     def test_empty_positions_is_noop(self):
         from grocy_scraper_addon.main import _fix_recipe_units
@@ -3303,17 +3303,17 @@ class TestCheckRecipesForUnitGaps:
         """Recipe uses dl (volume) but product only has kg (weight) conversions."""
         from grocy_scraper_addon.main import _check_recipes_for_unit_gaps
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 2},
         ]
         products = [{"id": 10, "name": "Vehnäjauho 1kg", "unit_id": 5}]
         units = [
-            {"id": 5, "name": "Kappale", "description": "kpl"},
-            {"id": 7, "name": "Desilitra", "description": "dl"},
-            {"id": 8, "name": "Kilogramma", "description": "kg"},
+            {"id": 5, "name": "Kappale", "abbreviation": "kpl"},
+            {"id": 7, "name": "Desilitra", "abbreviation": "dl"},
+            {"id": 8, "name": "Kilogramma", "abbreviation": "kg"},
         ]
         # Product has kpl→kg (package size) but no volume conversions
         conversions = [
-            {"id": 50, "from_qu_id": 5, "to_qu_id": 8, "factor": 1.0, "product_id": 10},
+            {"id": 50, "from_unit_id": 5, "to_unit_id": 8, "factor": 1.0, "product_id": 10},
         ]
         grocy = self._make_grocy(positions, products, units, conversions)
         abbrev = {"kpl": 5, "dl": 7, "kg": 8, "g": 9, "l": 10, "ml": 11}
@@ -3328,18 +3328,18 @@ class TestCheckRecipesForUnitGaps:
         """Product already has weight AND volume conversions — no gap."""
         from grocy_scraper_addon.main import _check_recipes_for_unit_gaps
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 2},
         ]
         products = [{"id": 10, "name": "Vehnäjauho 1kg", "unit_id": 5}]
         units = [
-            {"id": 5, "name": "Kappale", "description": "kpl"},
-            {"id": 7, "name": "Desilitra", "description": "dl"},
-            {"id": 8, "name": "Kilogramma", "description": "kg"},
-            {"id": 10, "name": "Litra", "description": "l"},
+            {"id": 5, "name": "Kappale", "abbreviation": "kpl"},
+            {"id": 7, "name": "Desilitra", "abbreviation": "dl"},
+            {"id": 8, "name": "Kilogramma", "abbreviation": "kg"},
+            {"id": 10, "name": "Litra", "abbreviation": "l"},
         ]
         conversions = [
-            {"id": 50, "from_qu_id": 5, "to_qu_id": 8, "factor": 1.0, "product_id": 10},
-            {"id": 51, "from_qu_id": 8, "to_qu_id": 10, "factor": 1.67, "product_id": 10},
+            {"id": 50, "from_unit_id": 5, "to_unit_id": 8, "factor": 1.0, "product_id": 10},
+            {"id": 51, "from_unit_id": 8, "to_unit_id": 10, "factor": 1.67, "product_id": 10},
         ]
         grocy = self._make_grocy(positions, products, units, conversions)
         abbrev = {"kpl": 5, "dl": 7, "kg": 8, "l": 10}
@@ -3350,12 +3350,12 @@ class TestCheckRecipesForUnitGaps:
         """Only checks products in the provided product_ids set."""
         from grocy_scraper_addon.main import _check_recipes_for_unit_gaps
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 99, "qu_id": 7, "amount": 2},
+            {"id": 1, "recipe_id": 1, "product_id": 99, "unit_id": 7, "amount": 2},
         ]
         products = [{"id": 99, "name": "Jauho", "unit_id": 5}]
         units = [
-            {"id": 5, "name": "Kappale", "description": "kpl"},
-            {"id": 7, "name": "Desilitra", "description": "dl"},
+            {"id": 5, "name": "Kappale", "abbreviation": "kpl"},
+            {"id": 7, "name": "Desilitra", "abbreviation": "dl"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"kpl": 5, "dl": 7}
@@ -3379,12 +3379,12 @@ class TestFixRecipeUnitsWithDensity:
         """When recipe uses dl and product stock is kg, try density before fallback."""
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 2},
         ]
         products = [{"id": 10, "name": "Vehnäjauho 1kg", "unit_id": 8}]
         units = [
-            {"id": 7, "name": "Desilitra", "description": "dl"},
-            {"id": 8, "name": "Kilogramma", "description": "kg"},
+            {"id": 7, "name": "Desilitra", "abbreviation": "dl"},
+            {"id": 8, "name": "Kilogramma", "abbreviation": "kg"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"dl": 7, "kg": 8, "g": 9, "l": 10, "ml": 11}
@@ -3393,8 +3393,8 @@ class TestFixRecipeUnitsWithDensity:
         # re-fetch shows the new conversion
         def refresh_conversions():
             return [
-                {"from_qu_id": 8, "to_qu_id": 10, "factor": 1.67, "product_id": 10},
-                {"from_qu_id": 8, "to_qu_id": 7, "factor": 16.7, "product_id": 10},
+                {"from_unit_id": 8, "to_unit_id": 10, "factor": 1.67, "product_id": 10},
+                {"from_unit_id": 8, "to_unit_id": 7, "factor": 16.7, "product_id": 10},
             ]
         grocy.get_quantity_unit_conversions.side_effect = [
             [],  # first call — no conversions
@@ -3412,12 +3412,12 @@ class TestFixRecipeUnitsWithDensity:
         """When density creation fails, falls back to stock QU."""
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 2},
         ]
         products = [{"id": 10, "name": "Turskafilee", "unit_id": 8}]
         units = [
-            {"id": 7, "name": "Desilitra", "description": "dl"},
-            {"id": 8, "name": "Kilogramma", "description": "kg"},
+            {"id": 7, "name": "Desilitra", "abbreviation": "dl"},
+            {"id": 8, "name": "Kilogramma", "abbreviation": "kg"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"dl": 7, "kg": 8, "g": 9, "l": 10, "ml": 11}
@@ -3427,18 +3427,18 @@ class TestFixRecipeUnitsWithDensity:
 
         # Density failed — should fall back to stock QU
         assert fixed == 1
-        grocy.update_recipe_position.assert_called_once_with(1, qu_id=8)
+        grocy.update_recipe_position.assert_called_once_with(1, unit_id=8)
 
     def test_no_density_without_gemini_key(self):
         """Without gemini credentials, skips density and falls back directly."""
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 7, "amount": 2},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 7, "amount": 2},
         ]
         products = [{"id": 10, "name": "Vehnäjauho 1kg", "unit_id": 8}]
         units = [
-            {"id": 7, "name": "Desilitra", "description": "dl"},
-            {"id": 8, "name": "Kilogramma", "description": "kg"},
+            {"id": 7, "name": "Desilitra", "abbreviation": "dl"},
+            {"id": 8, "name": "Kilogramma", "abbreviation": "kg"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"dl": 7, "kg": 8}
@@ -3446,18 +3446,18 @@ class TestFixRecipeUnitsWithDensity:
         # No gemini_api_key → no density attempt
         fixed = _fix_recipe_units(grocy, abbrev)
         assert fixed == 1
-        grocy.update_recipe_position.assert_called_once_with(1, qu_id=8)
+        grocy.update_recipe_position.assert_called_once_with(1, unit_id=8)
 
     def test_density_for_weight_recipe_volume_product(self):
         """Recipe uses g (weight) but product has l (volume) conversions."""
         from grocy_scraper_addon.main import _fix_recipe_units
         positions = [
-            {"id": 1, "recipe_id": 1, "product_id": 10, "qu_id": 9, "amount": 500},
+            {"id": 1, "recipe_id": 1, "product_id": 10, "unit_id": 9, "amount": 500},
         ]
         products = [{"id": 10, "name": "Maito 1L", "unit_id": 10}]
         units = [
-            {"id": 9, "name": "Gramma", "description": "g"},
-            {"id": 10, "name": "Litra", "description": "l"},
+            {"id": 9, "name": "Gramma", "abbreviation": "g"},
+            {"id": 10, "name": "Litra", "abbreviation": "l"},
         ]
         grocy = self._make_grocy(positions, products, units)
         abbrev = {"g": 9, "l": 10, "kg": 8, "dl": 7, "ml": 11}
@@ -3466,8 +3466,8 @@ class TestFixRecipeUnitsWithDensity:
             # After density creation, conversion exists
             grocy.get_quantity_unit_conversions.side_effect = [
                 [],
-                [{"from_qu_id": 10, "to_qu_id": 8, "factor": 1.03, "product_id": 10},
-                 {"from_qu_id": 9, "to_qu_id": 10, "factor": 0.00097, "product_id": 10}],
+                [{"from_unit_id": 10, "to_unit_id": 8, "factor": 1.03, "product_id": 10},
+                 {"from_unit_id": 9, "to_unit_id": 10, "factor": 0.00097, "product_id": 10}],
             ]
             fixed = _fix_recipe_units(grocy, abbrev, "key", "model")
 
