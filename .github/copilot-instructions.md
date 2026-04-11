@@ -38,7 +38,6 @@ No linter or formatter is configured.
 | `grocy_scraper/storage_client.py` | HA-Storage REST API client |
 | `grocy_scraper/skaupat_client.py` | S-kaupat.fi EAN lookup |
 | `grocy_scraper/searxng_client.py` | SearXNG search client |
-| `grocy_scraper/grocy_client.py` | Legacy Grocy client (kept for reference, not used in main flow) |
 | `grocy_scraper_addon/main.py` | Entry point — argparse, Gemini AI helpers, `--sort`/`--date`/`--group`/`--optimize` |
 | `grocy_scraper_addon/ingress_server.py` | HTTP server for HA ingress web UI |
 | `custom_components/grocy_scraper/ws_api.py` | WebSocket API for HA sidebar panel |
@@ -66,7 +65,7 @@ All Gemini calls go through `_call_gemini()` → `_call_gemini_json()` in `grocy
 
 ### Error handling
 
-- `GrocyAPIError` is the exception for Storage API and Gemini failures (defined in `grocy_client.py`, reused elsewhere).
+- `GrocyAPIError` (alias: `StorageAPIError`) is the exception for Storage API and Gemini failures (defined in `storage_client.py`).
 - Log warnings and continue on non-fatal errors; batch operations skip failed batches.
 
 ## Versioning and changelog
@@ -95,6 +94,6 @@ Do **not** bump the version or update the changelog for changes that only touch 
 
 - All CLI options have corresponding env vars loaded via `python-dotenv`.
 - External API errors are wrapped in `GrocyAPIError` rather than leaking `requests` exceptions.
-- Tests use `unittest.mock` — `StorageClient` and session mocks are injected. 445 tests total.
+- Tests use `unittest.mock` — `StorageClient` and session mocks are injected.
 - The scraper yields `Product` objects lazily via generators.
 - Product names and UI strings are in Finnish.

@@ -1,3 +1,9 @@
+## 1.21.18
+- Cleanup: removed legacy Grocy/Barcode Buddy compatibility shims from StorageClient; all field names now use Storage-native names (abbreviation, from_unit_id, to_unit_id, unit_id)
+- Cleanup: deleted dead grocy_client.py module (GrocyClient not used anywhere)
+- Cleanup: updated HA integration strings/translations to reference HA-Storage instead of Grocy
+- Fix: create_quantity_unit argument order corrected (was passing name_plural as abbreviation)
+
 ## 1.21.17
 - Optimizer: ALL drinks of any kind always assigned to Fridge/refrigerator (explicit rule, no exceptions)
 

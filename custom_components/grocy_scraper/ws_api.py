@@ -1,4 +1,4 @@
-"""WebSocket API handlers for the Grocy Scraper integration."""
+"""WebSocket API handlers for the Scraper integration."""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ async def ws_search_products(
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:
         connection.send_error(
-            msg["id"], "not_configured", "Grocy Scraper is not configured."
+            msg["id"], "not_configured", "Scraper is not configured."
         )
         return
 
@@ -237,11 +237,11 @@ async def ws_run_discover(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Trigger an immediate barcode queue → K-Ruoka → Grocy discover run."""
+    """Trigger an immediate barcode queue → K-Ruoka → Storage discover run."""
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:
         connection.send_error(
-            msg["id"], "not_configured", "Grocy Scraper is not configured."
+            msg["id"], "not_configured", "Scraper is not configured."
         )
         return
 
@@ -303,11 +303,11 @@ async def ws_run_sort(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Use Gemini AI to assign each Grocy product to an appropriate location."""
+    """Use Gemini AI to assign each Storage product to an appropriate location."""
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:
         connection.send_error(
-            msg["id"], "not_configured", "Grocy Scraper is not configured."
+            msg["id"], "not_configured", "Scraper is not configured."
         )
         return
 
@@ -333,7 +333,7 @@ async def ws_run_sort(
 
 
 def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
-    """Run AI location-sorting of all Grocy products."""
+    """Run AI location-sorting of all Storage products."""
     gemini_api_key = options.get(CONF_GEMINI_API_KEY, "")
     if not gemini_api_key:
         if on_log:
@@ -376,11 +376,11 @@ async def ws_run_date(
     connection: websocket_api.ActiveConnection,
     msg: dict[str, Any],
 ) -> None:
-    """Use Gemini AI to guess default best-before days for each Grocy product."""
+    """Use Gemini AI to guess default best-before days for each Storage product."""
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries:
         connection.send_error(
-            msg["id"], "not_configured", "Grocy Scraper is not configured."
+            msg["id"], "not_configured", "Scraper is not configured."
         )
         return
 
@@ -406,7 +406,7 @@ async def ws_run_date(
 
 
 def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
-    """Run AI best-before-date assignment for all Grocy products."""
+    """Run AI best-before-date assignment for all Storage products."""
     gemini_api_key = options.get(CONF_GEMINI_API_KEY, "")
     if not gemini_api_key:
         if on_log:

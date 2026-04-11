@@ -669,15 +669,15 @@ class TestUpdateRecipePosition:
         session.get.side_effect = [recipes_resp, detail_resp]
         session.put.return_value = ok_resp
         client.get_recipe_positions()
-        client.update_recipe_position(1, qu_id=7)
+        client.update_recipe_position(1, unit_id=7)
         assert "/api/recipes/5/ingredients/1" in session.put.call_args[0][0]
         payload = session.put.call_args[1]["json"]
-        assert payload["qu_id"] == 7
+        assert payload["unit_id"] == 7
 
     def test_unknown_ingredient_raises(self):
         client, session = _make_client()
         with pytest.raises(StorageAPIError, match="Unknown recipe"):
-            client.update_recipe_position(999, qu_id=7)
+            client.update_recipe_position(999, unit_id=7)
 
 
 class TestGetStockEntries:

@@ -428,15 +428,15 @@ def _image_extension(content_type: str, url: str) -> str:
 
 # Standard recipe units with Finnish names — kept in sync with HA-grocy-recipes
 _STANDARD_UNITS = [
-    {"name": "Gramma", "name_plural": "Grammaa", "description": "g"},
-    {"name": "Kilogramma", "name_plural": "Kilogrammaa", "description": "kg"},
-    {"name": "Millilitra", "name_plural": "Millilitraa", "description": "ml"},
-    {"name": "Desilitra", "name_plural": "Desilitraa", "description": "dl"},
-    {"name": "Litra", "name_plural": "Litraa", "description": "l"},
-    {"name": "Teelusikka", "name_plural": "Teelusikkaa", "description": "tl"},
-    {"name": "Ruokalusikka", "name_plural": "Ruokalusikkaa", "description": "rkl"},
-    {"name": "Ripaus", "name_plural": "Ripausta", "description": "rs"},
-    {"name": "Kappale", "name_plural": "Kappaletta", "description": "kpl"},
+    {"name": "Gramma", "name_plural": "Grammaa", "abbreviation": "g"},
+    {"name": "Kilogramma", "name_plural": "Kilogrammaa", "abbreviation": "kg"},
+    {"name": "Millilitra", "name_plural": "Millilitraa", "abbreviation": "ml"},
+    {"name": "Desilitra", "name_plural": "Desilitraa", "abbreviation": "dl"},
+    {"name": "Litra", "name_plural": "Litraa", "abbreviation": "l"},
+    {"name": "Teelusikka", "name_plural": "Teelusikkaa", "abbreviation": "tl"},
+    {"name": "Ruokalusikka", "name_plural": "Ruokalusikkaa", "abbreviation": "rkl"},
+    {"name": "Ripaus", "name_plural": "Ripausta", "abbreviation": "rs"},
+    {"name": "Kappale", "name_plural": "Kappaletta", "abbreviation": "kpl"},
 ]
 
 # Global conversions: (from_abbrev, to_abbrev, factor)  "1 <from> = <factor> <to>"
@@ -661,31 +661,31 @@ def _call_gemini_json(
 
 
 def _ensure_units_and_conversions(grocy: StorageClient) -> dict[str, int]:
-    """Ensure standard recipe units and global conversions exist in Grocy.
+    """Ensure standard recipe units and global conversions exist in Storage.
 
-    Returns a mapping of canonical abbreviation → Grocy QU ID.
+    Returns a mapping of canonical abbreviation → Storage QU ID.
     Idempotent — skips units/conversions that already exist.
     """
     existing_units = grocy.get_quantity_units()
     existing_by_desc: dict[str, int] = {}
     existing_by_name: dict[str, int] = {}
     for u in existing_units:
-        if u.get("description"):
-            existing_by_desc[u["description"].lower().strip()] = int(u["id"])
+        if u.get("abbreviation"):
+            existing_by_desc[u["abbreviation"].lower().strip()] = int(u["id"])
         if u.get("name"):
             existing_by_name[u["name"].lower().strip()] = int(u["id"])
 
     abbrev_to_id: dict[str, int] = {}
 
     for unit_def in _STANDARD_UNITS:
-        abbrev = unit_def["description"]
+        abbrev = unit_def["abbreviation"]
         uid = existing_by_desc.get(abbrev.lower())
         if uid is None:
             uid = existing_by_name.get(unit_def["name"].lower())
         if uid is None:
             try:
                 uid = grocy.create_quantity_unit(
-                    unit_def["name"], unit_def["name_plural"], unit_def["description"],
+                    unit_def["name"], unit_def["abbreviation"], unit_def["name_plural"],
                 )
                 logger.info("Created QU '%s' (ID %d).", unit_def["name"], uid)
             except StorageAPIError as exc:
@@ -704,7 +704,7 @@ def _ensure_units_and_conversions(grocy: StorageClient) -> dict[str, int]:
     conv_set: set[tuple[int, int]] = set()
     for c in existing_conversions:
         if c.get("product_id") is None or c.get("product_id") == "":
-            conv_set.add((int(c["from_qu_id"]), int(c["to_qu_id"])))
+            conv_set.add((int(c["from_unit_id"]), int(c["to_unit_id"])))
 
     for from_abbrev, to_abbrev, factor in _GLOBAL_CONVERSIONS:
         from_id = abbrev_to_id.get(from_abbrev)
@@ -777,8 +777,8 @@ def _fix_broken_product_units(
     conversions = grocy.get_quantity_unit_conversions()
     orphaned_convs = [
         c for c in conversions
-        if int(c["from_qu_id"]) not in valid_ids
-        or int(c["to_qu_id"]) not in valid_ids
+        if int(c["from_unit_id"]) not in valid_ids
+        or int(c["to_unit_id"]) not in valid_ids
     ]
     if orphaned_convs:
         deleted_count = 0
@@ -937,13 +937,13 @@ RULES:
             if pid is None or amount is None or unit_abbrev is None:
                 continue
 
-            to_qu_id = abbrev_to_id.get(unit_abbrev)
-            if to_qu_id is None:
+            to_unit_id = abbrev_to_id.get(unit_abbrev)
+            if to_unit_id is None:
                 continue
 
             try:
                 grocy.create_quantity_unit_conversion(
-                    piece_id, to_qu_id, float(amount), product_id=int(pid),
+                    piece_id, to_unit_id, float(amount), product_id=int(pid),
                 )
                 logger.info(
                     "Created conversion for product %d: 1 piece = %s %s",
@@ -1032,7 +1032,7 @@ def _ai_detect_density_conversions(
         if cpid is None or cpid == "":
             continue
         pid = int(cpid)
-        for qu_field in ("from_qu_id", "to_qu_id"):
+        for qu_field in ("from_unit_id", "to_unit_id"):
             qid = int(c[qu_field])
             abbrev = id_to_abbrev.get(qid)
             if abbrev:
@@ -1160,14 +1160,14 @@ RULES:
                 if c.get("product_id") is not None
                 and c["product_id"] != ""
                 and int(c["product_id"]) == pid
-                and id_to_abbrev.get(int(c["from_qu_id"])) in (_WEIGHT_UNITS | _VOLUME_UNITS)
-                and id_to_abbrev.get(int(c["to_qu_id"])) in (_WEIGHT_UNITS | _VOLUME_UNITS)
+                and id_to_abbrev.get(int(c["from_unit_id"])) in (_WEIGHT_UNITS | _VOLUME_UNITS)
+                and id_to_abbrev.get(int(c["to_unit_id"])) in (_WEIGHT_UNITS | _VOLUME_UNITS)
             ]
             if not parent_density:
                 continue
             for cid in child_ids:
                 child_existing = {
-                    (int(c["from_qu_id"]), int(c["to_qu_id"]))
+                    (int(c["from_unit_id"]), int(c["to_unit_id"]))
                     for c in all_convs
                     if c.get("product_id") is not None
                     and c["product_id"] != ""
@@ -1175,7 +1175,7 @@ RULES:
                 }
                 propagated = 0
                 for pc in parent_density:
-                    pair = (int(pc["from_qu_id"]), int(pc["to_qu_id"]))
+                    pair = (int(pc["from_unit_id"]), int(pc["to_unit_id"]))
                     if pair in child_existing:
                         continue
                     try:
@@ -1203,7 +1203,7 @@ def _fix_recipe_units(
 ) -> int:
     """Validate recipe ingredient units and fix missing conversions.
 
-    For each recipe ingredient (``recipes_pos``), checks that its ``qu_id``
+    For each recipe ingredient (``recipes_pos``), checks that its ``unit_id``
     can be converted to the product's ``unit_id``.  If not:
 
     * If both are standard units in the same domain (weight/volume),
@@ -1241,8 +1241,8 @@ def _fix_recipe_units(
     for c in conversions:
         cpid = c.get("product_id")
         cpid_val = int(cpid) if cpid is not None and cpid != "" else None
-        from_id = int(c["from_qu_id"])
-        to_id = int(c["to_qu_id"])
+        from_id = int(c["from_unit_id"])
+        to_id = int(c["to_unit_id"])
         # Store both global and product-specific
         conv_set.add((cpid_val, from_id, to_id))
         conv_set.add((cpid_val, to_id, from_id))  # bidirectional
@@ -1257,11 +1257,11 @@ def _fix_recipe_units(
     fallback_positions: list[tuple[dict, dict, int]] = []  # (pos, prod, stock_qu)
 
     for pos in positions:
-        qu_id = pos.get("qu_id")
+        unit_id = pos.get("unit_id")
         pid = pos.get("product_id")
-        if qu_id is None or pid is None:
+        if unit_id is None or pid is None:
             continue
-        qu_id = int(qu_id)
+        unit_id = int(unit_id)
         pid = int(pid)
 
         prod = prod_by_id.get(pid)
@@ -1274,16 +1274,16 @@ def _fix_recipe_units(
         stock_qu = int(stock_qu)
 
         # Same unit — no conversion needed
-        if qu_id == stock_qu:
+        if unit_id == stock_qu:
             continue
 
-        # Check if qu_id is even valid
-        if qu_id not in valid_qu_ids:
+        # Check if unit_id is even valid
+        if unit_id not in valid_qu_ids:
             try:
-                grocy.update_recipe_position(int(pos["id"]), qu_id=stock_qu)
+                grocy.update_recipe_position(int(pos["id"]), unit_id=stock_qu)
                 logger.info(
                     "Recipe pos %s: QU %d no longer exists, set to product stock QU '%s' (%d).",
-                    pos["id"], qu_id,
+                    pos["id"], unit_id,
                     id_to_abbrev.get(stock_qu, str(stock_qu)), stock_qu,
                 )
                 fixed += 1
@@ -1293,13 +1293,13 @@ def _fix_recipe_units(
 
         # Check if a conversion path exists (global or product-specific)
         has_conversion = (
-            (None, qu_id, stock_qu) in conv_set
-            or (pid, qu_id, stock_qu) in conv_set
+            (None, unit_id, stock_qu) in conv_set
+            or (pid, unit_id, stock_qu) in conv_set
         )
         if has_conversion:
             continue
 
-        qu_abbrev = id_to_abbrev.get(qu_id)
+        qu_abbrev = id_to_abbrev.get(unit_id)
         stock_abbrev = id_to_abbrev.get(stock_qu)
 
         # If both are in the same domain (weight↔weight or volume↔volume),
@@ -1339,7 +1339,7 @@ def _fix_recipe_units(
             for c in conversions:
                 cpid = c.get("product_id")
                 if cpid is not None and cpid != "" and int(cpid) == pid:
-                    for qf in ("from_qu_id", "to_qu_id"):
+                    for qf in ("from_unit_id", "to_unit_id"):
                         a = id_to_abbrev.get(int(c[qf]))
                         if a:
                             prod_conv_abbrevs.add(a)
@@ -1360,12 +1360,12 @@ def _fix_recipe_units(
 
         # No conversion path — fall back to product's stock QU
         try:
-            grocy.update_recipe_position(int(pos["id"]), qu_id=stock_qu)
+            grocy.update_recipe_position(int(pos["id"]), unit_id=stock_qu)
             logger.info(
                 "Recipe pos %s (product '%s'): no conversion from '%s' to '%s', set to stock QU.",
                 pos["id"],
                 prod.get("name", pid),
-                id_to_abbrev.get(qu_id, str(qu_id)),
+                id_to_abbrev.get(unit_id, str(unit_id)),
                 id_to_abbrev.get(stock_qu, str(stock_qu)),
             )
             fixed += 1
@@ -1394,30 +1394,30 @@ def _fix_recipe_units(
                 for c in conversions:
                     cpid = c.get("product_id")
                     cpid_val = int(cpid) if cpid is not None and cpid != "" else None
-                    from_id = int(c["from_qu_id"])
-                    to_id = int(c["to_qu_id"])
+                    from_id = int(c["from_unit_id"])
+                    to_id = int(c["to_unit_id"])
                     conv_set.add((cpid_val, from_id, to_id))
                     conv_set.add((cpid_val, to_id, from_id))
 
     # Process deferred fallback positions
     for pos, prod, stock_qu in fallback_positions:
-        qu_id = int(pos["qu_id"])
+        unit_id = int(pos["unit_id"])
         pid = int(pos["product_id"])
         # Re-check if density creation resolved it
         has_conversion = (
-            (None, qu_id, stock_qu) in conv_set
-            or (pid, qu_id, stock_qu) in conv_set
+            (None, unit_id, stock_qu) in conv_set
+            or (pid, unit_id, stock_qu) in conv_set
         )
         if has_conversion:
             continue
         # Still no path — fall back to stock QU
         try:
-            grocy.update_recipe_position(int(pos["id"]), qu_id=stock_qu)
+            grocy.update_recipe_position(int(pos["id"]), unit_id=stock_qu)
             logger.info(
                 "Recipe pos %s (product '%s'): no conversion from '%s' to '%s', set to stock QU.",
                 pos["id"],
                 prod.get("name", pid),
-                id_to_abbrev.get(qu_id, str(qu_id)),
+                id_to_abbrev.get(unit_id, str(unit_id)),
                 id_to_abbrev.get(stock_qu, str(stock_qu)),
             )
             fixed += 1
@@ -1567,7 +1567,7 @@ def _check_recipes_for_unit_gaps(
         if cpid is None or cpid == "":
             continue
         pid = int(cpid)
-        for qu_field in ("from_qu_id", "to_qu_id"):
+        for qu_field in ("from_unit_id", "to_unit_id"):
             abbrev = id_to_abbrev.get(int(c[qu_field]))
             if abbrev:
                 product_conv_units.setdefault(pid, set()).add(abbrev)
@@ -1578,11 +1578,11 @@ def _check_recipes_for_unit_gaps(
 
     for pos in relevant:
         pid = int(pos["product_id"])
-        qu_id = pos.get("qu_id")
-        if pid in seen or qu_id is None:
+        unit_id = pos.get("unit_id")
+        if pid in seen or unit_id is None:
             continue
 
-        recipe_abbrev = id_to_abbrev.get(int(qu_id))
+        recipe_abbrev = id_to_abbrev.get(int(unit_id))
         if not recipe_abbrev or recipe_abbrev == "kpl":
             continue
 
@@ -3024,9 +3024,9 @@ def _ai_optimize_products(
     unit_abbrev_to_id = {}
     try:
         for u in grocy.get_quantity_units():
-            desc = (u.get("description") or "").lower().strip()
-            if desc:
-                unit_abbrev_to_id[desc] = int(u["id"])
+            abbrev = (u.get("abbreviation") or "").lower().strip()
+            if abbrev:
+                unit_abbrev_to_id[abbrev] = int(u["id"])
             canonical = _canonical_unit((u.get("name") or "").lower().strip())
             if canonical and canonical not in unit_abbrev_to_id:
                 unit_abbrev_to_id[canonical] = int(u["id"])
