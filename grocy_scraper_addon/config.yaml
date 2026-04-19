@@ -1,5 +1,5 @@
 name: "Scraper"
-version: "1.21.18"
+version: "1.21.19"
 slug: "grocy_scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates HA-Storage."
 url: "https://github.com/Glitchtit/grocy_scraper"
@@ -41,7 +41,7 @@ schema:
   upload_images: bool
   use_graphql: bool
   flaresolverr_url: str?
-  ai_provider: str?
+  ai_provider: list(gemini|claude|ollama)?
   gemini_api_key: str?
   gemini_model: str?
   gemini_model_optimize: str?

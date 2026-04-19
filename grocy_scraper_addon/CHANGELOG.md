@@ -1,3 +1,6 @@
+## 1.21.19
+- `ai_provider` schema changed to dropdown (list) — renders as radio buttons in HA add-on options instead of free text
+
 ## 1.21.18
 - Cleanup: removed legacy Grocy/Barcode Buddy compatibility shims from StorageClient; all field names now use Storage-native names (abbreviation, from_unit_id, to_unit_id, unit_id)
 - Cleanup: deleted dead grocy_client.py module (GrocyClient not used anywhere)
