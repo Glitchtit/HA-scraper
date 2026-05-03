@@ -394,51 +394,20 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
         with _capture_logs() as logs:
             result = _main._discover_single_barcode(args, single_barcode)
 
-            # Chain AI optimize for the new product when AI is available.
-            grocy_id = result.get("grocy_id")
-            gemini_key = opts.get("gemini_api_key", "")
-            if result.get("success") and _has_ai(opts) and grocy_id and not result.get("already_existed"):
-                from grocy_scraper.storage_client import StorageClient as _SC
-
-                grocy = _SC(
-                    base_url=_resolve_storage_url(opts),
-                )
-                model = opts.get("gemini_model", "gemini-1.5-flash")
-                _main._ai_optimize_products(
-                    grocy,
-                    gemini_key,
-                    model,
-                    location_id=None,
-                    quantity_unit_id=None,
-                    product_ids=[int(grocy_id)],
-                )
-
+        # AI optimize is owned by HA-Storage now; callers (e.g. stock add-on)
+        # should fire POST /api/ai/optimize themselves after this returns.
         result["logs"] = logs
         return result
 
     # --- Batch mode (barcode queue) ----------------------------------------
-    from grocy_scraper.storage_client import StorageClient
     import main as _main
 
     _setup_ai_globals(opts)
     args = _build_args(opts)
     with _capture_logs() as logs:
-        result_code, discovered_ids = _main._discover_products(args)
-        # Chain AI optimize when AI is available.
-        gemini_key = opts.get("gemini_api_key", "")
-        if result_code == 0 and _has_ai(opts) and discovered_ids:
-            grocy = StorageClient(
-                base_url=_resolve_storage_url(opts),
-            )
-            model = opts.get("gemini_model", "gemini-1.5-flash")
-            _main._ai_optimize_products(
-                grocy,
-                gemini_key,
-                model,
-                location_id=None,
-                quantity_unit_id=None,
-                product_ids=discovered_ids,
-            )
+        result_code, _discovered_ids = _main._discover_products(args)
+        # AI optimize is owned by HA-Storage now; the caller is responsible
+        # for kicking off /api/ai/optimize against the new product ids.
     return {"success": result_code == 0, "skipped": False, "logs": logs}
 
 
@@ -517,23 +486,13 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                 logger.exception(msg)
                 errors.append(msg)
 
-        # Chain AI optimize for newly added products when AI is available
-        # – mirrors the behaviour of _handle_discover.
-        gemini_key = opts.get("gemini_api_key", "")
-        if _has_ai(opts) and added_ids:
-            model = opts.get("gemini_model", "gemini-1.5-flash")
-            _main._ai_optimize_products(
-                grocy,
-                gemini_key,
-                model,
-                location_id=None,
-                quantity_unit_id=None,
-                product_ids=added_ids,
-            )
+        # AI optimize is owned by HA-Storage now; callers should POST
+        # /api/ai/optimize with the returned product ids if desired.
 
     return {
         "success": len(errors) == 0,
         "added": added,
+        "added_ids": added_ids,
         "errors": errors,
         "logs": logs,
     }
