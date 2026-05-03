@@ -199,6 +199,28 @@ class Product:
     extra: dict = field(default_factory=dict)
 
 
+def _normalize_ean(ean: str) -> str:
+    """Normalize an EAN/GTIN code by stripping spurious leading zeros.
+
+    The k-ruoka.fi API sometimes returns EAN-8 codes left-padded with zeros
+    to 13 digits (e.g. ``"0000090493508"`` for the EAN-8 ``"90493508"``),
+    which breaks downstream lookups. This helper strips leading zeros down
+    to the smallest standard GTIN length (8, 12, 13 or 14 digits).
+    Non-numeric or empty inputs are returned unchanged (after stripping
+    whitespace).
+    """
+    ean = (ean or "").strip()
+    if not ean or not ean.isdigit():
+        return ean
+    stripped = ean.lstrip("0")
+    if not stripped:
+        return ean
+    for length in (8, 12, 13, 14):
+        if len(stripped) <= length <= len(ean):
+            return stripped.zfill(length)
+    return stripped
+
+
 # ---------------------------------------------------------------------------
 # Session factories
 # ---------------------------------------------------------------------------
@@ -593,9 +615,9 @@ class KRuokaScraper:
         typename = item.get("__typename", "")
         if typename == "AssortmentSearchResult":
             eans = item.get("eans") or []
-            ean: str = str(eans[0]).strip() if eans else ""
+            ean: str = _normalize_ean(str(eans[0])) if eans else ""
         else:
-            ean = str(item.get("ean") or "").strip()
+            ean = _normalize_ean(str(item.get("ean") or ""))
 
         if not name and not ean:
             return None
@@ -780,14 +802,14 @@ class KRuokaScraper:
             or ""
         ).strip()
 
-        ean: str = (
+        ean: str = _normalize_ean(
             item.get("ean")
             or item.get("EAN")
             or item.get("barcode")
             or item.get("eanCode")
             or item.get("gtin")
             or ""
-        ).strip()
+        )
 
         if not name and not ean:
             return None
@@ -830,13 +852,13 @@ class KRuokaScraper:
         ).strip()
 
         attrs = inner.get("productAttributes") or {}
-        ean: str = (
+        ean: str = _normalize_ean(
             inner.get("ean")
             or attrs.get("ean")
             or inner.get("baseEan")
             or outer.get("ean")
             or ""
-        ).strip()
+        )
 
         if not name and not ean:
             return None
