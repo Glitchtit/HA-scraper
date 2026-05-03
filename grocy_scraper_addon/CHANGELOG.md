@@ -1,3 +1,7 @@
+## 1.21.22
+- Cleanup: deleted ~1700 lines of dead AI categorisation code from `main.py` (`_ai_optimize_products`, `_ai_sort_products`, `_ai_assign_due_dates`, `_ai_group_products`, `_optimize_phase1_structure`, `_optimize_phase2_details`, `_deduplicate_parent_products`) now that HA-Storage owns AI optimize. CLI flags `--sort`, `--date`, `--group`, `--optimize`, and `--gemini-model-optimize` removed; use HA-Storage's `POST /api/ai/optimize` instead
+- Retained scraping-time AI helpers (`_ai_detect_package_sizes`, `_ai_detect_density_conversions`) — these are unit/density extraction during scraping, not product categorisation, and still run during `--query` / `--browse` / `--discover`
+
 ## 1.21.21
 - AI product optimisation is now fully owned by HA-Storage; the scraper no longer chains `_ai_optimize_products` after `/api/discover` (single + batch) or `/api/add_products`. Callers (e.g. HA-grocy-stock) should POST to HA-Storage's `/api/ai/optimize` directly with the returned product ids
 - `/api/add_products` now returns `added_ids` so callers can target the AI optimize at exactly the products that were just created
