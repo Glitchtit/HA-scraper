@@ -247,8 +247,6 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
         quantity_unit_id=None,
         upload_images=opts.get("upload_images", True),
         use_graphql=opts.get("use_graphql", True),
-        gemini_api_key=opts.get("gemini_api_key", ""),
-        gemini_model=opts.get("gemini_model", "gemini-1.5-flash"),
         searxng_url=opts.get("searxng_url", ""),
         verbose=False,
         dry_run=False,
@@ -260,65 +258,12 @@ def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
     return ns
 
 
-def _setup_ai_globals(opts: dict[str, Any]) -> None:
-    """Set AI provider globals on the main module from add-on options."""
-    import main as _main
-
-    provider = opts.get("ai_provider", "gemini")
-    _main.AI_PROVIDER = provider
-    if provider == "ollama":
-        _main.OLLAMA_URL = opts.get("ollama_url", "").strip()
-        _main.OLLAMA_MODEL = opts.get("ollama_model", "llama3").strip() or "llama3"
-    elif provider == "claude":
-        _main.CLAUDE_API_KEY = opts.get("claude_api_key", "").strip()
-        _main.CLAUDE_MODEL = (
-            opts.get("claude_model", "").strip() or "claude-3-5-haiku-20241022"
-        )
-
-
-def _has_ai(opts: dict[str, Any]) -> bool:
-    """Return True if an AI provider is fully configured."""
-    provider = opts.get("ai_provider", "gemini")
-    if provider == "ollama":
-        return bool(opts.get("ollama_url", "").strip())
-    if provider == "claude":
-        return bool(opts.get("claude_api_key", "").strip())
-    return bool(opts.get("gemini_api_key", ""))
-
-
-def _ai_not_configured_response() -> dict[str, Any]:
-    """Standard response when AI is not configured."""
-    return {
-        "success": False,
-        "skipped": True,
-        "updated": 0,
-        "logs": [
-            {
-                "level": "WARNING",
-                "message": (
-                    "An AI provider must be configured. "
-                    "Set a Gemini API key, configure an Ollama URL, or set a Claude API key "
-                    "in the add-on settings."
-                ),
-            }
-        ],
-    }
-
-
-# ---------------------------------------------------------------------------
-# API handlers
-# ---------------------------------------------------------------------------
-
-
 def _handle_config() -> dict[str, Any]:
     """Return a config summary for the settings badge area."""
     opts = _read_options()
     return {
         "configured": bool(_resolve_storage_url(opts)),
         "store_id": opts.get("store_id", ""),
-        "gemini_configured": bool(opts.get("gemini_api_key")),
-        "ai_configured": _has_ai(opts),
-        "ai_provider": opts.get("ai_provider", "gemini"),
     }
 
 
@@ -389,7 +334,6 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
         # --- Single-barcode mode -----------------------------------------------
         import main as _main
 
-        _setup_ai_globals(opts)
         args = _build_args(opts)
         with _capture_logs() as logs:
             result = _main._discover_single_barcode(args, single_barcode)
@@ -402,7 +346,6 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
     # --- Batch mode (barcode queue) ----------------------------------------
     import main as _main
 
-    _setup_ai_globals(opts)
     args = _build_args(opts)
     with _capture_logs() as logs:
         result_code, _discovered_ids = _main._discover_products(args)
@@ -439,7 +382,6 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
 
     import main as _main
 
-    _setup_ai_globals(opts)
     grocy = StorageClient(base_url=storage_url)
     upload_images = opts.get("upload_images", True)
 
@@ -998,12 +940,9 @@ _HTML = """\
         configCard.style.display = "";
 
         var disc = '<span class="badge ok">&#128260; On-demand discover</span>';
-        var gem = cfg.gemini_configured
-          ? '<span class="badge ok">&#129302; Gemini AI ready</span>'
-          : '<span class="badge warn">&#9888;&#65039; Gemini API key not set</span>';
         configInfo.innerHTML =
           '<span class="badge">Store: ' + esc(cfg.store_id || "\\u2014") + "</span>" +
-          disc + gem;
+          disc;
       })
       .catch(function () { /* swallow */ });
   }
@@ -1225,29 +1164,6 @@ if __name__ == "__main__":
     storage_url = _resolve_storage_url(opts)
     if storage_url:
         _wait_for_storage(storage_url)
-    # Log configured AI provider
-    provider = opts.get("ai_provider", "gemini")
-    if provider == "ollama":
-        ollama_url = opts.get("ollama_url", "").strip()
-        ollama_model = opts.get("ollama_model", "llama3").strip() or "llama3"
-        if ollama_url:
-            logger.info("AI provider: Ollama (url=%s, model=%s)", ollama_url, ollama_model)
-        else:
-            logger.warning("AI provider: Ollama selected but no URL configured")
-    elif provider == "claude":
-        claude_key = opts.get("claude_api_key", "").strip()
-        claude_model = opts.get("claude_model", "claude-3-5-haiku-20241022").strip() or "claude-3-5-haiku-20241022"
-        if claude_key:
-            logger.info("AI provider: Claude (model=%s)", claude_model)
-        else:
-            logger.warning("AI provider: Claude selected but no API key configured")
-    else:
-        gemini_key = opts.get("gemini_api_key", "")
-        gemini_model = opts.get("gemini_model", "gemini-1.5-flash")
-        if gemini_key:
-            logger.info("AI provider: Gemini (model=%s)", gemini_model)
-        else:
-            logger.warning("AI provider: Gemini selected but no API key configured")
     _start_storage_health_monitor()
     server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
     print(f"Ingress server listening on port {_PORT}")
