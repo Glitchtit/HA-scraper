@@ -1,3 +1,6 @@
+## 1.21.20
+- Fix: strip spurious leading zeros from EAN codes returned by k-ruoka.fi (e.g. `0000090493508` → `90493508`) so downstream EAN lookups in HA-grocy-stock no longer fail on EAN-8 codes left-padded to 13 digits
+
 ## 1.21.19
 - `ai_provider` schema changed to dropdown (list) — renders as radio buttons in HA add-on options instead of free text
 

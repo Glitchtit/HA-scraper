@@ -15,6 +15,7 @@ from grocy_scraper.scraper import (
     KRuokaScraper,
     Product,
     _PRODUCT_CATEGORY_SLUGS,
+    _normalize_ean,
 )
 
 
@@ -798,5 +799,88 @@ class TestParseOfferProduct:
 
     def test_missing_name_and_ean_returns_none(self):
         assert KRuokaScraper._parse_offer_product({}) is None
+
+
+# ---------------------------------------------------------------------------
+# _normalize_ean
+# ---------------------------------------------------------------------------
+
+class TestNormalizeEan:
+    def test_strips_padding_zeros_to_ean8(self):
+        assert _normalize_ean("0000090493508") == "90493508"
+
+    def test_keeps_normal_ean13_unchanged(self):
+        assert _normalize_ean("6410405082657") == "6410405082657"
+
+    def test_strips_single_leading_zero_gtin14_to_ean13(self):
+        assert _normalize_ean("06410405082657") == "6410405082657"
+
+    def test_keeps_legitimate_gtin14(self):
+        assert _normalize_ean("16410405082657") == "16410405082657"
+
+    def test_strips_whitespace(self):
+        assert _normalize_ean("  6410405082657  ") == "6410405082657"
+
+    def test_empty_returns_empty(self):
+        assert _normalize_ean("") == ""
+        assert _normalize_ean(None) == ""  # type: ignore[arg-type]
+
+    def test_non_numeric_unchanged(self):
+        assert _normalize_ean("ABC123") == "ABC123"
+
+    def test_all_zeros_preserved(self):
+        assert _normalize_ean("0000000000000") == "0000000000000"
+
+
+# ---------------------------------------------------------------------------
+# Leading-zero EAN regression for parse paths
+# ---------------------------------------------------------------------------
+
+class TestLeadingZeroEanRegression:
+    def test_graphql_product_strips_padding(self):
+        item = {
+            "__typename": "Product",
+            "id": "X",
+            "ean": "0000090493508",
+            "localizedName": {"finnish": "Tuote"},
+        }
+        p = KRuokaScraper._parse_graphql_result(item)
+        assert p is not None
+        assert p.ean == "90493508"
+
+    def test_graphql_assortment_strips_padding(self):
+        item = {
+            "__typename": "AssortmentSearchResult",
+            "id": "X",
+            "eans": ["0000090493508", "6410405082657"],
+            "localizedName": {"finnish": "Tuote"},
+        }
+        p = KRuokaScraper._parse_graphql_result(item)
+        assert p is not None
+        assert p.ean == "90493508"
+
+    def test_kr_api_search_product_strips_padding(self):
+        item = {
+            "id": "X",
+            "ean": "0000090493508",
+            "localizedName": {"finnish": "Tuote"},
+        }
+        p = KRuokaScraper._parse_search_product(item)
+        assert p is not None
+        assert p.ean == "90493508"
+
+    def test_offer_product_strips_padding(self):
+        offer = {
+            "id": "X",
+            "product": {
+                "product": {
+                    "localizedName": {"finnish": "Tuote"},
+                    "ean": "0000090493508",
+                }
+            },
+        }
+        p = KRuokaScraper._parse_offer_product(offer)
+        assert p is not None
+        assert p.ean == "90493508"
 
 
