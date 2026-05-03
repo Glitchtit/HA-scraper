@@ -1,3 +1,7 @@
+## 1.21.21
+- AI product optimisation is now fully owned by HA-Storage; the scraper no longer chains `_ai_optimize_products` after `/api/discover` (single + batch) or `/api/add_products`. Callers (e.g. HA-grocy-stock) should POST to HA-Storage's `/api/ai/optimize` directly with the returned product ids
+- `/api/add_products` now returns `added_ids` so callers can target the AI optimize at exactly the products that were just created
+
 ## 1.21.20
 - Fix: strip spurious leading zeros from EAN codes returned by k-ruoka.fi (e.g. `0000090493508` → `90493508`) so downstream EAN lookups in HA-grocy-stock no longer fail on EAN-8 codes left-padded to 13 digits
 
