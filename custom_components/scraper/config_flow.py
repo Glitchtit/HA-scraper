@@ -1,4 +1,4 @@
-"""Config flow for the Grocy Scraper integration."""
+"""Config flow for the Scraper integration."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ _USER_SCHEMA = vol.Schema(
 )
 
 
-class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle the initial configuration flow for Grocy Scraper."""
+class ScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle the initial configuration flow for Scraper."""
 
     VERSION = 2
 
@@ -51,7 +51,7 @@ class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title=f"Grocy Scraper ({user_input[CONF_STORE_ID]})",
+                    title=f"Scraper ({user_input[CONF_STORE_ID]})",
                     data=user_input,
                 )
 
@@ -65,12 +65,12 @@ class GrocyScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> "GrocyScraperOptionsFlow":
+    ) -> "ScraperOptionsFlow":
         """Return the options flow handler."""
-        return GrocyScraperOptionsFlow(config_entry)
+        return ScraperOptionsFlow(config_entry)
 
 
-class GrocyScraperOptionsFlow(config_entries.OptionsFlow):
+class ScraperOptionsFlow(config_entries.OptionsFlow):
     """Handle the options flow (AI settings)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:

@@ -1,6 +1,6 @@
 #!/usr/bin/with-contenv bashio
 
-bashio::log.info "Starting Grocy Scraper add-on..."
+bashio::log.info "Starting Scraper add-on..."
 
 # The scraper no longer runs periodic discover loops.  All discovery
 # is triggered on-demand via the ingress web UI (single-barcode or

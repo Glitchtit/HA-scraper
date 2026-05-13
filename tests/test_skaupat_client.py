@@ -1,4 +1,4 @@
-"""Tests for grocy_scraper.skaupat_client."""
+"""Tests for scraper.skaupat_client."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from grocy_scraper.skaupat_client import (
+from scraper.skaupat_client import (
     SKaupatError,
     SKaupatProduct,
     lookup_ean,

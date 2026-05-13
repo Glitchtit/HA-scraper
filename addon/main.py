@@ -1,4 +1,4 @@
-"""Main entry point for the grocy_scraper CLI.
+"""Main entry point for the scraper CLI.
 
 Usage examples
 --------------
@@ -16,7 +16,7 @@ Multiple stores with automatic fallback::
 
     python main.py --store N110,N137 --query "maito" --dry-run
 
-Dry-run (scrape only, do not write to Grocy)::
+Dry-run (scrape only, do not write to Storage)::
 
     python main.py --store N110 --query "maito" --dry-run
 
@@ -46,10 +46,10 @@ try:
 except ImportError:
     pass  # python-dotenv is optional; fall back to plain env vars
 
-from grocy_scraper.storage_client import StorageAPIError, StorageClient
-from grocy_scraper.scraper import KRuokaScraper, Product
-from grocy_scraper.searxng_client import SearXNGError, lookup_ean as searxng_lookup
-from grocy_scraper.skaupat_client import SKaupatError, lookup_ean as skaupat_lookup
+from scraper.storage_client import StorageAPIError, StorageClient
+from scraper.scraper import KRuokaScraper, Product
+from scraper.searxng_client import SearXNGError, lookup_ean as searxng_lookup
+from scraper.skaupat_client import SKaupatError, lookup_ean as skaupat_lookup
 
 import requests
 
@@ -77,7 +77,7 @@ def _parse_store_ids(raw: str) -> list[str]:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Scrape k-ruoka.fi for Finnish food products and populate a Grocy database."
+            "Scrape k-ruoka.fi for Finnish food products and populate a Storage database."
         ),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
@@ -101,7 +101,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=False,
         help=(
             "Fetch pending barcodes from the Storage barcode queue, search "
-            "K-Ruoka for matching products, add them to Grocy, stock them, "
+            "K-Ruoka for matching products, add them to Storage, stock them, "
             "and mark the queue items as done."
         ),
     )
@@ -110,7 +110,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help=(
-            "Delete ALL products from the Grocy database.  "
+            "Delete ALL products from the Storage database.  "
             "This is a destructive operation and cannot be undone."
         ),
     )
@@ -119,7 +119,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         default=False,
         help=(
-            "Update all existing Grocy products with names and images from "
+            "Update all existing Storage products with names and images from "
             "K-Ruoka (or S-kaupat as fallback).  Products are matched by "
             "their barcode.  Requires --store."
         ),
@@ -161,7 +161,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_env_int("GROCY_LOCATION_ID"),
         metavar="ID",
         help=(
-            "Grocy location ID to assign to new products (required). "
+            "Storage location ID to assign to new products (required). "
             "Also read from the GROCY_LOCATION_ID environment variable."
         ),
     )
@@ -171,7 +171,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=_env_int("GROCY_QUANTITY_UNIT_ID"),
         metavar="ID",
         help=(
-            "Grocy quantity unit ID to assign to new products. "
+            "Storage quantity unit ID to assign to new products. "
             "Also read from the GROCY_QUANTITY_UNIT_ID environment variable."
         ),
     )
@@ -191,26 +191,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Scrape products but do not write anything to Grocy.",
+        help="Scrape products but do not write anything to Storage.",
     )
     parser.add_argument(
         "--skip-existing",
         action="store_true",
         default=True,
-        help="Skip products whose EAN is already registered in Grocy (default: true).",
+        help="Skip products whose EAN is already registered in Storage (default: true).",
     )
     parser.add_argument(
         "--no-skip-existing",
         dest="skip_existing",
         action="store_false",
-        help="Re-add products even if their EAN is already in Grocy.",
+        help="Re-add products even if their EAN is already in Storage.",
     )
     parser.add_argument(
         "--no-images",
         dest="upload_images",
         action="store_false",
         default=True,
-        help="Skip downloading and uploading product images to Grocy.",
+        help="Skip downloading and uploading product images to Storage.",
     )
     parser.add_argument(
         "--no-graphql",
@@ -236,7 +236,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def sync_product(
     product: Product,
-    grocy: StorageClient,
+    storage: StorageClient,
     *,
     location_id: int | None,
     quantity_unit_id: int | None,
@@ -244,7 +244,7 @@ def sync_product(
     known_barcodes: set[str],
     upload_images: bool = True,
 ) -> bool:
-    """Add *product* to Grocy.
+    """Add *product* to Storage.
 
     Returns ``True`` if the product was created/updated, ``False`` if skipped.
     """
@@ -253,14 +253,14 @@ def sync_product(
         return False
 
     if skip_existing and product.ean in known_barcodes:
-        logger.debug("Skipping '%s' – EAN %s already in Grocy.", product.name, product.ean)
+        logger.debug("Skipping '%s' – EAN %s already in Storage.", product.name, product.ean)
         return False
 
-    # Check live against the Grocy API in case known_barcodes is stale.
+    # Check live against the Storage API in case known_barcodes is stale.
     try:
-        existing = grocy.get_product_by_barcode(product.ean)
+        existing = storage.get_product_by_barcode(product.ean)
     except StorageAPIError as exc:
-        logger.warning("Could not check barcode %s in Grocy: %s", product.ean, exc)
+        logger.warning("Could not check barcode %s in Storage: %s", product.ean, exc)
         existing = None
 
     if existing and skip_existing:
@@ -275,20 +275,20 @@ def sync_product(
 
     # Create the product entry.
     try:
-        grocy_id = grocy.create_product(
+        product_id = storage.create_product(
             name=product.name,
             description=product.description,
             location_id=location_id,
             unit_id=quantity_unit_id,
         )
-        logger.info("Created product '%s' (Grocy ID %d).", product.name, grocy_id)
+        logger.info("Created product '%s' (Storage product ID %d).", product.name, product_id)
     except StorageAPIError as exc:
         logger.error("Failed to create product '%s': %s", product.name, exc)
         return False
 
     # Attach the EAN barcode.
     try:
-        grocy.add_barcode(grocy_id, product.ean)
+        storage.add_barcode(product_id, product.ean)
         known_barcodes.add(product.ean)
         logger.info("  → Added barcode %s.", product.ean)
     except StorageAPIError as exc:
@@ -301,13 +301,13 @@ def sync_product(
 
     # Upload product image.
     if upload_images and product.image_url:
-        _upload_product_image(product, grocy, grocy_id)
+        _upload_product_image(product, storage, product_id)
 
     return True
 
 
-def _upload_product_image(product: Product, grocy: StorageClient, grocy_id: int) -> None:
-    """Download the product image and upload it to Grocy."""
+def _upload_product_image(product: Product, storage: StorageClient, product_id: int) -> None:
+    """Download the product image and upload it to Storage."""
     url = product.image_url
     try:
         resp = requests.get(url, timeout=15)
@@ -321,8 +321,8 @@ def _upload_product_image(product: Product, grocy: StorageClient, grocy_id: int)
     filename = f"{product.ean}{ext}"
 
     try:
-        grocy.upload_product_image(
-            grocy_id, filename, resp.content, content_type=content_type
+        storage.upload_product_image(
+            product_id, filename, resp.content, content_type=content_type
         )
         logger.info("  → Uploaded image %s.", filename)
     except StorageAPIError as exc:
@@ -397,18 +397,18 @@ def wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) -
     raise SystemExit("ERROR: Storage addon not reachable after %d attempts." % max_retries)
 
 
-def _setup_grocy(args: argparse.Namespace) -> tuple[StorageClient | None, set[str]]:
-    """Create a Grocy client and pre-load known barcodes if not a dry run."""
+def _setup_storage(args: argparse.Namespace) -> tuple[StorageClient | None, set[str]]:
+    """Create a Storage client and pre-load known barcodes if not a dry run."""
     if args.dry_run:
         return None, set()
 
-    grocy = StorageClient(base_url=args.storage_url)
+    storage = StorageClient(base_url=args.storage_url)
     known_barcodes: set[str] = set()
 
     if args.skip_existing:
-        logger.info("Fetching existing barcodes from Grocy …")
+        logger.info("Fetching existing barcodes from Storage …")
         try:
-            for entry in grocy.get_all_barcodes():
+            for entry in storage.get_all_barcodes():
                 bc = entry.get("barcode")
                 if bc:
                     known_barcodes.add(str(bc))
@@ -419,7 +419,7 @@ def _setup_grocy(args: argparse.Namespace) -> tuple[StorageClient | None, set[st
                 exc,
             )
 
-    return grocy, known_barcodes
+    return storage, known_barcodes
 
 
 def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
@@ -458,7 +458,7 @@ def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
                 raise
 
 
-def _process_products(args: argparse.Namespace, grocy: StorageClient | None, known_barcodes: set[str]) -> int:
+def _process_products(args: argparse.Namespace, storage: StorageClient | None, known_barcodes: set[str]) -> int:
     """Process scraped products; return 0 on success, 1 if any errors occurred."""
     created = skipped = errors = 0
 
@@ -470,11 +470,11 @@ def _process_products(args: argparse.Namespace, grocy: StorageClient | None, kno
             created += 1
             continue
 
-        assert grocy is not None
+        assert storage is not None
         try:
             added = sync_product(
                 product,
-                grocy,
+                storage,
                 location_id=args.location_id,
                 quantity_unit_id=args.quantity_unit_id,
                 skip_existing=args.skip_existing,
@@ -482,7 +482,7 @@ def _process_products(args: argparse.Namespace, grocy: StorageClient | None, kno
                 upload_images=args.upload_images,
             )
         except StorageAPIError as exc:
-            logger.error("Grocy error for '%s': %s", product.name, exc)
+            logger.error("Storage error for '%s': %s", product.name, exc)
             errors += 1
             continue
 
@@ -505,32 +505,32 @@ def _discover_single_barcode(
     args: argparse.Namespace,
     barcode: str,
 ) -> dict:
-    """Discover a single barcode by searching K-Ruoka / S-kaupat and syncing to Grocy.
+    """Discover a single barcode by searching K-Ruoka / S-kaupat and syncing to Storage.
 
     The caller already knows the barcode.  It searches online stores, creates
-    the product in Grocy, adds 1 unit to stock, and returns a result dict.
+    the product in Storage, adds 1 unit to stock, and returns a result dict.
 
-    Returns ``{"success": True, "product": {...}, "grocy_id": int}`` on
+    Returns ``{"success": True, "product": {...}, "product_id": int}`` on
     success, or ``{"success": False, "error": "..."}`` on failure.
     """
-    grocy = StorageClient(base_url=args.storage_url)
+    storage = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
     scrapers = [
         KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
         for sid in store_ids
     ]
 
-    # Check if barcode already exists in Grocy.
+    # Check if barcode already exists in Storage.
     try:
-        existing = grocy.get_product_by_barcode(barcode)
+        existing = storage.get_product_by_barcode(barcode)
         if existing:
             name = existing.get("name", barcode)
-            grocy_id = existing.get("id")
-            logger.info("Barcode %s already in Grocy as '%s' (ID %s).", barcode, name, grocy_id)
+            product_id = existing.get("id")
+            logger.info("Barcode %s already in Storage as '%s' (ID %s).", barcode, name, product_id)
             return {
                 "success": True,
                 "product": {"name": name, "barcode": barcode},
-                "grocy_id": grocy_id,
+                "product_id": product_id,
                 "already_existed": True,
             }
     except StorageAPIError as exc:
@@ -589,12 +589,12 @@ def _discover_single_barcode(
 
     logger.info("Found: '%s' (EAN %s).", product.name, product.ean)
 
-    # Sync product to Grocy.
+    # Sync product to Storage.
     known_barcodes: set[str] = set()
     try:
         added = sync_product(
             product,
-            grocy,
+            storage,
             location_id=args.location_id,
             quantity_unit_id=args.quantity_unit_id,
             skip_existing=False,
@@ -602,23 +602,23 @@ def _discover_single_barcode(
             upload_images=args.upload_images,
         )
     except StorageAPIError as exc:
-        logger.error("Grocy error for '%s': %s", product.name, exc)
-        return {"success": False, "error": f"Failed to create product in Grocy: {exc}"}
+        logger.error("Storage error for '%s': %s", product.name, exc)
+        return {"success": False, "error": f"Failed to create product in Storage: {exc}"}
 
-    # Look up the Grocy product ID.
-    grocy_id = None
+    # Look up the Storage product ID.
+    product_id = None
     try:
-        existing = grocy.get_product_by_barcode(barcode)
+        existing = storage.get_product_by_barcode(barcode)
         if existing:
-            grocy_id = existing.get("id")
+            product_id = existing.get("id")
     except StorageAPIError:
         pass
 
     # Add 1 unit to stock.
-    if grocy_id is not None:
+    if product_id is not None:
         try:
-            grocy.add_stock(int(grocy_id), amount=1.0)
-            logger.info("Added 1 unit to Grocy stock (product ID %s).", grocy_id)
+            storage.add_stock(int(product_id), amount=1.0)
+            logger.info("Added 1 unit to Storage stock (product ID %s).", product_id)
         except (StorageAPIError, ValueError) as exc:
             logger.warning("Could not add stock for '%s': %s", product.name, exc)
 
@@ -630,7 +630,7 @@ def _discover_single_barcode(
             "barcode": product.ean,
             "description": product.description or "",
         },
-        "grocy_id": grocy_id,
+        "product_id": product_id,
         "already_existed": not added,
     }
 
@@ -639,21 +639,21 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     """Discover products via the Storage barcode queue.
 
     Fetches pending items from the barcode queue, searches online stores for
-    each barcode, creates/stocks them in Grocy, and marks queue items as done.
+    each barcode, creates/stocks them in Storage, and marks queue items as done.
 
     For each barcode:
 
     1. Search K-Ruoka by EAN; fall back to S-kaupat, SearXNG.
-    2. Create the product in Grocy (via ``sync_product``).
-    3. Add 1 unit to Grocy stock.
+    2. Create the product in Storage (via ``sync_product``).
+    3. Add 1 unit to Storage stock.
     4. Mark the barcode queue item as done with the resulting product ID.
 
     Returns a ``(return_code, product_ids)`` tuple.  *return_code* is 0 on
-    success and 1 if any errors occurred.  *product_ids* contains the Grocy
+    success and 1 if any errors occurred.  *product_ids* contains the Storage
     IDs of all products that were successfully created or stocked during this
     run.
     """
-    grocy = StorageClient(base_url=args.storage_url)
+    storage = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
     scrapers = [
         KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
@@ -663,17 +663,17 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     # Pre-load known barcodes.
     known_barcodes: set[str] = set()
     try:
-        for entry in grocy.get_all_barcodes():
+        for entry in storage.get_all_barcodes():
             bc = entry.get("barcode")
             if bc:
                 known_barcodes.add(str(bc))
-        logger.info("  %d barcode(s) already registered in Grocy.", len(known_barcodes))
+        logger.info("  %d barcode(s) already registered in Storage.", len(known_barcodes))
     except StorageAPIError as exc:
         logger.warning("Could not fetch existing barcodes: %s", exc)
 
     # Fetch pending barcodes from the Storage barcode queue.
     try:
-        pending = grocy.get_barcode_queue(status="pending")
+        pending = storage.get_barcode_queue(status="pending")
     except StorageAPIError as exc:
         logger.error("Failed to fetch barcode queue: %s", exc)
         return 1, []
@@ -741,7 +741,7 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
             logger.info("  EAN %s not found on K-Ruoka, S-kaupat, or SearXNG – skipping.", barcode)
             if queue_id is not None:
                 try:
-                    grocy.update_barcode_queue_item(
+                    storage.update_barcode_queue_item(
                         queue_id, status="error",
                         error_message=f"Product not found for EAN {barcode}",
                     )
@@ -752,11 +752,11 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
 
         logger.info("  Found: '%s' (EAN %s).", product.name, product.ean)
 
-        # Sync product to Grocy.
+        # Sync product to Storage.
         try:
             added = sync_product(
                 product,
-                grocy,
+                storage,
                 location_id=args.location_id,
                 quantity_unit_id=args.quantity_unit_id,
                 skip_existing=False,
@@ -764,10 +764,10 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
                 upload_images=args.upload_images,
             )
         except StorageAPIError as exc:
-            logger.error("Grocy error for '%s': %s", product.name, exc)
+            logger.error("Storage error for '%s': %s", product.name, exc)
             if queue_id is not None:
                 try:
-                    grocy.update_barcode_queue_item(
+                    storage.update_barcode_queue_item(
                         queue_id, status="error", error_message=str(exc),
                     )
                 except StorageAPIError:
@@ -776,37 +776,37 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
             continue
 
         if not added:
-            # Product already exists — look up its Grocy ID for stocking.
-            existing = grocy.get_product_by_barcode(barcode)
+            # Product already exists — look up its Storage product ID for stocking.
+            existing = storage.get_product_by_barcode(barcode)
             if existing:
-                grocy_id = existing.get("id")
+                product_id = existing.get("id")
             else:
-                logger.info("  Product already in Grocy – skipping.")
+                logger.info("  Product already in Storage – skipping.")
                 skipped += 1
                 continue
         else:
-            # Newly created — get the Grocy product ID via barcode lookup.
-            existing = grocy.get_product_by_barcode(barcode)
-            grocy_id = existing.get("id") if existing else None
+            # Newly created — get the Storage product ID via barcode lookup.
+            existing = storage.get_product_by_barcode(barcode)
+            product_id = existing.get("id") if existing else None
 
-        # Add to Grocy stock.
-        if grocy_id is not None:
-            discovered_ids.append(int(grocy_id))
+        # Add to Storage stock.
+        if product_id is not None:
+            discovered_ids.append(int(product_id))
             raw_stock = entry.get("import_stock_amount")
-            is_grocy_import = entry.get("source") == "grocy-import"
-            if is_grocy_import and raw_stock is None:
-                # Grocy import with NULL amount = product had no stock in Grocy — skip.
+            is_storage_import = entry.get("source") == "storage-import"
+            if is_storage_import and raw_stock is None:
+                # Storage import with NULL amount = product had no stock in Storage — skip.
                 logger.info(
-                    "  → Skipping stock for product ID %s (not in Grocy stock).",
-                    grocy_id,
+                    "  → Skipping stock for product ID %s (not in Storage stock).",
+                    product_id,
                 )
             else:
                 stock_amount = float(raw_stock) if raw_stock is not None else 1.0
                 try:
-                    grocy.add_stock(int(grocy_id), amount=stock_amount)
+                    storage.add_stock(int(product_id), amount=stock_amount)
                     logger.info(
-                        "  → Added %g unit(s) to Grocy stock (product ID %s).",
-                        stock_amount, grocy_id,
+                        "  → Added %g unit(s) to Storage stock (product ID %s).",
+                        stock_amount, product_id,
                     )
                 except (StorageAPIError, ValueError) as exc:
                     logger.warning("  Could not add stock for '%s': %s", product.name, exc)
@@ -814,9 +814,9 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         # Mark the queue item as done.
         if queue_id is not None:
             try:
-                grocy.update_barcode_queue_item(
+                storage.update_barcode_queue_item(
                     queue_id, status="done",
-                    result_product_id=int(grocy_id) if grocy_id else None,
+                    result_product_id=int(product_id) if product_id else None,
                 )
                 logger.info("  → Marked queue item %s as done.", queue_id)
             except StorageAPIError as exc:
@@ -833,22 +833,22 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     return (0 if errors == 0 else 1), discovered_ids
 
 
-def _delete_all_products(grocy: StorageClient) -> int:
-    """Delete every product from the Grocy database.
+def _delete_all_products(storage: StorageClient) -> int:
+    """Delete every product from the Storage database.
 
     Returns 0 on success, 1 if any errors occurred.
     """
     try:
-        products = grocy.get_all_products()
+        products = storage.get_all_products()
     except StorageAPIError as exc:
-        logger.error("Failed to fetch products from Grocy: %s", exc)
+        logger.error("Failed to fetch products from Storage: %s", exc)
         return 1
 
     if not products:
-        logger.info("No products in Grocy – nothing to delete.")
+        logger.info("No products in Storage – nothing to delete.")
         return 0
 
-    logger.info("Deleting %d product(s) from Grocy …", len(products))
+    logger.info("Deleting %d product(s) from Storage …", len(products))
     errors = 0
     for product in products:
         pid = product.get("id")
@@ -858,13 +858,13 @@ def _delete_all_products(grocy: StorageClient) -> int:
         # Delete the product image file (CASCADE handles DB records).
         if picture:
             try:
-                grocy.delete_product_image(picture)
+                storage.delete_product_image(picture)
                 logger.debug("  Deleted image '%s' for product %s.", picture, pid)
             except StorageAPIError as exc:
                 logger.debug("  Could not delete image for product %s: %s", pid, exc)
 
         try:
-            grocy.delete_product(int(pid))
+            storage.delete_product(int(pid))
             logger.debug("  Deleted product %s ('%s').", pid, name)
         except StorageAPIError as exc:
             logger.error("  Failed to delete product %s ('%s'): %s", pid, name, exc)
@@ -876,15 +876,15 @@ def _delete_all_products(grocy: StorageClient) -> int:
 
 
 def _update_products(args: argparse.Namespace) -> int:
-    """Update existing Grocy products with names and images from K-Ruoka / S-kaupat.
+    """Update existing Storage products with names and images from K-Ruoka / S-kaupat.
 
-    For each product in Grocy that has at least one barcode, search K-Ruoka
+    For each product in Storage that has at least one barcode, search K-Ruoka
     by EAN.  If not found, try S-kaupat.  When a match is found, update the
     product name (and optionally description) and upload the product image.
 
     Returns 0 on success, 1 if any errors occurred.
     """
-    grocy = StorageClient(base_url=args.storage_url)
+    storage = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
     scrapers = [
         KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
@@ -892,15 +892,15 @@ def _update_products(args: argparse.Namespace) -> int:
     ]
 
     try:
-        products = grocy.get_all_products()
+        products = storage.get_all_products()
     except StorageAPIError as exc:
-        logger.error("Failed to fetch products from Grocy: %s", exc)
+        logger.error("Failed to fetch products from Storage: %s", exc)
         return 1
 
     try:
-        barcodes = grocy.get_all_barcodes()
+        barcodes = storage.get_all_barcodes()
     except StorageAPIError as exc:
-        logger.error("Failed to fetch barcodes from Grocy: %s", exc)
+        logger.error("Failed to fetch barcodes from Storage: %s", exc)
         return 1
 
     # Build product_id → list of EANs mapping.
@@ -912,20 +912,20 @@ def _update_products(args: argparse.Namespace) -> int:
             pid_to_eans.setdefault(int(pid), []).append(str(ean))
 
     if not products:
-        logger.info("No products in Grocy – nothing to update.")
+        logger.info("No products in Storage – nothing to update.")
         return 0
 
     logger.info("Updating %d product(s) from K-Ruoka / S-kaupat …", len(products))
     updated = skipped = errors = 0
     max_products = getattr(args, "max_products", None)
 
-    for grocy_product in products:
+    for storage_product in products:
         if max_products is not None and updated >= max_products:
             logger.info("Reached --max-products limit (%d).", max_products)
             break
 
-        pid = int(grocy_product["id"])
-        current_name = grocy_product.get("name", "?")
+        pid = int(storage_product["id"])
+        current_name = storage_product.get("name", "?")
         eans = pid_to_eans.get(pid, [])
 
         if not eans:
@@ -990,7 +990,7 @@ def _update_products(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
-        # Update product in Grocy.
+        # Update product in Storage.
         update_fields: dict = {}
         if found.name and found.name != current_name:
             update_fields["name"] = found.name
@@ -999,7 +999,7 @@ def _update_products(args: argparse.Namespace) -> int:
 
         if update_fields:
             try:
-                grocy.update_product(pid, **update_fields)
+                storage.update_product(pid, **update_fields)
                 new_name = update_fields.get("name", current_name)
                 logger.info(
                     "  Updated product %d: '%s' → '%s'.", pid, current_name, new_name
@@ -1013,7 +1013,7 @@ def _update_products(args: argparse.Namespace) -> int:
 
         # Upload image if available.
         if found.image_url and args.upload_images:
-            _upload_product_image(found, grocy, pid)
+            _upload_product_image(found, storage, pid)
 
         updated += 1
 
@@ -1036,24 +1036,24 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         wait_for_storage(args.storage_url)
 
-    # Discover mode: barcode queue → K-Ruoka → Grocy pipeline.
+    # Discover mode: barcode queue → K-Ruoka → Storage pipeline.
     # AI categorisation is owned by HA-Storage now; callers are expected
     # to POST to /api/ai/optimize themselves with the discovered ids.
     if args.discover:
         rc, _discovered_ids = _discover_products(args)
         return rc
 
-    # Delete-all mode: wipe all products from Grocy.
+    # Delete-all mode: wipe all products from Storage.
     if args.delete_all:
-        grocy = StorageClient(base_url=args.storage_url)
-        return _delete_all_products(grocy)
+        storage = StorageClient(base_url=args.storage_url)
+        return _delete_all_products(storage)
 
     # Update mode: refresh product names/images from online sources.
     if args.update:
         return _update_products(args)
 
-    grocy, known_barcodes = _setup_grocy(args)
-    return _process_products(args, grocy, known_barcodes)
+    storage, known_barcodes = _setup_storage(args)
+    return _process_products(args, storage, known_barcodes)
 
 
 if __name__ == "__main__":

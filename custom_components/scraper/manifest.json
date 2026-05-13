@@ -1,9 +1,9 @@
 {
-  "domain": "grocy_scraper",
+  "domain": "scraper",
   "name": "Scraper",
-  "version": "1.21.20",
-  "documentation": "https://github.com/Glitchtit/grocy_scraper",
-  "issue_tracker": "https://github.com/Glitchtit/grocy_scraper/issues",
+  "version": "2.0.0",
+  "documentation": "https://github.com/Glitchtit/HA-scraper",
+  "issue_tracker": "https://github.com/Glitchtit/HA-scraper/issues",
   "requirements": [
     "requests>=2.31.0"
   ],

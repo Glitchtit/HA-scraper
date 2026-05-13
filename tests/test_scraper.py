@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from grocy_scraper.scraper import (
+from scraper.scraper import (
     KRuokaScraper,
     Product,
     _PRODUCT_CATEGORY_SLUGS,
@@ -314,7 +314,7 @@ class TestGraphqlSearch:
 
     def test_does_not_exceed_max_offset(self):
         """Should not request past _GRAPHQL_MAX_OFFSET."""
-        from grocy_scraper.scraper import _GRAPHQL_MAX_OFFSET, _GRAPHQL_PAGE_SIZE
+        from scraper.scraper import _GRAPHQL_MAX_OFFSET, _GRAPHQL_PAGE_SIZE
 
         # Return full pages until we'd go past the max offset
         pages = []

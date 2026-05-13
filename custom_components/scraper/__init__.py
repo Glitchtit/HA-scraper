@@ -1,4 +1,4 @@
-"""Home Assistant integration for Grocy Scraper.
+"""Home Assistant integration for Scraper.
 
 This integration exposes a sidebar panel that lets users search for Finnish
 grocery products on k-ruoka.fi and add them to Storage.
@@ -32,7 +32,7 @@ from . import ws_api
 _LOGGER = logging.getLogger(__name__)
 
 # Repository root lives three levels above this file:
-#   custom_components/grocy_scraper/__init__.py  →  repo root
+#   custom_components/scraper/__init__.py  →  repo root
 _REPO_ROOT = Path(__file__).parent.parent.parent
 
 # Key used to store state in hass.data
@@ -59,7 +59,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
     if not hass.data[DOMAIN].get(_KEY_STATIC_REGISTERED):
         hass.http.register_static_path(
-            "/grocy_scraper_panel",
+            "/scraper_panel",
             str(Path(__file__).parent / "www"),
             cache_headers=False,
         )
@@ -74,7 +74,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Grocy Scraper from a config entry."""
+    """Set up Scraper from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     # Register the sidebar panel (idempotent guard so reloads don't fail).
@@ -107,10 +107,10 @@ async def _async_register_panel(hass: HomeAssistant) -> None:
     await async_register_panel(
         hass,
         frontend_url_path=PANEL_URL,
-        webcomponent_name="grocy-scraper-panel",
+        webcomponent_name="scraper-panel",
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
-        js_url="/grocy_scraper_panel/panel.js",
+        js_url="/scraper_panel/panel.js",
         embed_iframe=False,
         require_admin=False,
     )

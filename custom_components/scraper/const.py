@@ -1,11 +1,11 @@
-"""Constants for the Grocy Scraper Home Assistant integration."""
+"""Constants for the Scraper Home Assistant integration."""
 
-DOMAIN = "grocy_scraper"
+DOMAIN = "scraper"
 
 # Sidebar panel
-PANEL_TITLE = "Grocy Scraper"
+PANEL_TITLE = "Scraper"
 PANEL_ICON = "mdi:barcode-scan"
-PANEL_URL = "grocy-scraper"
+PANEL_URL = "scraper"
 
 # Config-entry data keys (required, set during initial config flow)
 CONF_STORAGE_URL = "storage_url"
