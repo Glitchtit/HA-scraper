@@ -1,3 +1,6 @@
+## 2.0.1
+- Cleanup: removed dead Barcode Buddy block (`BARCODEBDY_*` env vars) from `.env.example`. Barcode discovery has been routed through HA-Storage's barcode queue for many releases; the placeholder vars served no purpose
+
 ## 2.0.0
 - **BREAKING**: removed all "grocy" naming. The add-on is now `scraper` (was `grocy_scraper`); the HACS integration's `domain` is now `scraper` (was `grocy_scraper`). Existing installations must be **uninstalled and reinstalled** — Home Assistant treats the renamed add-on as a new add-on, and integration entities under `grocy_scraper.*` are orphaned. Recreate any automations referencing `grocy_scraper.*` entities under `scraper.*`
 - Repo renamed from `grocy_scraper` to `HA-scraper` on GitHub. The old URL still 301-redirects, but bookmarks/integrations should be updated
