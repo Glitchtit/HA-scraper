@@ -29,15 +29,15 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Repo root is three levels up: custom_components/grocy_scraper/ -> repo root
+# Repo root is three levels up: custom_components/scraper/ -> repo root
 _REPO_ROOT = Path(__file__).parent.parent.parent
 
 # Logger namespaces whose records are captured for terminal output
-_CAPTURE_NAMESPACES = ("grocy_scraper", "grocy_scraper_addon.main")
+_CAPTURE_NAMESPACES = ("scraper", "addon.main")
 
 
 def _ensure_repo_on_path() -> None:
-    """Add the repository root to sys.path so the grocy_scraper package is importable."""
+    """Add the repository root to sys.path so the scraper package is importable."""
     root = str(_REPO_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -49,7 +49,7 @@ def _ensure_repo_on_path() -> None:
 
 
 class _CapturingHandler(logging.Handler):
-    """Logging handler that stores records emitted by grocy_scraper loggers."""
+    """Logging handler that stores records emitted by scraper loggers."""
 
     _FORMATTER = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -74,7 +74,7 @@ class _CapturingHandler(logging.Handler):
 
 @contextmanager
 def _capture_logs(on_emit=None) -> Generator[list[dict[str, str]], None, None]:
-    """Attach a capturing handler to each grocy_scraper logger for the duration.
+    """Attach a capturing handler to each scraper logger for the duration.
 
     Yields the live list of captured {level, message} dicts so callers can
     read it after the ``with`` block exits.
@@ -113,13 +113,13 @@ def async_register(hass: HomeAssistant) -> None:
 
 
 # ---------------------------------------------------------------------------
-# grocy_scraper/search
+# scraper/search
 # ---------------------------------------------------------------------------
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "grocy_scraper/search",
+        vol.Required("type"): "scraper/search",
         vol.Required("query"): str,
         vol.Optional("max_products", default=50): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=500)
@@ -172,7 +172,7 @@ def _search_products_sync(
 ) -> list[dict[str, str]]:
     """Run a synchronous K-Ruoka product search and return serialisable dicts."""
     _ensure_repo_on_path()
-    from grocy_scraper.scraper import KRuokaScraper  # noqa: PLC0415
+    from scraper.scraper import KRuokaScraper  # noqa: PLC0415
 
     scraper = KRuokaScraper(store_id=store_id, use_graphql=use_graphql)
     results: list[dict[str, str]] = []
@@ -189,13 +189,13 @@ def _search_products_sync(
 
 
 # ---------------------------------------------------------------------------
-# grocy_scraper/get_config
+# scraper/get_config
 # ---------------------------------------------------------------------------
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "grocy_scraper/get_config",
+        vol.Required("type"): "scraper/get_config",
     }
 )
 @websocket_api.async_response
@@ -222,13 +222,13 @@ async def ws_get_config(
 
 
 # ---------------------------------------------------------------------------
-# grocy_scraper/run_discover
+# scraper/run_discover
 # ---------------------------------------------------------------------------
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "grocy_scraper/run_discover",
+        vol.Required("type"): "scraper/run_discover",
     }
 )
 @websocket_api.async_response
@@ -279,7 +279,7 @@ def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, An
         use_graphql=options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
     )
 
-    from grocy_scraper_addon import main as _main  # noqa: PLC0415
+    from addon import main as _main  # noqa: PLC0415
 
     with _capture_logs(on_emit=on_log):
         result_code: int = _main._discover_products(args)
@@ -288,13 +288,13 @@ def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, An
 
 
 # ---------------------------------------------------------------------------
-# grocy_scraper/run_sort
+# scraper/run_sort
 # ---------------------------------------------------------------------------
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "grocy_scraper/run_sort",
+        vol.Required("type"): "scraper/run_sort",
     }
 )
 @websocket_api.async_response
@@ -346,28 +346,28 @@ def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
 
     _ensure_repo_on_path()
 
-    from grocy_scraper.storage_client import StorageClient  # noqa: PLC0415
-    from grocy_scraper_addon import main as _main  # noqa: PLC0415
+    from scraper.storage_client import StorageClient  # noqa: PLC0415
+    from addon import main as _main  # noqa: PLC0415
 
-    grocy = StorageClient(
+    storage = StorageClient(
         base_url=config.get(CONF_STORAGE_URL, ""),
     )
     model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
 
     with _capture_logs(on_emit=on_log):
-        updated: int = _main._ai_sort_products(grocy, gemini_api_key, model)
+        updated: int = _main._ai_sort_products(storage, gemini_api_key, model)
 
     return {"success": True, "skipped": False, "updated": updated}
 
 
 # ---------------------------------------------------------------------------
-# grocy_scraper/run_date
+# scraper/run_date
 # ---------------------------------------------------------------------------
 
 
 @websocket_api.websocket_command(
     {
-        vol.Required("type"): "grocy_scraper/run_date",
+        vol.Required("type"): "scraper/run_date",
     }
 )
 @websocket_api.async_response
@@ -419,15 +419,15 @@ def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
 
     _ensure_repo_on_path()
 
-    from grocy_scraper.storage_client import StorageClient  # noqa: PLC0415
-    from grocy_scraper_addon import main as _main  # noqa: PLC0415
+    from scraper.storage_client import StorageClient  # noqa: PLC0415
+    from addon import main as _main  # noqa: PLC0415
 
-    grocy = StorageClient(
+    storage = StorageClient(
         base_url=config.get(CONF_STORAGE_URL, ""),
     )
     model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
 
     with _capture_logs(on_emit=on_log):
-        updated: int = _main._ai_assign_due_dates(grocy, gemini_api_key, model)
+        updated: int = _main._ai_assign_due_dates(storage, gemini_api_key, model)
 
     return {"success": True, "skipped": False, "updated": updated}

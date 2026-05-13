@@ -7,14 +7,14 @@ from unittest.mock import MagicMock
 import pytest
 import requests
 
-from grocy_scraper.storage_client import StorageAPIError, StorageClient
+from scraper.storage_client import StorageAPIError, StorageClient
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_client(base_url: str = "https://grocy.example.com") -> tuple[StorageClient, MagicMock]:
+def _make_client(base_url: str = "https://storage.example.com") -> tuple[StorageClient, MagicMock]:
     session = MagicMock(spec=requests.Session)
     session.headers = {}
     client = StorageClient(base_url=base_url)
@@ -39,12 +39,12 @@ def _mock_response(json_data=None, status_code: int = 200, raise_for: Exception 
 
 class TestUrl:
     def test_trailing_slash_stripped(self):
-        client, _ = _make_client(base_url="https://grocy.example.com/")
-        assert client._url("/api/products") == "https://grocy.example.com/api/products"
+        client, _ = _make_client(base_url="https://storage.example.com/")
+        assert client._url("/api/products") == "https://storage.example.com/api/products"
 
     def test_path_without_leading_slash(self):
         client, _ = _make_client()
-        assert client._url("api/products") == "https://grocy.example.com/api/products"
+        assert client._url("api/products") == "https://storage.example.com/api/products"
 
 
 # ---------------------------------------------------------------------------

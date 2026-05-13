@@ -1,3 +1,11 @@
+## 2.0.0
+- **BREAKING**: removed all "grocy" naming. The add-on is now `scraper` (was `grocy_scraper`); the HACS integration's `domain` is now `scraper` (was `grocy_scraper`). Existing installations must be **uninstalled and reinstalled** — Home Assistant treats the renamed add-on as a new add-on, and integration entities under `grocy_scraper.*` are orphaned. Recreate any automations referencing `grocy_scraper.*` entities under `scraper.*`
+- Repo renamed from `grocy_scraper` to `HA-scraper` on GitHub. The old URL still 301-redirects, but bookmarks/integrations should be updated
+- Internal: Python package `grocy_scraper/` → `scraper/`, addon dir `grocy_scraper_addon/` → `addon/`, HACS integration dir `custom_components/grocy_scraper/` → `custom_components/scraper/`, s6 service `grocy_scraper` → `scraper`
+- WebSocket action namespaces: `grocy_scraper/search`, `grocy_scraper/run_discover`, `grocy_scraper/get_config`, `grocy_scraper/run_sort`, `grocy_scraper/run_date` → `scraper/*`. Custom element `grocy-scraper-panel` → `scraper-panel`
+- Misleading vestigial naming cleaned up: local variables `grocy = StorageClient(...)` → `storage`, `grocy_id` → `product_id`, `GrocyAPIError` mentions in docs → `StorageAPIError`, env var `GROCY_BASE_URL` → `STORAGE_BASE_URL`
+- The add-on writes to HA-Storage (has done so for many releases); the old name was carried for historical reasons
+
 ## 1.21.23
 - Removed all remaining AI code from the scraper now that HA-Storage owns AI optimize. Deleted unreachable unit-optimisation chain (`_optimize_units`, `_ai_detect_package_sizes`, `_ai_detect_density_conversions`, `_fix_recipe_units`, `_fix_broken_product_units`, `_merge_recipe_stubs`, `_check_recipes_for_unit_gaps`, `_derive_density_conversions`, `_ensure_units_and_conversions`, `_canonical_unit`) and the provider abstraction (`_call_gemini*`, `_call_ollama`, `_call_claude`, `_extract_json_text`)
 - Removed `ai_provider`, `gemini_api_key`, `gemini_model`, `ollama_url`, `ollama_model`, `claude_api_key`, `claude_model` from add-on options/schema

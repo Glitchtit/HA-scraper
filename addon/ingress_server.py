@@ -1,4 +1,4 @@
-"""Interactive ingress web server for the Grocy Scraper add-on.
+"""Interactive ingress web server for the Scraper add-on.
 
 Serves a single-page application that lets users:
 
@@ -19,7 +19,7 @@ POST /api/sort          Run Gemini AI product location sorting
 POST /api/date          Run Gemini AI best-before date assignment
 POST /api/group         Run Gemini AI product grouping (parent-product assignment)
 POST /api/update        Update existing products from K-Ruoka
-POST /api/add_products  Add selected products to the Grocy database
+POST /api/add_products  Add selected products to the Storage database
 
 All POST endpoints return ``{"task_id": "...", "status": "running"}`` immediately.
 The frontend polls ``GET /api/task/{id}`` until the task completes.
@@ -41,7 +41,7 @@ from typing import Any, Generator
 _PORT = int(os.environ.get("INGRESS_PORT", "8099"))
 _OPTIONS_PATH = "/data/options.json"
 
-# Ensure the app directory is importable (main.py + grocy_scraper package).
+# Ensure the app directory is importable (main.py + scraper package).
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
@@ -78,7 +78,7 @@ def _next_task_id() -> str:
 logger = logging.getLogger(__name__)
 
 # Logger namespaces whose records are captured for terminal output.
-_CAPTURE_NAMESPACES = ("grocy_scraper", "main", "__main__")
+_CAPTURE_NAMESPACES = ("scraper", "main", "__main__")
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def _resolve_storage_url(opts: dict[str, Any]) -> str:
     if my_hostname:
         normalised = my_hostname.replace("_", "-")
         # Strip our slug suffix to get the repo hash prefix
-        for suffix in ("-grocy-scraper", ):
+        for suffix in ("-scraper", ):
             if normalised.endswith(suffix):
                 prefix = normalised[: -len(suffix)]
                 if prefix:
@@ -216,7 +216,7 @@ class _CapturingHandler(logging.Handler):
 
 @contextmanager
 def _capture_logs() -> Generator[list[dict[str, str]], None, None]:
-    """Temporarily attach a capturing handler to grocy_scraper loggers."""
+    """Temporarily attach a capturing handler to scraper loggers."""
     cap = _CapturingHandler()
     targets = [logging.getLogger(ns) for ns in _CAPTURE_NAMESPACES]
     saved: list[tuple[logging.Logger, int]] = []
@@ -281,7 +281,7 @@ def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
     opts = _read_options()
 
     try:
-        from grocy_scraper.scraper import KRuokaScraper
+        from scraper.scraper import KRuokaScraper
 
         raw_store = opts.get("store_id", "")
         store_ids = [s.strip() for s in raw_store.split(",") if s.strip()] or [""]
@@ -323,8 +323,8 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Run the discover pipeline.
 
     When *body* contains a ``"barcode"`` key, only that single barcode is
-    looked up (K-Ruoka / S-kaupat → Grocy).  Otherwise the full barcode
-    queue → K-Ruoka → Grocy batch pipeline is executed.
+    looked up (K-Ruoka / S-kaupat → Storage).  Otherwise the full barcode
+    queue → K-Ruoka → Storage batch pipeline is executed.
     """
     opts = _read_options()
 
@@ -355,7 +355,7 @@ def _handle_discover(body: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def _handle_update() -> dict[str, Any]:
-    """Update existing Grocy products from K-Ruoka / S-kaupat."""
+    """Update existing Storage products from K-Ruoka / S-kaupat."""
     opts = _read_options()
 
     import main as _main
@@ -367,7 +367,7 @@ def _handle_update() -> dict[str, Any]:
 
 
 def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
-    """Add selected products to the Grocy database."""
+    """Add selected products to the Storage database."""
     products = body.get("products")
     if not products or not isinstance(products, list):
         return {"success": False, "error": "No products provided."}
@@ -377,12 +377,12 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
     if not storage_url:
         return {"success": False, "error": "Storage URL must be configured."}
 
-    from grocy_scraper.storage_client import StorageClient, StorageAPIError
-    from grocy_scraper.scraper import Product
+    from scraper.storage_client import StorageClient, StorageAPIError
+    from scraper.scraper import Product
 
     import main as _main
 
-    grocy = StorageClient(base_url=storage_url)
+    storage = StorageClient(base_url=storage_url)
     upload_images = opts.get("upload_images", True)
 
     added = 0
@@ -398,24 +398,24 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
             image_url = str(item.get("image_url", "")).strip()
             try:
                 # Skip if a product with this barcode already exists.
-                if ean and grocy.get_product_by_barcode(ean):
+                if ean and storage.get_product_by_barcode(ean):
                     logger.info("Skipped '%s' – barcode %s already exists.", name, ean)
                     continue
 
-                product_id = grocy.create_product(
+                product_id = storage.create_product(
                     name,
                     description=description,
                     location_id=None,
                     unit_id=None,
                 )
                 if ean:
-                    grocy.add_barcode(product_id, ean)
+                    storage.add_barcode(product_id, ean)
                 if upload_images and image_url:
                     product = Product(
                         name=name, ean=ean, description=description,
                         image_url=image_url,
                     )
-                    _main._upload_product_image(product, grocy, product_id)
+                    _main._upload_product_image(product, storage, product_id)
                 logger.info("Added '%s' (id=%d, ean=%s).", name, product_id, ean or "–")
                 added += 1
                 added_ids.append(product_id)
@@ -450,7 +450,7 @@ _HTML = """\
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Grocy Scraper</title>
+  <title>Scraper</title>
   <style>
     /* ── Reset & base ── */
     *, *::before, *::after { box-sizing: border-box; }
@@ -624,7 +624,7 @@ _HTML = """\
 </head>
 <body>
   <!-- Header -->
-  <div class="header"><h1>&#128722; Grocy Scraper</h1></div>
+  <div class="header"><h1>&#128722; Scraper</h1></div>
 
   <!-- Search card -->
   <div class="card">
@@ -881,7 +881,7 @@ _HTML = """\
       .then(function (data) {
         if (data.logs && data.logs.length) appendLogs("Add Products", data.logs);
         if (data.success) {
-          addStatus.innerHTML = '<span class="success">\\u2713 Added ' + data.added + ' product(s) to Grocy.</span>';
+          addStatus.innerHTML = '<span class="success">\\u2713 Added ' + data.added + ' product(s) to Storage.</span>';
         } else {
           var msg = data.error || (data.errors && data.errors.length ? data.errors.join("; ") : "Unknown error");
           addStatus.innerHTML = '<span class="error">Error: ' + esc(msg) + "</span>";

@@ -1,5 +1,5 @@
 /**
- * Grocy Scraper – Home Assistant sidebar panel.
+ * Scraper – Home Assistant sidebar panel.
  *
  * Features
  * --------
@@ -11,7 +11,7 @@
  * • Settings info card (store ID, discover interval, feature status)
  */
 
-class GrocyScraperPanel extends HTMLElement {
+class ScraperPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
@@ -253,7 +253,7 @@ class GrocyScraperPanel extends HTMLElement {
 
       <!-- Header -->
       <div class="header">
-        <h1>🛒 Grocy Scraper</h1>
+        <h1>🛒 Scraper</h1>
       </div>
 
       <!-- Connection lost banner -->
@@ -322,11 +322,11 @@ class GrocyScraperPanel extends HTMLElement {
 
     // ── Actions ──
     this.shadowRoot.querySelector("#discover-btn")
-      .addEventListener("click", () => this._runAction("grocy_scraper/run_discover", "Discover"));
+      .addEventListener("click", () => this._runAction("scraper/run_discover", "Discover"));
     this.shadowRoot.querySelector("#sort-btn")
-      .addEventListener("click", () => this._runAction("grocy_scraper/run_sort", "Sort"));
+      .addEventListener("click", () => this._runAction("scraper/run_sort", "Sort"));
     this.shadowRoot.querySelector("#date-btn")
-      .addEventListener("click", () => this._runAction("grocy_scraper/run_date", "Date"));
+      .addEventListener("click", () => this._runAction("scraper/run_date", "Date"));
 
     // ── Terminal controls ──
     this.shadowRoot.querySelector("#verbose-toggle")
@@ -349,7 +349,7 @@ class GrocyScraperPanel extends HTMLElement {
   async _loadConfig() {
     if (!this._hass) return;
     try {
-      const cfg = await this._hass.callWS({ type: "grocy_scraper/get_config" });
+      const cfg = await this._hass.callWS({ type: "scraper/get_config" });
       if (!cfg.configured) return;
 
       const card = this.shadowRoot.querySelector("#config-card");
@@ -369,7 +369,7 @@ class GrocyScraperPanel extends HTMLElement {
       `;
     } catch (err) {
       if (!err || err.code !== "not_found") {
-        console.debug("[grocy_scraper] get_config failed:", err);
+        console.debug("[scraper] get_config failed:", err);
       }
     }
   }
@@ -398,7 +398,7 @@ class GrocyScraperPanel extends HTMLElement {
 
     try {
       const result = await this._hass.callWS({
-        type: "grocy_scraper/search",
+        type: "scraper/search",
         query,
         max_products: maxProducts,
       });
@@ -569,7 +569,7 @@ class GrocyScraperPanel extends HTMLElement {
       const banner = this.shadowRoot.querySelector("#disconnect-banner");
       try {
         if (this._hass) {
-          await this._hass.callWS({ type: "grocy_scraper/get_config" });
+          await this._hass.callWS({ type: "scraper/get_config" });
         }
         if (banner) banner.classList.remove("show");
       } catch {
@@ -600,4 +600,4 @@ class GrocyScraperPanel extends HTMLElement {
   }
 }
 
-customElements.define("grocy-scraper-panel", GrocyScraperPanel);
+customElements.define("scraper-panel", ScraperPanel);

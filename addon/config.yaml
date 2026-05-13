@@ -1,8 +1,8 @@
 name: "Scraper"
-version: "1.21.23"
-slug: "grocy_scraper"
+version: "2.0.0"
+slug: "scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates HA-Storage."
-url: "https://github.com/Glitchtit/grocy_scraper"
+url: "https://github.com/Glitchtit/HA-scraper"
 arch:
   - aarch64
   - amd64

@@ -1,4 +1,4 @@
-# grocy_scraper
+# scraper
 
 A **[Home Assistant](https://www.home-assistant.io/) custom integration** and **Home Assistant Supervisor add-on** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes, then stores them in **[HA-Storage](https://github.com/Glitchtit/HA-storage)** — the central data store for this ecosystem.
 
@@ -6,14 +6,14 @@ A **[Home Assistant](https://www.home-assistant.io/) custom integration** and **
 
 ## Home Assistant Supervisor add-on
 
-The `grocy_scraper_addon/` directory contains a full Home Assistant Supervisor add-on that runs the scraper in a dedicated Docker container managed by HA Supervisor.
+The `addon/` directory contains a full Home Assistant Supervisor add-on that runs the scraper in a dedicated Docker container managed by HA Supervisor.
 
 ### Add-on installation
 
 1. In Home Assistant, navigate to **Settings → Add-ons → Add-on Store**.
 2. Click the **⋮** (three-dot) menu in the top-right and choose **Repositories**.
 3. Add `https://github.com/Glitchtit/HA-apps` and click **Add**.
-4. The **Grocy Scraper** add-on will appear in the store — click **Install**.
+4. The **Scraper** add-on will appear in the store — click **Install**.
 5. Open the add-on's **Configuration** tab and fill in at minimum:
    - `storage_url` — base URL of your HA-Storage instance (e.g. `http://a0a9ed235_ha_storage:8099`)
    - `store_id` — K-group store ID (see [Finding your store ID](#finding-your-store-id))
@@ -34,7 +34,7 @@ The `grocy_scraper_addon/` directory contains a full Home Assistant Supervisor a
 
 ## Home Assistant integration
 
-The `custom_components/grocy_scraper/` directory contains a full Home Assistant integration that adds a **sidebar panel** to the HA UI, letting you search for products and trigger AI-powered actions — without ever touching the command line.
+The `custom_components/scraper/` directory contains a full Home Assistant integration that adds a **sidebar panel** to the HA UI, letting you search for products and trigger AI-powered actions — without ever touching the command line.
 
 ### Features
 
@@ -47,18 +47,18 @@ The `custom_components/grocy_scraper/` directory contains a full Home Assistant 
 
 ### Installation
 
-1. Copy (or symlink) the `custom_components/grocy_scraper/` folder into your HA `config/custom_components/` directory.
-2. Copy the `grocy_scraper/` Python package folder into the **same** `config/` directory so HA can import it:
+1. Copy (or symlink) the `custom_components/scraper/` folder into your HA `config/custom_components/` directory.
+2. Copy the `scraper/` Python package folder into the **same** `config/` directory so HA can import it:
    ```
    config/
    ├── custom_components/
-   │   └── grocy_scraper/   ← HA integration
-   └── grocy_scraper/       ← Python package (scraper + Storage client)
+   │   └── scraper/   ← HA integration
+   └── scraper/       ← Python package (scraper + Storage client)
    ```
 3. Restart Home Assistant.
-4. Navigate to **Settings → Devices & Services → Add Integration** and search for **Grocy Scraper**.
+4. Navigate to **Settings → Devices & Services → Add Integration** and search for **Scraper**.
 5. Follow the config flow to enter your Storage URL and store ID.
-6. The **Grocy Scraper** entry appears in the HA sidebar.
+6. The **Scraper** entry appears in the HA sidebar.
 
 ### Settings (options flow)
 
@@ -101,18 +101,18 @@ Common store IDs: `N110` (K-Supermarket Helsinki), `N137` (K-Citymarket Tammisto
 ## Project structure
 
 ```
-grocy_scraper/
-├── grocy_scraper/
+scraper/
+├── scraper/
 │   ├── __init__.py
 │   ├── scraper.py              # k-ruoka.fi product scraper (GraphQL + kr-api backends)
 │   ├── storage_client.py       # HA-Storage REST API client
 │   └── skaupat_client.py       # S-kaupat.fi EAN lookup
-├── grocy_scraper_addon/
-│   ├── grocy_scraper/          # Mirror of the package above (kept in sync)
+├── addon/
+│   ├── scraper/          # Mirror of the package above (kept in sync)
 │   ├── main.py                 # Add-on entry point + Gemini AI helpers
 │   └── ingress_server.py       # HA ingress web server
 ├── custom_components/
-│   └── grocy_scraper/          # Home Assistant integration
+│   └── scraper/          # Home Assistant integration
 │       ├── __init__.py
 │       ├── config_flow.py
 │       ├── const.py
@@ -130,7 +130,7 @@ grocy_scraper/
 ## Running tests
 
 ```bash
-cd grocy_scraper
+cd scraper
 python -m pytest tests/ -v
 ```
 

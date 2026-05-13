@@ -1,11 +1,11 @@
-"""Tests for grocy_scraper.searxng_client."""
+"""Tests for scraper.searxng_client."""
 
 from unittest.mock import MagicMock, patch
 
 import pytest
 import requests
 
-from grocy_scraper.searxng_client import (
+from scraper.searxng_client import (
     SearXNGError,
     SearXNGProduct,
     _check_kesko_cdn,

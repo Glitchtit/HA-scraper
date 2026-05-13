@@ -1,4 +1,4 @@
-"""Tests for the add-on ingress web server (grocy_scraper_addon/ingress_server.py)."""
+"""Tests for the add-on ingress web server (addon/ingress_server.py)."""
 
 from __future__ import annotations
 
@@ -19,14 +19,14 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fixture: import the ingress_server module from grocy_scraper_addon/
+# Fixture: import the ingress_server module from addon/
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def ingress_mod() -> ModuleType:
     """Import ingress_server.py as a module without running ``__main__``."""
-    path = "grocy_scraper_addon/ingress_server.py"
+    path = "addon/ingress_server.py"
     spec = importlib.util.spec_from_file_location("ingress_server", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -60,10 +60,10 @@ class TestReadOptions:
 
     def test_returns_parsed_options(self, ingress_mod: ModuleType, tmp_path: Path) -> None:
         opts_file = tmp_path / "options.json"
-        opts_file.write_text(json.dumps({"storage_url": "http://grocy", "store_id": "N110"}))
+        opts_file.write_text(json.dumps({"storage_url": "http://storage", "store_id": "N110"}))
         with mock.patch.object(ingress_mod, "_OPTIONS_PATH", str(opts_file)):
             result = ingress_mod._read_options()
-        assert result["storage_url"] == "http://grocy"
+        assert result["storage_url"] == "http://storage"
         assert result["store_id"] == "N110"
 
 
@@ -76,11 +76,11 @@ class TestBuildArgs:
     def test_basic_fields(self, ingress_mod: ModuleType) -> None:
         opts = {
             "store_id": "N110",
-            "storage_url": "http://grocy:9283",
+            "storage_url": "http://storage:9283",
         }
         ns = ingress_mod._build_args(opts)
         assert ns.store == "N110"
-        assert ns.storage_url == "http://grocy:9283"
+        assert ns.storage_url == "http://storage:9283"
         assert ns.location_id is None
         assert ns.quantity_unit_id is None
 
@@ -108,7 +108,7 @@ class TestBuildArgs:
 class TestCaptureLogs:
     def test_captures_info(self, ingress_mod: ModuleType) -> None:
         with ingress_mod._capture_logs() as logs:
-            logging.getLogger("grocy_scraper").info("hello world")
+            logging.getLogger("scraper").info("hello world")
         assert len(logs) >= 1
         assert logs[0]["level"] == "INFO"
         assert "hello world" in logs[0]["message"]
@@ -119,7 +119,7 @@ class TestCaptureLogs:
         assert any(r["level"] == "DEBUG" for r in logs)
 
     def test_handler_removed_after_context(self, ingress_mod: ModuleType) -> None:
-        lgr = logging.getLogger("grocy_scraper")
+        lgr = logging.getLogger("scraper")
         before = len(lgr.handlers)
         with ingress_mod._capture_logs():
             during = len(lgr.handlers)
@@ -142,7 +142,7 @@ class TestHandleConfig:
 
     def test_fully_configured(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "store_id": "N110",
             "gemini_api_key": "gem-key",
         }
@@ -169,7 +169,7 @@ class TestHandleSearch:
         assert result["success"] is False
 
     def test_successful_search(self, ingress_mod: ModuleType) -> None:
-        from grocy_scraper.scraper import Product
+        from scraper.scraper import Product
 
         fake_products = [
             Product(name="Maito 1L", ean="6411234000001", description="Kevytmaito"),
@@ -178,7 +178,7 @@ class TestHandleSearch:
         mock_scraper.search.return_value = iter(fake_products)
 
         with mock.patch.object(ingress_mod, "_read_options", return_value={"store_id": "N110"}):
-            with mock.patch("grocy_scraper.scraper.KRuokaScraper", return_value=mock_scraper):
+            with mock.patch("scraper.scraper.KRuokaScraper", return_value=mock_scraper):
                 result = ingress_mod._handle_search({"query": "maito", "max_products": 10})
 
         assert result["success"] is True
@@ -189,7 +189,7 @@ class TestHandleSearch:
     def test_search_exception(self, ingress_mod: ModuleType) -> None:
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             with mock.patch(
-                "grocy_scraper.scraper.KRuokaScraper",
+                "scraper.scraper.KRuokaScraper",
                 side_effect=RuntimeError("connection error"),
             ):
                 result = ingress_mod._handle_search({"query": "test"})
@@ -206,7 +206,7 @@ class TestHandleDiscover:
     def test_calls_discover_products(self, ingress_mod: ModuleType) -> None:
         opts = {
             "store_id": "N110",
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
@@ -219,16 +219,16 @@ class TestHandleDiscover:
     def test_discover_chains_optimize(self, ingress_mod: ModuleType) -> None:
         opts = {
             "store_id": "N110",
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "gemini_api_key": "gem-key",
             "gemini_model": "gemini-1.5-flash",
             "location_id": 2,
             "quantity_unit_id": 3,
         }
-        mock_grocy_cls = mock.MagicMock()
+        mock_storage_cls = mock.MagicMock()
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                with mock.patch("grocy_scraper.storage_client.StorageClient", mock_grocy_cls):
+                with mock.patch("scraper.storage_client.StorageClient", mock_storage_cls):
                     main_mod = sys.modules["main"]
                     main_mod._discover_products.return_value = (0, [42, 99])
                     main_mod._ai_optimize_products.return_value = 5
@@ -244,7 +244,7 @@ class TestHandleDiscover:
     def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
             "store_id": "N110",
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
@@ -260,7 +260,7 @@ class TestHandleDiscover:
     def test_discover_failure_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
             "store_id": "N110",
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "gemini_api_key": "gem-key",
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
@@ -278,7 +278,7 @@ class TestHandleDiscover:
         """When discover succeeds but finds no new products, AI is skipped."""
         opts = {
             "store_id": "N110",
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "gemini_api_key": "gem-key",
             "gemini_model": "gemini-1.5-flash",
             "location_id": 2,
@@ -303,7 +303,7 @@ class TestHandleDiscover:
 
 class TestHandleUpdate:
     def test_calls_update_products(self, ingress_mod: ModuleType) -> None:
-        opts = {"store_id": "N110", "storage_url": "http://grocy"}
+        opts = {"store_id": "N110", "storage_url": "http://storage"}
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
                 sys.modules["main"]._update_products.return_value = 0
@@ -327,7 +327,7 @@ class TestHandleAddProducts:
         result = ingress_mod._handle_add_products({"products": "bad"})
         assert result["success"] is False
 
-    def test_missing_grocy_config(self, ingress_mod: ModuleType) -> None:
+    def test_missing_storage_config(self, ingress_mod: ModuleType) -> None:
         """With no storage_url and no auto-detection, add_products fails."""
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             result = ingress_mod._handle_add_products(
@@ -338,15 +338,15 @@ class TestHandleAddProducts:
 
     def test_adds_product_successfully(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.return_value = 42
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 42
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch(
-                "grocy_scraper.storage_client.StorageClient", return_value=mock_grocy
+                "scraper.storage_client.StorageClient", return_value=mock_storage
             ):
                 result = ingress_mod._handle_add_products(
                     {
@@ -359,19 +359,19 @@ class TestHandleAddProducts:
         assert result["success"] is True
         assert result["added"] == 1
         assert result["errors"] == []
-        mock_grocy.create_product.assert_called_once_with(
+        mock_storage.create_product.assert_called_once_with(
             "Maito 1L", description="Kevytmaito", location_id=None, unit_id=None
         )
-        mock_grocy.add_barcode.assert_called_once_with(42, "6411234000001")
+        mock_storage.add_barcode.assert_called_once_with(42, "6411234000001")
 
     def test_skips_existing_barcode(self, ingress_mod: ModuleType) -> None:
-        opts = {"storage_url": "http://grocy"}
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch(
-                "grocy_scraper.storage_client.StorageClient", return_value=mock_grocy
+                "scraper.storage_client.StorageClient", return_value=mock_storage
             ):
                 result = ingress_mod._handle_add_products(
                     {"products": [{"name": "Existing", "ean": "111"}]}
@@ -379,19 +379,19 @@ class TestHandleAddProducts:
 
         assert result["success"] is True
         assert result["added"] == 0
-        mock_grocy.create_product.assert_not_called()
+        mock_storage.create_product.assert_not_called()
 
-    def test_handles_grocy_error(self, ingress_mod: ModuleType) -> None:
-        from grocy_scraper.storage_client import StorageAPIError
+    def test_handles_storage_error(self, ingress_mod: ModuleType) -> None:
+        from scraper.storage_client import StorageAPIError
 
-        opts = {"storage_url": "http://grocy"}
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.side_effect = StorageAPIError("conflict")
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.side_effect = StorageAPIError("conflict")
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch(
-                "grocy_scraper.storage_client.StorageClient", return_value=mock_grocy
+                "scraper.storage_client.StorageClient", return_value=mock_storage
             ):
                 result = ingress_mod._handle_add_products(
                     {"products": [{"name": "Bad", "ean": "222"}]}
@@ -403,19 +403,19 @@ class TestHandleAddProducts:
         assert "conflict" in result["errors"][0]
 
     def test_skips_empty_name(self, ingress_mod: ModuleType) -> None:
-        opts = {"storage_url": "http://grocy"}
-        mock_grocy = mock.MagicMock()
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch(
-                "grocy_scraper.storage_client.StorageClient", return_value=mock_grocy
+                "scraper.storage_client.StorageClient", return_value=mock_storage
             ):
                 result = ingress_mod._handle_add_products(
                     {"products": [{"name": "", "ean": "333"}]}
                 )
 
         assert result["added"] == 0
-        mock_grocy.create_product.assert_not_called()
+        mock_storage.create_product.assert_not_called()
 
     def test_empty_product_list(self, ingress_mod: ModuleType) -> None:
         result = ingress_mod._handle_add_products({"products": []})
@@ -423,14 +423,14 @@ class TestHandleAddProducts:
         assert "No products" in result["error"]
 
     def test_unexpected_exception(self, ingress_mod: ModuleType) -> None:
-        opts = {"storage_url": "http://grocy"}
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.side_effect = RuntimeError("unexpected")
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.side_effect = RuntimeError("unexpected")
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             with mock.patch(
-                "grocy_scraper.storage_client.StorageClient", return_value=mock_grocy
+                "scraper.storage_client.StorageClient", return_value=mock_storage
             ):
                 result = ingress_mod._handle_add_products(
                     {"products": [{"name": "Fail", "ean": "444"}]}
@@ -443,15 +443,15 @@ class TestHandleAddProducts:
 
     def test_uploads_image_when_image_url_present(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "upload_images": True,
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.return_value = 10
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 10
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("grocy_scraper.storage_client.StorageClient", return_value=mock_grocy), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
              mock.patch("main._upload_product_image") as mock_upload:
             result = ingress_mod._handle_add_products(
                 {
@@ -473,20 +473,20 @@ class TestHandleAddProducts:
         assert product_arg.name == "Juice"
         assert product_arg.ean == "555"
         assert product_arg.image_url == "https://example.com/juice.jpg"
-        assert mock_upload.call_args[0][1] is mock_grocy
+        assert mock_upload.call_args[0][1] is mock_storage
         assert mock_upload.call_args[0][2] == 10
 
     def test_skips_image_upload_when_disabled(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "upload_images": False,
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.return_value = 10
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 10
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("grocy_scraper.storage_client.StorageClient", return_value=mock_grocy), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
              mock.patch("main._upload_product_image") as mock_upload:
             result = ingress_mod._handle_add_products(
                 {
@@ -506,15 +506,15 @@ class TestHandleAddProducts:
 
     def test_skips_image_upload_when_no_image_url(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "upload_images": True,
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.return_value = 10
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 10
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("grocy_scraper.storage_client.StorageClient", return_value=mock_grocy), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
              mock.patch("main._upload_product_image") as mock_upload:
             result = ingress_mod._handle_add_products(
                 {
@@ -530,16 +530,16 @@ class TestHandleAddProducts:
 
     def test_chains_ai_sort_date_group_when_gemini_key_set(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "gemini_api_key": "gem-key",
             "gemini_model": "gemini-2.0-flash",
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.side_effect = [10, 20]
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.side_effect = [10, 20]
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("grocy_scraper.storage_client.StorageClient", return_value=mock_grocy), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
              mock.patch("main._ai_optimize_products") as mock_optimize:
             result = ingress_mod._handle_add_products(
                 {
@@ -554,7 +554,7 @@ class TestHandleAddProducts:
         assert result["added"] == 2
 
         mock_optimize.assert_called_once_with(
-            mock_grocy,
+            mock_storage,
             "gem-key",
             "gemini-2.0-flash",
             location_id=None,
@@ -564,14 +564,14 @@ class TestHandleAddProducts:
 
     def test_skips_ai_when_no_gemini_key(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = None
-        mock_grocy.create_product.return_value = 10
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 10
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("grocy_scraper.storage_client.StorageClient", return_value=mock_grocy), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
              mock.patch("main._ai_optimize_products") as mock_optimize:
             result = ingress_mod._handle_add_products(
                 {"products": [{"name": "A", "ean": "111"}]}
@@ -583,14 +583,14 @@ class TestHandleAddProducts:
 
     def test_skips_ai_when_no_products_added(self, ingress_mod: ModuleType) -> None:
         opts = {
-            "storage_url": "http://grocy",
+            "storage_url": "http://storage",
             "gemini_api_key": "gem-key",
         }
-        mock_grocy = mock.MagicMock()
-        mock_grocy.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
 
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("grocy_scraper.storage_client.StorageClient", return_value=mock_grocy), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
              mock.patch("main._ai_optimize_products") as mock_optimize:
             result = ingress_mod._handle_add_products(
                 {"products": [{"name": "Existing", "ean": "111"}]}
@@ -661,7 +661,7 @@ class TestHTTPHandler:
     def test_get_root_serves_html(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "GET", "/")
         assert status == 200
-        assert "Grocy Scraper" in body
+        assert "Scraper" in body
 
     def test_get_api_config(self, ingress_mod: ModuleType) -> None:
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
