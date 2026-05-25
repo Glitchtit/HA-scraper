@@ -1,3 +1,6 @@
+## 2.1.3
+- Fix options flow ("Configure" button) crashing on modern Home Assistant: `OptionsFlow.config_entry` is now a read-only property, so the old `self.config_entry = config_entry` assignment in `__init__` raised `AttributeError: property 'config_entry' ... has no setter`. Removed the custom `__init__` and the `config_entry` argument; the flow now uses HA's auto-provided `self.config_entry`.
+
 ## 2.1.2
 - Vendor the scraper backend package into `custom_components/scraper/scraperlib/` so the integration's `search_products`/`add_product` services and the WS panel work on a clean HACS install without requiring a manual `/config/scraper/` copy. Previously the integration called `_ensure_repo_on_path()` to find the repo-root `scraper/` package, which only worked in the add-on Supervisor environment and broke on standalone HACS installs with `ModuleNotFoundError: No module named 'scraper'`.
 - All `from scraper.X import Y` calls in `services.py` and `ws_api.py` are now `from .scraperlib.X import Y` (relative imports into the vendored subpackage). `_ensure_repo_on_path()` is retained in `ws_api.py` only for the three `from addon import main` call-sites that still require the repo root on sys.path (run_discover / run_sort / run_date workflows); it has been removed from `services.py` entirely.

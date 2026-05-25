@@ -67,15 +67,15 @@ class ScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         config_entry: config_entries.ConfigEntry,
     ) -> "ScraperOptionsFlow":
         """Return the options flow handler."""
-        return ScraperOptionsFlow(config_entry)
+        return ScraperOptionsFlow()
 
 
 class ScraperOptionsFlow(config_entries.OptionsFlow):
-    """Handle the options flow (AI settings)."""
+    """Handle the options flow (AI settings).
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        """Initialise with current options."""
-        self.config_entry = config_entry
+    Note: `self.config_entry` is provided automatically by Home Assistant as a
+    read-only property (since 2024.11); do not assign it in __init__.
+    """
 
     async def async_step_init(
         self, user_input: dict | None = None
