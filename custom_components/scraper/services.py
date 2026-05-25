@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import voluptuous as vol
 
@@ -233,6 +233,11 @@ _ADD_PRODUCT_SCHEMA = vol.Schema(
 
 def async_register_services(hass: HomeAssistant) -> None:
     """Register the scraper services. Idempotent."""
+    if not _HA_AVAILABLE:
+        raise RuntimeError(
+            "scraper.services: Home Assistant runtime not available; "
+            "cannot register services (import stubs are test-only)."
+        )
     if hass.services.has_service(DOMAIN, SERVICE_SEARCH_PRODUCTS):
         return
 
