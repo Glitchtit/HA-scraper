@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -60,10 +61,14 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMAIN, {})
 
     if not hass.data[DOMAIN].get(_KEY_STATIC_REGISTERED):
-        hass.http.register_static_path(
-            "/scraper_panel",
-            str(Path(__file__).parent / "www"),
-            cache_headers=False,
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    "/scraper_panel",
+                    str(Path(__file__).parent / "www"),
+                    False,
+                )
+            ]
         )
         hass.data[DOMAIN][_KEY_STATIC_REGISTERED] = True
 
