@@ -28,6 +28,7 @@ from .const import (
     DEFAULT_USE_GRAPHQL,
 )
 from . import ws_api
+from . import services
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ _REPO_ROOT = Path(__file__).parent.parent.parent
 _KEY_WS_REGISTERED = "ws_registered"
 _KEY_PANEL_REGISTERED = "panel_registered"
 _KEY_STATIC_REGISTERED = "static_registered"
+_KEY_SERVICES_REGISTERED = "services_registered"
 
 
 def _ensure_repo_on_path() -> None:
@@ -87,11 +89,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ws_api.async_register(hass)
         hass.data[DOMAIN][_KEY_WS_REGISTERED] = True
 
+    # Register HA services (idempotent guard).
+    if not hass.data[DOMAIN].get(_KEY_SERVICES_REGISTERED):
+        services.async_register_services(hass)
+        hass.data[DOMAIN][_KEY_SERVICES_REGISTERED] = True
+
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
+    # Tear down services only when no other scraper entries remain.
+    remaining = [
+        e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id
+    ]
+    if not remaining:
+        services.async_unregister_services(hass)
+        hass.data.get(DOMAIN, {}).pop(_KEY_SERVICES_REGISTERED, None)
     return True
 
 
