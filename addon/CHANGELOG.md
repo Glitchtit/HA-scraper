@@ -1,3 +1,8 @@
+## 2.1.0
+- Added two agent-callable Home Assistant services to the integration: `scraper.search_products` (response-only) wraps the same K-Ruoka product search as the panel's `scraper/search` WebSocket command and returns `{products: [{name, ean, description, image_url}]}`; `scraper.add_product` creates a found product in HA-Storage (product → optional barcode → optional image download+upload) and returns `{product_id}`
+- The two services let an LLM/agent discover an unknown grocery product and add it to Storage so it can be put on the shopping list, without opening the sidebar panel
+- Image download for `scraper.add_product` uses `requests` inside an executor job to match the integration's existing synchronous `StorageClient`; no new manifest dependency was added
+
 ## 2.0.1
 - Cleanup: removed dead Barcode Buddy block (`BARCODEBDY_*` env vars) from `.env.example`. Barcode discovery has been routed through HA-Storage's barcode queue for many releases; the placeholder vars served no purpose
 
