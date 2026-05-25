@@ -37,7 +37,13 @@ _CAPTURE_NAMESPACES = ("scraper", "addon.main")
 
 
 def _ensure_repo_on_path() -> None:
-    """Add the repository root to sys.path so the scraper package is importable."""
+    """Add the repository root to sys.path so the addon package is importable.
+
+    NOTE: scraperlib imports are now relative (no longer need this). This
+    function is kept solely for ``from addon import main`` calls in the
+    run_discover / run_sort / run_date sync workers that require the repo root
+    on sys.path to import the add-on's ``addon/`` package.
+    """
     root = str(_REPO_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
@@ -171,8 +177,7 @@ def _search_products_sync(
     max_products: int,
 ) -> list[dict[str, str]]:
     """Run a synchronous K-Ruoka product search and return serialisable dicts."""
-    _ensure_repo_on_path()
-    from scraper.scraper import KRuokaScraper  # noqa: PLC0415
+    from .scraperlib.scraper import KRuokaScraper  # noqa: PLC0415
 
     scraper = KRuokaScraper(store_id=store_id, use_graphql=use_graphql)
     results: list[dict[str, str]] = []
@@ -346,7 +351,7 @@ def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
 
     _ensure_repo_on_path()
 
-    from scraper.storage_client import StorageClient  # noqa: PLC0415
+    from .scraperlib.storage_client import StorageClient  # noqa: PLC0415
     from addon import main as _main  # noqa: PLC0415
 
     storage = StorageClient(
@@ -419,7 +424,7 @@ def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
 
     _ensure_repo_on_path()
 
-    from scraper.storage_client import StorageClient  # noqa: PLC0415
+    from .scraperlib.storage_client import StorageClient  # noqa: PLC0415
     from addon import main as _main  # noqa: PLC0415
 
     storage = StorageClient(
