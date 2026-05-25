@@ -1,3 +1,6 @@
+## 2.1.1
+- Fix integration failing to load on Home Assistant 2025.x: replace the removed `hass.http.register_static_path` with `async_register_static_paths` + `StaticPathConfig` in `async_setup`. This crash prevented the whole `scraper` component (and thus the `scraper.search_products` / `scraper.add_product` services) from setting up.
+
 ## 2.1.0
 - Added two agent-callable Home Assistant services to the integration: `scraper.search_products` (response-only) wraps the same K-Ruoka product search as the panel's `scraper/search` WebSocket command and returns `{products: [{name, ean, description, image_url}]}`; `scraper.add_product` creates a found product in HA-Storage (product → optional barcode → optional image download+upload) and returns `{product_id}`
 - The two services let an LLM/agent discover an unknown grocery product and add it to Storage so it can be put on the shopping list, without opening the sidebar panel
