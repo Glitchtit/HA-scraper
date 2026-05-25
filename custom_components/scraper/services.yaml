@@ -1,0 +1,63 @@
+search_products:
+  name: Search products
+  description: >-
+    Search Finnish grocery products (K-Ruoka) by name. Example: 'find Sprite in
+    the store'. Returns products with name, ean barcode and image. Use this when
+    a product is unknown to Storage, then add it with scraper.add_product.
+  fields:
+    query:
+      name: Query
+      description: Free-text product name to search for (Finnish or English).
+      required: true
+      example: Sprite
+      selector:
+        text:
+    max_products:
+      name: Max products
+      description: Maximum number of products to return (1-500). Defaults to 50.
+      required: false
+      default: 50
+      example: 20
+      selector:
+        number:
+          min: 1
+          max: 500
+          mode: box
+
+add_product:
+  name: Add product
+  description: >-
+    Add a found grocery product to Storage so it can be put on the shopping
+    list. Pass the name (and ean/image_url from scraper.search_products if
+    available). Returns the new Storage product_id.
+  fields:
+    name:
+      name: Name
+      description: Product display name (stored as the canonical Finnish name).
+      required: true
+      example: Sprite 0,33 l
+      selector:
+        text:
+    ean:
+      name: EAN
+      description: Optional barcode (EAN/GTIN) to associate with the product.
+      required: false
+      example: "1234567890123"
+      selector:
+        text:
+    description:
+      name: Description
+      description: Optional product description.
+      required: false
+      example: Virvoitusjuoma
+      selector:
+        text:
+    image_url:
+      name: Image URL
+      description: >-
+        Optional product image URL (e.g. from scraper.search_products). The
+        image is downloaded server-side and uploaded to Storage.
+      required: false
+      example: https://kuvat.k-ruoka.fi/...
+      selector:
+        text:
