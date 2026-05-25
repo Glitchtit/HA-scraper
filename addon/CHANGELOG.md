@@ -1,3 +1,8 @@
+## 2.1.4
+- Removed vestigial Gemini AI config fields (`gemini_api_key`, `gemini_model`, `gemini_model_optimize`) from integration options and all associated constants, schema, and translation strings. These were orphaned when AI optimize moved to HA-Storage in v1.21.23.
+- Removed the orphaned Sort and Date panel actions (`scraper/run_sort`, `scraper/run_date` WebSocket commands and their sync helpers) that called `_ai_sort_products` / `_ai_assign_due_dates` — functions deleted from the add-on in v1.21.23. Calling either button would have raised `AttributeError` at runtime.
+- Scraper integration options are now just Upload images and Use GraphQL. No effect on `search_products`, `add_product`, or discover.
+
 ## 2.1.3
 - Fix options flow ("Configure" button) crashing on modern Home Assistant: `OptionsFlow.config_entry` is now a read-only property, so the old `self.config_entry = config_entry` assignment in `__init__` raised `AttributeError: property 'config_entry' ... has no setter`. Removed the custom `__init__` and the `config_entry` argument; the flow now uses HA's auto-provided `self.config_entry`.
 

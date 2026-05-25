@@ -4,7 +4,7 @@
  * Features
  * --------
  * • Search for K-Ruoka products by keyword (configurable max results)
- * • Action buttons: Discover, Sort, Date
+ * • Action button: Discover
  * • Terminal output pane that shows logs from each operation
  *   – Verbose toggle shows/hides DEBUG-level lines
  *   – Clear button empties the terminal
@@ -110,8 +110,6 @@ class ScraperPanel extends HTMLElement {
           color:var(--text-primary-color,#fff);
         }
         .btn-discover { background:#6200ea; color:#fff; }
-        .btn-sort     { background:#00796b; color:#fff; }
-        .btn-date     { background:#e65100; color:#fff; }
         .btn-sm {
           padding:5px 12px; font-size:0.78rem; border-radius:6px;
           background:var(--secondary-background-color,#333);
@@ -288,8 +286,6 @@ class ScraperPanel extends HTMLElement {
         <h2>🔧 Actions</h2>
         <div class="action-row">
           <button class="btn btn-discover" id="discover-btn">🔍 Discover</button>
-          <button class="btn btn-sort"     id="sort-btn">📦 Sort</button>
-          <button class="btn btn-date"     id="date-btn">📅 Date</button>
         </div>
         <div class="status" id="action-status"></div>
       </div>
@@ -323,10 +319,6 @@ class ScraperPanel extends HTMLElement {
     // ── Actions ──
     this.shadowRoot.querySelector("#discover-btn")
       .addEventListener("click", () => this._runAction("scraper/run_discover", "Discover"));
-    this.shadowRoot.querySelector("#sort-btn")
-      .addEventListener("click", () => this._runAction("scraper/run_sort", "Sort"));
-    this.shadowRoot.querySelector("#date-btn")
-      .addEventListener("click", () => this._runAction("scraper/run_date", "Date"));
 
     // ── Terminal controls ──
     this.shadowRoot.querySelector("#verbose-toggle")
@@ -356,16 +348,8 @@ class ScraperPanel extends HTMLElement {
       const info = this.shadowRoot.querySelector("#config-info");
       card.style.display = "";
 
-      const discoverBadge = `<span class="badge ok">🔄 Auto-discover every ${cfg.discover_interval} min</span>`;
-
-      const geminiBadge = cfg.gemini_configured
-        ? `<span class="badge ok">🤖 Gemini AI ready</span>`
-        : `<span class="badge warn">⚠️ Gemini API key not set</span>`;
-
       info.innerHTML = `
         <span class="badge">Store: ${this._escape(cfg.store_id || "—")}</span>
-        ${discoverBadge}
-        ${geminiBadge}
       `;
     } catch (err) {
       if (!err || err.code !== "not_found") {
@@ -431,11 +415,9 @@ class ScraperPanel extends HTMLElement {
 
     const statusEl   = this.shadowRoot.querySelector("#action-status");
     const discoverBtn = this.shadowRoot.querySelector("#discover-btn");
-    const sortBtn     = this.shadowRoot.querySelector("#sort-btn");
-    const dateBtn     = this.shadowRoot.querySelector("#date-btn");
 
     this._running = true;
-    discoverBtn.disabled = sortBtn.disabled = dateBtn.disabled = true;
+    discoverBtn.disabled = true;
     statusEl.innerHTML = `<span class="loader"></span>Running ${this._escape(label)} …`;
 
     const terminal = this.shadowRoot.querySelector("#terminal");
@@ -450,7 +432,7 @@ class ScraperPanel extends HTMLElement {
 
     const _finish = () => {
       this._running = false;
-      discoverBtn.disabled = sortBtn.disabled = dateBtn.disabled = false;
+      discoverBtn.disabled = false;
     };
 
     let unsub;

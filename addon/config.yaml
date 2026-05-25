@@ -1,5 +1,5 @@
 name: "Scraper"
-version: "2.1.3"
+version: "2.1.4"
 slug: "scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates HA-Storage."
 url: "https://github.com/Glitchtit/HA-scraper"
