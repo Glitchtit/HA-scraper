@@ -1,3 +1,6 @@
+## 2.1.5
+- Multi-store search: `KRuokaScraper` now parses a comma-separated `store_id` and `search()` tries each store in order, returning results from the first store with matches (fixes empty results when configured with multiple stores like `N110,K532,L512,K817`). Change is mirrored across all three `scraper.py` copies (`scraper/`, `addon/scraper/`, `custom_components/scraper/scraperlib/`).
+
 ## 2.1.4
 - Removed vestigial Gemini AI config fields (`gemini_api_key`, `gemini_model`, `gemini_model_optimize`) from integration options and all associated constants, schema, and translation strings. These were orphaned when AI optimize moved to HA-Storage in v1.21.23.
 - Removed the orphaned Sort and Date panel actions (`scraper/run_sort`, `scraper/run_date` WebSocket commands and their sync helpers) that called `_ai_sort_products` / `_ai_assign_due_dates` — functions deleted from the add-on in v1.21.23. Calling either button would have raised `AttributeError` at runtime.

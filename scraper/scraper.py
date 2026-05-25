@@ -370,7 +370,10 @@ class KRuokaScraper:
         request_delay: float = _REQUEST_DELAY,
         use_graphql: bool = True,
     ) -> None:
-        self.store_id = store_id
+        # store_id may be a single id ("N110") or a comma-separated list
+        # ("N110,K532,..."). search() tries each store in order with fallback.
+        self.store_ids = [s.strip() for s in str(store_id).split(",") if s.strip()] or [str(store_id)]
+        self.store_id = self.store_ids[0]
         self.request_delay = request_delay
         self._use_graphql = use_graphql
         if session is not None:
@@ -385,6 +388,28 @@ class KRuokaScraper:
     # ------------------------------------------------------------------
 
     def search(self, query: str, max_products: Optional[int] = None) -> Iterator[Product]:
+        """Search the configured store(s) for *query*.
+
+        ``store_id`` may be a single id or a comma-separated list. With multiple
+        stores, each is tried in order and the results from the FIRST store that
+        returns any match are yielded (fallback for products not stocked at every
+        store; avoids cross-store duplicates). Most products exist at all stores,
+        so the first store usually answers.
+        """
+        original = self.store_id
+        try:
+            for store_id in self.store_ids:
+                self.store_id = store_id
+                found = False
+                for product in self._search_one_store(query, max_products):
+                    found = True
+                    yield product
+                if found:
+                    return
+        finally:
+            self.store_id = original
+
+    def _search_one_store(self, query: str, max_products: Optional[int] = None) -> Iterator[Product]:
         """Yield products whose name matches *query* (case-insensitive).
 
         The upstream API performs broad full-text matching that can return

@@ -884,3 +884,61 @@ class TestLeadingZeroEanRegression:
         assert p.ean == "90493508"
 
 
+# ---------------------------------------------------------------------------
+# Multi-store search (KRuokaScraper.search with comma-separated store_id)
+# ---------------------------------------------------------------------------
+
+class TestMultiStoreSearch:
+    def test_search_parses_multi_store(self):
+        """store_id='N110,K532,L512' populates store_ids and sets store_id to first."""
+        sc = KRuokaScraper(store_id="N110,K532,L512", session=requests.Session())
+        assert sc.store_ids == ["N110", "K532", "L512"]
+        assert sc.store_id == "N110"
+
+    def test_search_single_store_unchanged(self):
+        """store_id='N110' gives store_ids=['N110'] and single-store behaviour."""
+        sc = KRuokaScraper(store_id="N110", session=requests.Session())
+        assert sc.store_ids == ["N110"]
+        assert sc.store_id == "N110"
+
+        # Monkeypatch _search_one_store to return two sentinel products.
+        sentinel = [Product(name="p1", ean="1"), Product(name="p2", ean="2")]
+        sc._search_one_store = lambda query, max_products=None: iter(sentinel)
+
+        result = list(sc.search("x"))
+        assert result == sentinel
+
+    def test_search_multi_store_fallback(self):
+        """With store_id='A,B', if A is empty search falls back to B."""
+        sc = KRuokaScraper(store_id="A,B", session=requests.Session())
+
+        tried_stores: list[str] = []
+        prod_b = Product(name="prodB", ean="B1")
+
+        def fake_search_one_store(query, max_products=None):
+            tried_stores.append(sc.store_id)
+            if sc.store_id == "B":
+                yield prod_b
+
+        sc._search_one_store = fake_search_one_store
+
+        result = list(sc.search("x"))
+        assert result == [prod_b]
+        assert tried_stores == ["A", "B"]
+        # store_id must be restored to the original primary store after search
+        assert sc.store_id == "A"
+
+    def test_search_store_id_restored_on_exception(self):
+        """store_id is restored even if _search_one_store raises."""
+        sc = KRuokaScraper(store_id="A,B", session=requests.Session())
+
+        def boom(query, max_products=None):
+            raise RuntimeError("network down")
+            yield  # make it a generator
+
+        sc._search_one_store = boom
+
+        with pytest.raises(RuntimeError):
+            list(sc.search("x"))
+
+        assert sc.store_id == "A"
