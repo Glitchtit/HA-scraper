@@ -1,3 +1,8 @@
+## 2.1.2
+- Vendor the scraper backend package into `custom_components/scraper/scraperlib/` so the integration's `search_products`/`add_product` services and the WS panel work on a clean HACS install without requiring a manual `/config/scraper/` copy. Previously the integration called `_ensure_repo_on_path()` to find the repo-root `scraper/` package, which only worked in the add-on Supervisor environment and broke on standalone HACS installs with `ModuleNotFoundError: No module named 'scraper'`.
+- All `from scraper.X import Y` calls in `services.py` and `ws_api.py` are now `from .scraperlib.X import Y` (relative imports into the vendored subpackage). `_ensure_repo_on_path()` is retained in `ws_api.py` only for the three `from addon import main` call-sites that still require the repo root on sys.path (run_discover / run_sort / run_date workflows); it has been removed from `services.py` entirely.
+- Note: `scraperlib/` is now a third in-repo copy of the shared package (alongside `scraper/` and `addon/scraper/`). When `scraper.py`, `storage_client.py`, `skaupat_client.py`, or `searxng_client.py` change, keep all three copies in sync.
+
 ## 2.1.1
 - Fix integration failing to load on Home Assistant 2025.x: replace the removed `hass.http.register_static_path` with `async_register_static_paths` + `StaticPathConfig` in `async_setup`. This crash prevented the whole `scraper` component (and thus the `scraper.search_products` / `scraper.add_product` services) from setting up.
 

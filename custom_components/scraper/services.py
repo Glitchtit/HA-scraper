@@ -7,16 +7,15 @@ Exposes two agent-callable services:
 * ``scraper.add_product`` (SupportsResponse.OPTIONAL) — creates a found
   product in HA-Storage (product → optional barcode → optional image).
 
-The integration imports the top-level ``scraper`` package by prepending the
-repo root to ``sys.path`` (mirroring ``ws_api._ensure_repo_on_path``). All
-blocking work runs inside ``hass.async_add_executor_job``.
+The integration uses the vendored ``scraperlib`` subpackage bundled inside
+``custom_components/scraper/scraperlib/`` so it works on a clean HACS install
+without any sibling ``scraper/`` package on sys.path.
+All blocking work runs inside ``hass.async_add_executor_job``.
 """
 
 from __future__ import annotations
 
 import logging
-import sys
-from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
@@ -56,17 +55,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 # Repo root is three levels up: custom_components/scraper/ -> repo root
-_REPO_ROOT = Path(__file__).parent.parent.parent
-
 SERVICE_SEARCH_PRODUCTS = "search_products"
 SERVICE_ADD_PRODUCT = "add_product"
-
-
-def _ensure_repo_on_path() -> None:
-    """Add the repository root to sys.path so the scraper package is importable."""
-    root = str(_REPO_ROOT)
-    if root not in sys.path:
-        sys.path.insert(0, root)
 
 
 def shape_search_results(raw: list[Any]) -> list[dict[str, str]]:
@@ -188,8 +178,7 @@ def _entry(hass: HomeAssistant) -> ConfigEntry:
 
 def _search_sync(store_id: str, use_graphql: bool, query: str, max_products: int):
     """Run a synchronous K-Ruoka search and return shaped result dicts."""
-    _ensure_repo_on_path()
-    from scraper.scraper import KRuokaScraper  # noqa: PLC0415
+    from .scraperlib.scraper import KRuokaScraper  # noqa: PLC0415
 
     scraper = KRuokaScraper(store_id=store_id, use_graphql=use_graphql)
     products = list(scraper.search(query, max_products=max_products))
@@ -198,8 +187,7 @@ def _search_sync(store_id: str, use_graphql: bool, query: str, max_products: int
 
 def _add_product_sync_worker(storage_url: str, data: dict[str, Any]) -> int:
     """Construct a StorageClient and run the add_product sequence."""
-    _ensure_repo_on_path()
-    from scraper.storage_client import StorageClient  # noqa: PLC0415
+    from .scraperlib.storage_client import StorageClient  # noqa: PLC0415
 
     storage = StorageClient(base_url=storage_url)
     return add_product_sync(
