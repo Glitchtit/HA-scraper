@@ -13,12 +13,8 @@ from .const import (
     CONF_STORE_ID,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
-    CONF_GEMINI_API_KEY,
-    CONF_GEMINI_MODEL,
-    CONF_GEMINI_MODEL_OPTIMIZE,
     DEFAULT_UPLOAD_IMAGES,
     DEFAULT_USE_GRAPHQL,
-    DEFAULT_GEMINI_MODEL,
 )
 
 _USER_SCHEMA = vol.Schema(
@@ -71,7 +67,7 @@ class ScraperConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class ScraperOptionsFlow(config_entries.OptionsFlow):
-    """Handle the options flow (AI settings).
+    """Handle the options flow (integration settings).
 
     Note: `self.config_entry` is provided automatically by Home Assistant as a
     read-only property (since 2024.11); do not assign it in __init__.
@@ -95,18 +91,6 @@ class ScraperOptionsFlow(config_entries.OptionsFlow):
                     CONF_USE_GRAPHQL,
                     default=opts.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
                 ): bool,
-                vol.Optional(
-                    CONF_GEMINI_API_KEY,
-                    default=opts.get(CONF_GEMINI_API_KEY, ""),
-                ): str,
-                vol.Optional(
-                    CONF_GEMINI_MODEL,
-                    default=opts.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL),
-                ): str,
-                vol.Optional(
-                    CONF_GEMINI_MODEL_OPTIMIZE,
-                    default=opts.get(CONF_GEMINI_MODEL_OPTIMIZE, ""),
-                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema)

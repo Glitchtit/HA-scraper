@@ -19,12 +19,8 @@ from .const import (
     CONF_STORE_ID,
     CONF_UPLOAD_IMAGES,
     CONF_USE_GRAPHQL,
-    CONF_GEMINI_API_KEY,
-    CONF_GEMINI_MODEL,
-    CONF_GEMINI_MODEL_OPTIMIZE,
     DEFAULT_USE_GRAPHQL,
     DEFAULT_UPLOAD_IMAGES,
-    DEFAULT_GEMINI_MODEL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,8 +37,8 @@ def _ensure_repo_on_path() -> None:
 
     NOTE: scraperlib imports are now relative (no longer need this). This
     function is kept solely for ``from addon import main`` calls in the
-    run_discover / run_sort / run_date sync workers that require the repo root
-    on sys.path to import the add-on's ``addon/`` package.
+    run_discover sync worker that requires the repo root on sys.path to import
+    the add-on's ``addon/`` package.
     """
     root = str(_REPO_ROOT)
     if root not in sys.path:
@@ -114,8 +110,6 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_search_products)
     websocket_api.async_register_command(hass, ws_get_config)
     websocket_api.async_register_command(hass, ws_run_discover)
-    websocket_api.async_register_command(hass, ws_run_sort)
-    websocket_api.async_register_command(hass, ws_run_date)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +215,6 @@ async def ws_get_config(
         {
             "configured": True,
             "store_id": entry.data.get(CONF_STORE_ID, ""),
-            "gemini_configured": bool(entry.options.get(CONF_GEMINI_API_KEY)),
         },
     )
 
@@ -291,148 +284,3 @@ def _run_discover_sync(config: dict, options: dict, on_log=None) -> dict[str, An
 
     return {"success": result_code == 0, "skipped": False}
 
-
-# ---------------------------------------------------------------------------
-# scraper/run_sort
-# ---------------------------------------------------------------------------
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "scraper/run_sort",
-    }
-)
-@websocket_api.async_response
-async def ws_run_sort(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
-) -> None:
-    """Use Gemini AI to assign each Storage product to an appropriate location."""
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
-        connection.send_error(
-            msg["id"], "not_configured", "Scraper is not configured."
-        )
-        return
-
-    entry = entries[0]
-    msg_id = msg["id"]
-    connection.send_result(msg_id)
-    send_log = _make_log_sender(hass, connection, msg_id)
-
-    try:
-        result = await hass.async_add_executor_job(
-            _run_sort_sync,
-            dict(entry.data),
-            dict(entry.options),
-            send_log,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.exception("run_sort failed")
-        result = {"success": False, "error": str(exc)}
-
-    connection.send_message(
-        websocket_api.event_message(msg_id, {"done": True, **result})
-    )
-
-
-def _run_sort_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
-    """Run AI location-sorting of all Storage products."""
-    gemini_api_key = options.get(CONF_GEMINI_API_KEY, "")
-    if not gemini_api_key:
-        if on_log:
-            on_log({
-                "level": "WARNING",
-                "message": "A Gemini API key is required for Sort. "
-                "Add it in the integration options.",
-            })
-        return {"success": False, "skipped": True, "updated": 0}
-
-    _ensure_repo_on_path()
-
-    from .scraperlib.storage_client import StorageClient  # noqa: PLC0415
-    from addon import main as _main  # noqa: PLC0415
-
-    storage = StorageClient(
-        base_url=config.get(CONF_STORAGE_URL, ""),
-    )
-    model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
-
-    with _capture_logs(on_emit=on_log):
-        updated: int = _main._ai_sort_products(storage, gemini_api_key, model)
-
-    return {"success": True, "skipped": False, "updated": updated}
-
-
-# ---------------------------------------------------------------------------
-# scraper/run_date
-# ---------------------------------------------------------------------------
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): "scraper/run_date",
-    }
-)
-@websocket_api.async_response
-async def ws_run_date(
-    hass: HomeAssistant,
-    connection: websocket_api.ActiveConnection,
-    msg: dict[str, Any],
-) -> None:
-    """Use Gemini AI to guess default best-before days for each Storage product."""
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
-        connection.send_error(
-            msg["id"], "not_configured", "Scraper is not configured."
-        )
-        return
-
-    entry = entries[0]
-    msg_id = msg["id"]
-    connection.send_result(msg_id)
-    send_log = _make_log_sender(hass, connection, msg_id)
-
-    try:
-        result = await hass.async_add_executor_job(
-            _run_date_sync,
-            dict(entry.data),
-            dict(entry.options),
-            send_log,
-        )
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.exception("run_date failed")
-        result = {"success": False, "error": str(exc)}
-
-    connection.send_message(
-        websocket_api.event_message(msg_id, {"done": True, **result})
-    )
-
-
-def _run_date_sync(config: dict, options: dict, on_log=None) -> dict[str, Any]:
-    """Run AI best-before-date assignment for all Storage products."""
-    gemini_api_key = options.get(CONF_GEMINI_API_KEY, "")
-    if not gemini_api_key:
-        if on_log:
-            on_log({
-                "level": "WARNING",
-                "message": "A Gemini API key is required for Date. "
-                "Add it in the integration options.",
-            })
-        return {"success": False, "skipped": True, "updated": 0}
-
-    _ensure_repo_on_path()
-
-    from .scraperlib.storage_client import StorageClient  # noqa: PLC0415
-    from addon import main as _main  # noqa: PLC0415
-
-    storage = StorageClient(
-        base_url=config.get(CONF_STORAGE_URL, ""),
-    )
-    model = options.get(CONF_GEMINI_MODEL, DEFAULT_GEMINI_MODEL)
-
-    with _capture_logs(on_emit=on_log):
-        updated: int = _main._ai_assign_due_dates(storage, gemini_api_key, model)
-
-    return {"success": True, "skipped": False, "updated": updated}

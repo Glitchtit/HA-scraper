@@ -26,20 +26,14 @@
     "step": {
       "init": {
         "title": "Scraper Settings",
-        "description": "Configure optional features such as product image uploading and Gemini AI.",
+        "description": "Configure optional features such as product image uploading.",
         "data": {
           "upload_images": "Upload product images to Storage",
-          "use_graphql": "Use GraphQL backend (recommended)",
-          "gemini_api_key": "Gemini API Key (for Sort & Date)",
-          "gemini_model": "Gemini model name",
-          "gemini_model_optimize": "Gemini model name (for Optimize)"
+          "use_graphql": "Use GraphQL backend (recommended)"
         },
         "data_description": {
           "upload_images": "Download and upload product images when creating new products",
-          "use_graphql": "Use the faster GraphQL backend; disable only if you need the kr-api fallback",
-          "gemini_api_key": "Google Gemini API key used by the Sort, Date, Group, and Optimize actions",
-          "gemini_model": "Gemini model name, e.g. gemini-1.5-flash",
-          "gemini_model_optimize": "Override model for Optimize action; leave blank to use the default model"
+          "use_graphql": "Use the faster GraphQL backend; disable only if you need the kr-api fallback"
         }
       }
     }
