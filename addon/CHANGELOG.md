@@ -1,3 +1,6 @@
+## 2.1.6
+- The integration no longer registers its own "Scraper" sidebar panel. With both the add-on and this integration installed you got two identical "Scraper" entries in the sidebar — and the integration's bundled `panel.js` was the older, feature-poorer UI (the add-on's ingress panel is the maintained one). The integration keeps its config flow and HA services (`scraper.search_products`, `scraper.add_product`); only the duplicate panel is gone. Setup also removes any stale panel left by an older version, so upgrading clears the duplicate without a full HA restart. Removed the now-dead `ws_api.py` and `www/panel.js` (the WebSocket API existed solely to back that panel — no other consumer).
+
 ## 2.1.5
 - Multi-store search: `KRuokaScraper` now parses a comma-separated `store_id` and `search()` tries each store in order, returning results from the first store with matches (fixes empty results when configured with multiple stores like `N110,K532,L512,K817`). Change is mirrored across all three `scraper.py` copies (`scraper/`, `addon/scraper/`, `custom_components/scraper/scraperlib/`).
 

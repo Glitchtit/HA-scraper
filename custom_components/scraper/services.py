@@ -63,8 +63,8 @@ def shape_search_results(raw: list[Any]) -> list[dict[str, str]]:
     """Map raw search rows to the stable ``{name, ean, description, image_url}`` shape.
 
     Accepts either ``scraper.scraper.Product`` dataclass instances or plain
-    dicts (as produced by ``ws_api._search_products_sync``). Missing optional
-    fields default to an empty string. Extra fields are dropped.
+    dicts (as produced by the scraperlib search). Missing optional fields
+    default to an empty string. Extra fields are dropped.
     """
     shaped: list[dict[str, str]] = []
     for item in raw:

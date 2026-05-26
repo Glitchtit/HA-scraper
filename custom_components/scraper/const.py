@@ -2,9 +2,9 @@
 
 DOMAIN = "scraper"
 
-# Sidebar panel
-PANEL_TITLE = "Scraper"
-PANEL_ICON = "mdi:barcode-scan"
+# Legacy sidebar-panel URL path. The panel itself is no longer registered
+# (the add-on's ingress panel is canonical); kept only so setup can remove a
+# stale panel left by older versions.
 PANEL_URL = "scraper"
 
 # Config-entry data keys (required, set during initial config flow)
