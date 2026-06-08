@@ -2089,6 +2089,109 @@ class TestMultiStoreUpdateFallback:
         storage_instance.update_product.assert_called_once()
 
 
+class TestUpdatePrices:
+    """Prices are fetched via the kr-api backend and written as unit_price."""
+
+    @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://flaresolverr:8191"})
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_update_writes_unit_price_from_krapi(
+        self, MockScraper, MockStorage, mock_skaupat,
+    ):
+        from addon.main import _update_products
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Pirkka kevytmaito", "unit_price": None},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "123"},
+        ]
+
+        # Build order in _update_products: name scraper (GraphQL, no price)
+        # first, then the kr-api price scraper (use_graphql=False) which carries
+        # the mobilescan price.
+        scrapers_built: list[dict] = []
+
+        def make_scraper(**kwargs):
+            scrapers_built.append(kwargs)
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            if kwargs.get("use_graphql", True):
+                s.search.return_value = iter([Product(name="Pirkka kevytmaito", ean="123")])
+            else:
+                s.search.return_value = iter([
+                    Product(name="Pirkka kevytmaito", ean="123", price=1.35),
+                ])
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        args = Namespace(
+            store="K532",
+            storage_url="https://storage.example.com",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+        )
+        rc = _update_products(args)
+
+        assert rc == 0
+        # A price scraper (use_graphql=False) was created.
+        assert any(k.get("use_graphql") is False for k in scrapers_built)
+        storage_instance.update_product.assert_called_once()
+        _, kwargs = storage_instance.update_product.call_args
+        assert kwargs["unit_price"] == 1.35
+        assert kwargs["unit_price_currency"] == "EUR"
+
+    @patch.dict("os.environ", {}, clear=False)
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_no_cf_bypass_skips_price_scrapers(
+        self, MockScraper, MockStorage, mock_skaupat,
+    ):
+        import os
+        from addon.main import _update_products
+
+        # Ensure no CF bypass is configured.
+        os.environ.pop("FLARESOLVERR_URL", None)
+        os.environ.pop("CF_CLEARANCE", None)
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Old Milk", "unit_price": None},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "123"},
+        ]
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            s.search.return_value = iter([Product(name="New Milk", ean="123")])
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        args = Namespace(
+            store="K532",
+            storage_url="https://storage.example.com",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+        )
+        rc = _update_products(args)
+
+        assert rc == 0
+        # Only the single GraphQL name scraper is built — no price scraper.
+        assert MockScraper.call_count == 1
+        # Name still updated, but no price written.
+        _, kwargs = storage_instance.update_product.call_args
+        assert "unit_price" not in kwargs
+
+
 # ---------------------------------------------------------------------------
 # --optimize flag
 # ---------------------------------------------------------------------------

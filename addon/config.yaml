@@ -1,5 +1,5 @@
 name: "Scraper"
-version: "2.1.6"
+version: "2.2.0"
 slug: "scraper"
 description: "Scrapes k-ruoka.fi for Finnish food products and populates HA-Storage."
 url: "https://github.com/Glitchtit/HA-scraper"
@@ -21,7 +21,7 @@ map:
   - config:ro
 options:
   storage_hostname: ""
-  store_id: "N110"
+  store_id: "K532"
   upload_images: true
   use_graphql: true
   flaresolverr_url: ""

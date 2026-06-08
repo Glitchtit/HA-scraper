@@ -234,6 +234,60 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _cf_bypass_configured() -> bool:
+    """Return True if a Cloudflare bypass is configured for the kr-api backend.
+
+    K-Ruoka prices are only exposed by the Cloudflare-protected kr-api backend
+    (the default GraphQL backend has none), so price lookups require either a
+    FlareSolverr instance or a pre-supplied ``cf_clearance`` cookie.
+    """
+    return bool(os.environ.get("FLARESOLVERR_URL") or os.environ.get("CF_CLEARANCE"))
+
+
+def _make_price_scrapers(store_ids: list[str]) -> list[KRuokaScraper]:
+    """Build kr-api (price-capable) scrapers, one per store.
+
+    Returns an empty list when no Cloudflare bypass is configured — callers
+    then skip price lookups entirely.  Each scraper opens a CF-cleared session
+    once (e.g. one FlareSolverr solve) and is reused across all EAN lookups.
+    """
+    if not _cf_bypass_configured():
+        logger.info(
+            "No Cloudflare bypass configured (FLARESOLVERR_URL / CF_CLEARANCE); "
+            "skipping K-Ruoka price lookups. Set flaresolverr_url in the add-on "
+            "options to enable prices."
+        )
+        return []
+    scrapers: list[KRuokaScraper] = []
+    for sid in store_ids:
+        try:
+            scrapers.append(KRuokaScraper(store_id=sid, use_graphql=False))
+        except Exception as exc:  # pragma: no cover - network/CF setup issues
+            logger.warning("Could not initialise price scraper for store %s: %s", sid, exc)
+    return scrapers
+
+
+def _lookup_price(price_scrapers: list[KRuokaScraper], ean: str) -> float | None:
+    """Return the K-Ruoka consumer unit price (EUR, VAT incl.) for *ean*.
+
+    Tries each store's kr-api backend in order; returns the first price found,
+    or ``None`` if the product is not stocked / has no price at any store.
+    """
+    if not ean:
+        return None
+    for scraper in price_scrapers:
+        try:
+            for p in scraper.search(ean, max_products=10):
+                if p.ean == ean and p.price is not None:
+                    return p.price
+        except Exception as exc:
+            logger.debug(
+                "Price lookup failed for EAN %s at store %s: %s",
+                ean, scraper.store_id, exc,
+            )
+    return None
+
+
 def sync_product(
     product: Product,
     storage: StorageClient,
@@ -243,10 +297,13 @@ def sync_product(
     skip_existing: bool,
     known_barcodes: set[str],
     upload_images: bool = True,
+    price_scrapers: list[KRuokaScraper] | None = None,
 ) -> bool:
     """Add *product* to Storage.
 
     Returns ``True`` if the product was created/updated, ``False`` if skipped.
+    When *price_scrapers* is provided, the product's K-Ruoka price is looked up
+    by barcode and stored as ``unit_price`` on creation.
     """
     if not product.ean:
         logger.debug("Skipping '%s' – no EAN code.", product.name)
@@ -273,6 +330,15 @@ def sync_product(
         known_barcodes.add(product.ean)
         return False
 
+    # Resolve a K-Ruoka price for this barcode (kr-api only; needs CF bypass).
+    price = product.price
+    if price is None and price_scrapers:
+        price = _lookup_price(price_scrapers, product.ean)
+    price_kwargs: dict = {}
+    if price is not None:
+        price_kwargs["unit_price"] = price
+        price_kwargs["unit_price_currency"] = "EUR"
+
     # Create the product entry.
     try:
         product_id = storage.create_product(
@@ -280,8 +346,15 @@ def sync_product(
             description=product.description,
             location_id=location_id,
             unit_id=quantity_unit_id,
+            **price_kwargs,
         )
-        logger.info("Created product '%s' (Storage product ID %d).", product.name, product_id)
+        if price is not None:
+            logger.info(
+                "Created product '%s' (Storage product ID %d, price %.2f EUR).",
+                product.name, product_id, price,
+            )
+        else:
+            logger.info("Created product '%s' (Storage product ID %d).", product.name, product_id)
     except StorageAPIError as exc:
         logger.error("Failed to create product '%s': %s", product.name, exc)
         return False
@@ -461,6 +534,9 @@ def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
 def _process_products(args: argparse.Namespace, storage: StorageClient | None, known_barcodes: set[str]) -> int:
     """Process scraped products; return 0 on success, 1 if any errors occurred."""
     created = skipped = errors = 0
+    price_scrapers = (
+        _make_price_scrapers(_parse_store_ids(args.store)) if not args.dry_run else []
+    )
 
     for product in _run_scraper(args):
         if args.dry_run:
@@ -480,6 +556,7 @@ def _process_products(args: argparse.Namespace, storage: StorageClient | None, k
                 skip_existing=args.skip_existing,
                 known_barcodes=known_barcodes,
                 upload_images=args.upload_images,
+                price_scrapers=price_scrapers,
             )
         except StorageAPIError as exc:
             logger.error("Storage error for '%s': %s", product.name, exc)
@@ -519,6 +596,7 @@ def _discover_single_barcode(
         KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
         for sid in store_ids
     ]
+    price_scrapers = _make_price_scrapers(store_ids)
 
     # Check if barcode already exists in Storage.
     try:
@@ -600,6 +678,7 @@ def _discover_single_barcode(
             skip_existing=False,
             known_barcodes=known_barcodes,
             upload_images=args.upload_images,
+            price_scrapers=price_scrapers,
         )
     except StorageAPIError as exc:
         logger.error("Storage error for '%s': %s", product.name, exc)
@@ -659,6 +738,7 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
         for sid in store_ids
     ]
+    price_scrapers = _make_price_scrapers(store_ids)
 
     # Pre-load known barcodes.
     known_barcodes: set[str] = set()
@@ -890,6 +970,10 @@ def _update_products(args: argparse.Namespace) -> int:
         KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
         for sid in store_ids
     ]
+    # Prices come only from the Cloudflare-protected kr-api backend, so they are
+    # fetched via a separate set of kr-api scrapers (independent of the GraphQL
+    # name/image lookups above).  Empty when no CF bypass is configured.
+    price_scrapers = _make_price_scrapers(store_ids)
 
     try:
         products = storage.get_all_products()
@@ -997,12 +1081,27 @@ def _update_products(args: argparse.Namespace) -> int:
         if found.description:
             update_fields["description"] = found.description
 
+        # Refresh the K-Ruoka price (kr-api only).  Reuse the price already
+        # attached to *found* when it came from the kr-api backend, otherwise
+        # look it up via the dedicated price scrapers.
+        price = found.price
+        if price is None and price_scrapers:
+            price = _lookup_price(price_scrapers, matched_ean)
+        if price is not None and storage_product.get("unit_price") != price:
+            update_fields["unit_price"] = price
+            update_fields["unit_price_currency"] = "EUR"
+
         if update_fields:
             try:
                 storage.update_product(pid, **update_fields)
                 new_name = update_fields.get("name", current_name)
+                price_note = (
+                    f" (price {update_fields['unit_price']:.2f} EUR)"
+                    if "unit_price" in update_fields else ""
+                )
                 logger.info(
-                    "  Updated product %d: '%s' → '%s'.", pid, current_name, new_name
+                    "  Updated product %d: '%s' → '%s'%s.",
+                    pid, current_name, new_name, price_note,
                 )
             except StorageAPIError as exc:
                 logger.error("  Failed to update product %d ('%s'): %s", pid, current_name, exc)

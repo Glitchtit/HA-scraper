@@ -1,3 +1,8 @@
+## 2.2.0
+- K-Ruoka prices: products now capture the store-specific consumer price and store it as Storage `unit_price` (EUR, VAT incl.). The Update button refreshes prices for all registered products (matched by barcode); Discover and Add also set the price on creation. Prices come from the per-product `mobilescan.pricing.normal` block on the kr-api `v2/product-search` response — the parser now reads the current `result`/`product` wrapper shape and uses the regular price (not short-lived discounts).
+- Prices require the kr-api backend, which is behind Cloudflare, so a bypass must be configured. The `flaresolverr_url` add-on option is now actually exported to the scraper's `FLARESOLVERR_URL` environment variable (previously the option was read but never wired through, so it had no effect). Name/image lookups still use the no-setup GraphQL backend; price lookups use a separate kr-api scraper and are skipped (with a log line) when no FlareSolverr / `cf_clearance` is configured — everything else keeps working.
+- Default `store_id` is now `K532`.
+
 ## 2.1.6
 - The integration no longer registers its own "Scraper" sidebar panel. With both the add-on and this integration installed you got two identical "Scraper" entries in the sidebar — and the integration's bundled `panel.js` was the older, feature-poorer UI (the add-on's ingress panel is the maintained one). The integration keeps its config flow and HA services (`scraper.search_products`, `scraper.add_product`); only the duplicate panel is gone. Setup also removes any stale panel left by an older version, so upgrading clears the duplicate without a full HA restart. Removed the now-dead `ws_api.py` and `www/panel.js` (the WebSocket API existed solely to back that panel — no other consumer).
 

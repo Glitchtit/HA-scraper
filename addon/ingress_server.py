@@ -95,6 +95,22 @@ def _read_options() -> dict[str, Any]:
         return {}
 
 
+def _apply_env_from_options(opts: dict[str, Any]) -> None:
+    """Export option values that the scraper backend reads via ``os.environ``.
+
+    The kr-api backend's Cloudflare bypass reads ``FLARESOLVERR_URL`` from the
+    environment, but add-on options are only delivered as ``/data/options.json``
+    — there is no run-script that exports them.  This bridges the
+    ``flaresolverr_url`` option to the env var so price lookups (kr-api only)
+    actually work.  Idempotent; safe to call before every scraper operation.
+    """
+    flaresolverr_url = str(opts.get("flaresolverr_url", "") or "").strip()
+    if flaresolverr_url:
+        os.environ["FLARESOLVERR_URL"] = flaresolverr_url
+    else:
+        os.environ.pop("FLARESOLVERR_URL", None)
+
+
 _cached_storage_url: str | None = None
 
 
@@ -240,6 +256,7 @@ def _capture_logs() -> Generator[list[dict[str, str]], None, None]:
 
 def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
     """Build an ``argparse.Namespace`` from add-on options."""
+    _apply_env_from_options(opts)
     ns = argparse.Namespace(
         store=opts.get("store_id", ""),
         storage_url=_resolve_storage_url(opts),
@@ -279,6 +296,7 @@ def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
 
     max_products = int(body.get("max_products", 50))
     opts = _read_options()
+    _apply_env_from_options(opts)
 
     try:
         from scraper.scraper import KRuokaScraper
@@ -373,6 +391,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": "No products provided."}
 
     opts = _read_options()
+    _apply_env_from_options(opts)
     storage_url = _resolve_storage_url(opts)
     if not storage_url:
         return {"success": False, "error": "Storage URL must be configured."}
@@ -384,6 +403,10 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
 
     storage = StorageClient(base_url=storage_url)
     upload_images = opts.get("upload_images", True)
+    # Price lookups use the kr-api backend (CF bypass required); empty list
+    # when no FlareSolverr / cf_clearance is configured.
+    store_ids = [s.strip() for s in str(opts.get("store_id", "")).split(",") if s.strip()]
+    price_scrapers = _main._make_price_scrapers(store_ids)
 
     added = 0
     added_ids: list[int] = []
@@ -402,14 +425,23 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                     logger.info("Skipped '%s' – barcode %s already exists.", name, ean)
                     continue
 
+                price_kwargs: dict = {}
+                price = _main._lookup_price(price_scrapers, ean) if ean else None
+                if price is not None:
+                    price_kwargs["unit_price"] = price
+                    price_kwargs["unit_price_currency"] = "EUR"
+
                 product_id = storage.create_product(
                     name,
                     description=description,
                     location_id=None,
                     unit_id=None,
+                    **price_kwargs,
                 )
                 if ean:
                     storage.add_barcode(product_id, ean)
+                if price is not None:
+                    logger.info("  → price %.2f EUR.", price)
                 if upload_images and image_url:
                     product = Product(
                         name=name, ean=ean, description=description,
@@ -1161,6 +1193,7 @@ def _start_storage_health_monitor(interval: float = 30.0) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     opts = _read_options()
+    _apply_env_from_options(opts)
     storage_url = _resolve_storage_url(opts)
     if storage_url:
         _wait_for_storage(storage_url)

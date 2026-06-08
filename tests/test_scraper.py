@@ -715,6 +715,43 @@ class TestParseSearchProduct:
         assert p.name == "Voi"
         assert p.ean == "123"
 
+    def test_unwraps_product_and_extracts_mobilescan_price(self):
+        # Current v2/product-search shape: hit wraps the product under "product"
+        # and carries store-specific pricing in the mobilescan block.
+        item = {
+            "id": "6410405343260",
+            "score": 1.0,
+            "product": {
+                "ean": "6410405343260",
+                "localizedName": {"finnish": "Pirkka suomalainen kevytmaito 1l"},
+                "productAttributes": {
+                    "image": {"url": "https://public.keskofiles.com/f/k-ruoka/product/6410405343260"},
+                },
+                "mobilescan": {
+                    "pricing": {
+                        "normal": {"price": 1.35, "unitPrice": {"value": 1.35, "unit": "l"}},
+                        "discount": {"price": 0.99},
+                    },
+                    "vat": 13.5,
+                },
+            },
+        }
+        p = KRuokaScraper._parse_search_product(item)
+        assert p is not None
+        assert p.name == "Pirkka suomalainen kevytmaito 1l"
+        assert p.ean == "6410405343260"
+        # Regular price wins over the short-lived discount price.
+        assert p.price == 1.35
+        assert p.comparison_price == 1.35
+        assert p.comparison_unit == "l"
+        assert p.image_url.endswith("6410405343260")
+
+    def test_no_pricing_leaves_price_none(self):
+        item = _kr_make_search_item("Maito", "1234567890123")
+        p = KRuokaScraper._parse_search_product(item)
+        assert p is not None
+        assert p.price is None
+
 
 # ---------------------------------------------------------------------------
 # _extract_search_results (kr-api – regression)
@@ -735,6 +772,10 @@ class TestExtractSearchResults:
 
     def test_bare_list(self):
         assert KRuokaScraper._extract_search_results([{"ean": "D"}]) == [{"ean": "D"}]  # type: ignore[arg-type]
+
+    def test_result_singular_key(self):
+        # The live v2/product-search response uses the singular "result" key.
+        assert KRuokaScraper._extract_search_results({"result": [{"ean": "E"}]}) == [{"ean": "E"}]
 
     def test_empty_on_unknown_shape(self):
         assert KRuokaScraper._extract_search_results({"unknown": "val"}) == []
