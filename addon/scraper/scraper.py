@@ -196,7 +196,43 @@ class Product:
     product_id: str = ""
     description: str = ""
     image_url: str = ""
+    # Store-specific consumer price (VAT incl., EUR) and the comparison price
+    # (e.g. €/l or €/kg).  Only the kr-api REST backend exposes pricing, via the
+    # per-product ``mobilescan`` block; the GraphQL backend leaves these ``None``.
+    price: Optional[float] = None
+    comparison_price: Optional[float] = None
+    comparison_unit: str = ""
     extra: dict = field(default_factory=dict)
+
+
+def _parse_mobilescan_pricing(
+    product: dict,
+) -> tuple[Optional[float], Optional[float], str]:
+    """Extract the normal (non-discount) price from a kr-api ``mobilescan`` block.
+
+    The kr-api ``v2/product-search`` / product-set endpoints attach a
+    store-specific ``mobilescan.pricing.normal`` object::
+
+        "mobilescan": {"pricing": {"normal": {
+            "price": 1.54,
+            "unitPrice": {"value": 1.54, "unit": "l", "contentSize": 1}
+        }}, "vat": 13.5}
+
+    Returns ``(price, comparison_price, comparison_unit)``; any missing value is
+    ``None`` / ``""``.  The regular price is used (not ``discount``) so the
+    stored value is stable across short-lived campaigns.
+    """
+    pricing = (product.get("mobilescan") or {}).get("pricing") or {}
+    normal = pricing.get("normal") or {}
+    price = normal.get("price")
+    unit_price = normal.get("unitPrice") or {}
+    comp = unit_price.get("value")
+    comp_unit = unit_price.get("unit") or ""
+    return (
+        float(price) if isinstance(price, (int, float)) else None,
+        float(comp) if isinstance(comp, (int, float)) else None,
+        str(comp_unit),
+    )
 
 
 def _normalize_ean(ean: str) -> str:
@@ -802,7 +838,9 @@ class KRuokaScraper:
         """Return the list of product dicts from a kr-api product-search response."""
         if isinstance(data, list):
             return data
-        for key in ("results", "products", "items", "data"):
+        # ``result`` (singular) is the current ``v2/product-search`` shape;
+        # the others are kept for older/alternative endpoints.
+        for key in ("result", "results", "products", "items", "data"):
             if isinstance(data.get(key), list):
                 return data[key]
         return []
@@ -817,7 +855,16 @@ class KRuokaScraper:
 
     @staticmethod
     def _parse_search_product(item: dict) -> Optional[Product]:
-        """Parse a product from a kr-api ``/v2/product-search`` result item."""
+        """Parse a product from a kr-api ``/v2/product-search`` result item.
+
+        The current API wraps each hit as ``{"id", "product": {...}, "score",
+        ...}``; older shapes placed the product fields at the top level, so the
+        ``product`` sub-object is unwrapped defensively.  Store-specific pricing
+        is read from the ``mobilescan`` block when present.
+        """
+        if isinstance(item.get("product"), dict):
+            item = item["product"]
+
         localized = item.get("localizedName") or {}
         name: str = (
             (localized.get("finnish") or localized.get("fi") or "")
@@ -827,12 +874,14 @@ class KRuokaScraper:
             or ""
         ).strip()
 
+        attrs = item.get("productAttributes") or {}
         ean: str = _normalize_ean(
             item.get("ean")
             or item.get("EAN")
             or item.get("barcode")
             or item.get("eanCode")
             or item.get("gtin")
+            or attrs.get("ean")
             or ""
         )
 
@@ -842,13 +891,17 @@ class KRuokaScraper:
         product_id = str(item.get("id") or item.get("productId") or "")
 
         images = item.get("images") or []
+        attr_image = (attrs.get("image") or {}).get("url") or ""
         image_url = (
             item.get("imageUrl")
             or item.get("image")
             or (images[0] if images else "")
+            or attr_image
         )
 
         description = (item.get("description") or "").strip()
+
+        price, comp_price, comp_unit = _parse_mobilescan_pricing(item)
 
         return Product(
             name=name,
@@ -856,6 +909,9 @@ class KRuokaScraper:
             product_id=product_id,
             description=description,
             image_url=image_url,
+            price=price,
+            comparison_price=comp_price,
+            comparison_unit=comp_unit,
             extra=item,
         )
 
@@ -905,11 +961,26 @@ class KRuokaScraper:
             label_name.get("fi") or label_name.get("en") or ""
         ).strip()
 
+        # Offer items carry their regular price in ``normalPricing`` (the
+        # ``pricing`` block holds the campaign/discount price); prefer the
+        # ``mobilescan`` block on the inner product when available.
+        price, comp_price, comp_unit = _parse_mobilescan_pricing(inner)
+        if price is None:
+            normal_pricing = offer.get("normalPricing") or {}
+            np_price = normal_pricing.get("price")
+            if isinstance(np_price, (int, float)):
+                price = float(np_price)
+                np_unit = normal_pricing.get("unit") or {}
+                comp_unit = np_unit.get("fi") or comp_unit
+
         return Product(
             name=name,
             ean=ean,
             product_id=product_id,
             description=description,
             image_url=image_url,
+            price=price,
+            comparison_price=comp_price,
+            comparison_unit=comp_unit,
             extra=offer,
         )
