@@ -186,6 +186,9 @@ _REQUEST_DELAY = 0.5
 _KRAPI_MIN_INTERVAL = float(os.environ.get("KRAPI_MIN_INTERVAL", "1.0"))
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BACKOFF = 5.0  # base backoff (s) when no Retry-After header
+# Cloudflare sometimes demands hours via Retry-After; sleeping that long
+# would stall a whole catalogue run, so cap and give up via retries instead.
+_RATE_LIMIT_BACKOFF_MAX = 120.0
 
 
 class _KrApiThrottle:
@@ -221,10 +224,10 @@ def _retry_after_seconds(response, attempt: int) -> float:
     try:
         header = (response.headers or {}).get("Retry-After", "")
         if header:
-            return max(float(header), 1.0)
+            return min(max(float(header), 1.0), _RATE_LIMIT_BACKOFF_MAX)
     except (AttributeError, TypeError, ValueError):
         pass
-    return _RATE_LIMIT_BACKOFF * (2 ** attempt)
+    return min(_RATE_LIMIT_BACKOFF * (2 ** attempt), _RATE_LIMIT_BACKOFF_MAX)
 
 
 def _api_headers() -> dict:
@@ -358,9 +361,19 @@ def _make_graphql_session() -> requests.Session:
     return session
 
 
+def _flaresolverr_endpoint(base_url: str) -> str:
+    """Return the FlareSolverr API endpoint for a configured base URL.
+
+    The API lives at ``/v1``; the service root only accepts GET (POST gets
+    HTTP 405), so accept both ``http://host:8191`` and ``…:8191/v1``.
+    """
+    base = base_url.rstrip("/")
+    return base if base.endswith("/v1") else f"{base}/v1"
+
+
 def _resolve_cf_flaresolverr(site_url: str) -> tuple[dict, str]:
     """Obtain Cloudflare clearance cookies via a local FlareSolverr instance."""
-    flaresolverr_url = os.environ["FLARESOLVERR_URL"]
+    flaresolverr_url = _flaresolverr_endpoint(os.environ["FLARESOLVERR_URL"])
     logger.info("Resolving CF via FlareSolverr at %s …", flaresolverr_url)
     resp = requests.post(
         flaresolverr_url,
@@ -404,6 +417,13 @@ def _build_krapi_session(cf_cookies: dict, user_agent: str) -> requests.Session:
     return session
 
 
+# One CF clearance is valid for every kr-api session in this process, so
+# resolve it once and share — an --update run builds one scraper per store
+# and would otherwise hit FlareSolverr once per store.
+_cf_solution_lock = threading.Lock()
+_cf_solution: Optional[tuple[dict, str]] = None
+
+
 def _make_krapi_session() -> requests.Session:
     """Build an authenticated kr-api session, trying all CF bypass strategies.
 
@@ -414,12 +434,16 @@ def _make_krapi_session() -> requests.Session:
     3. curl_cffi TLS impersonation without cookies.
     4. Plain ``requests.Session`` (will likely get HTTP 403).
     """
+    global _cf_solution
     site_url = f"{_BASE_URL}/kauppa"
     impersonate = os.environ.get("CURL_CFFI_IMPERSONATE", _DEFAULT_IMPERSONATE)
 
     if os.environ.get("FLARESOLVERR_URL"):
         try:
-            cookies, ua = _resolve_cf_flaresolverr(site_url)
+            with _cf_solution_lock:
+                if _cf_solution is None:
+                    _cf_solution = _resolve_cf_flaresolverr(site_url)
+                cookies, ua = _cf_solution
             return _build_krapi_session(cookies, ua)
         except Exception as exc:
             logger.warning("FlareSolverr bypass failed: %s", exc)

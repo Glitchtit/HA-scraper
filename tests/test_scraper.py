@@ -1287,3 +1287,63 @@ class TestKrApiRateLimiting:
         throttle.wait()
 
         assert any(sl >= 29 for sl in sleeps)
+
+
+# ---------------------------------------------------------------------------
+# FlareSolverr endpoint normalization & backoff cap
+# ---------------------------------------------------------------------------
+
+class TestFlareSolverrEndpoint:
+    def test_bare_host_gets_v1_appended(self):
+        from scraper.scraper import _flaresolverr_endpoint
+        assert _flaresolverr_endpoint("http://192.168.50.111:8191") == \
+            "http://192.168.50.111:8191/v1"
+
+    def test_trailing_slash_stripped(self):
+        from scraper.scraper import _flaresolverr_endpoint
+        assert _flaresolverr_endpoint("http://host:8191/") == "http://host:8191/v1"
+
+    def test_existing_v1_kept(self):
+        from scraper.scraper import _flaresolverr_endpoint
+        assert _flaresolverr_endpoint("http://host:8191/v1") == "http://host:8191/v1"
+
+    def test_resolve_posts_to_v1(self, monkeypatch):
+        """_resolve_cf_flaresolverr must hit the /v1 API endpoint even when
+        FLARESOLVERR_URL is configured as the bare root (which 405s on POST)."""
+        from scraper.scraper import _resolve_cf_flaresolverr
+
+        monkeypatch.setenv("FLARESOLVERR_URL", "http://192.168.50.111:8191")
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = {
+            "status": "ok",
+            "solution": {
+                "cookies": [{"name": "cf_clearance", "value": "x"}],
+                "userAgent": "UA",
+            },
+        }
+        post = MagicMock(return_value=resp)
+        monkeypatch.setattr("scraper.scraper.requests.post", post)
+
+        cookies, ua = _resolve_cf_flaresolverr("https://www.k-ruoka.fi/kauppa")
+
+        assert cookies == {"cf_clearance": "x"}
+        called_url = post.call_args[0][0]
+        assert called_url.endswith("/v1")
+
+
+class TestRetryAfterCap:
+    def test_huge_retry_after_is_capped(self):
+        """Cloudflare can send absurd Retry-After values (hours); cap them."""
+        from scraper.scraper import _retry_after_seconds, _RATE_LIMIT_BACKOFF_MAX
+
+        resp = MagicMock()
+        resp.headers = {"Retry-After": "6188"}
+        assert _retry_after_seconds(resp, 0) == _RATE_LIMIT_BACKOFF_MAX
+
+    def test_small_retry_after_used_as_is(self):
+        from scraper.scraper import _retry_after_seconds
+
+        resp = MagicMock()
+        resp.headers = {"Retry-After": "7"}
+        assert _retry_after_seconds(resp, 0) == 7.0

@@ -1,3 +1,8 @@
+## 2.4.1
+- FlareSolverr URL is normalized to the `/v1` API endpoint, so `flaresolverr_url` works with or without the path (the bare root only accepts GET and answered POST with 405, silently disabling the Cloudflare bypass).
+- The Cloudflare clearance is resolved once per run and shared by all per-store kr-api sessions instead of hitting FlareSolverr once per store.
+- 429 backoff is capped at 120 s — Cloudflare's Retry-After can demand hours (observed 6188 s), which previously stalled the whole run.
+
 ## 2.4.0
 - SearXNG lookups no longer accept junk titles that are just the barcode plus a site domain (e.g. `8002270626883 - world.openfoodfacts.org` from OpenFoodFacts pages for unnamed products). Such results fall through to the image-only fallback.
 - `--update` treats SearXNG web-search names as low-confidence: they can fill in placeholder names (`Unknown product (…)`, bare barcodes) but never overwrite an existing real product name. K-Ruoka and S-kaupat hits keep full overwrite rights.

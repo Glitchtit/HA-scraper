@@ -24,5 +24,5 @@ def _fresh_krapi_throttle():
 
     with patch.object(
         scraper_mod, "_krapi_throttle", scraper_mod._KrApiThrottle(min_interval=0)
-    ):
+    ), patch.object(scraper_mod, "_cf_solution", None):
         yield
