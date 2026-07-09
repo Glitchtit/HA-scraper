@@ -1,5 +1,4 @@
 ## 2.3.1
-
 - Products added via the ingress UI / HA-stock quick-add now record per-store availability (and reuse the sweep for the price lookup), same as the discover and --update flows.
 
 ## 2.3.0
