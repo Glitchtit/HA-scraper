@@ -14,6 +14,7 @@ import requests
 from scraper.scraper import (
     KRuokaScraper,
     Product,
+    StoreAvailability,
     _PRODUCT_CATEGORY_SLUGS,
     _normalize_ean,
 )
@@ -983,3 +984,129 @@ class TestMultiStoreSearch:
             list(sc.search("x"))
 
         assert sc.store_id == "A"
+
+
+# ---------------------------------------------------------------------------
+# check_store_availability
+# ---------------------------------------------------------------------------
+
+class TestCheckStoreAvailability:
+    def test_graphql_found(self):
+        session = _make_mock_session(
+            [_gql_page([_gql_product("Pirkka kevytmaito 1l", "6410405082657")], 1)]
+        )
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        result = s.check_store_availability("6410405082657")
+        assert result == [StoreAvailability(store_id="N110", available=True)]
+
+    def test_graphql_not_found_reports_unavailable(self):
+        session = _make_mock_session([_gql_page([], 0)])
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        result = s.check_store_availability("6410405082657")
+        assert result == [StoreAvailability(store_id="N110", available=False)]
+
+    def test_graphql_error_omits_store(self):
+        import requests as _requests
+        session = _make_mock_session([_requests.ConnectionError("boom")])
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        assert s.check_store_availability("6410405082657") == []
+
+    def test_multi_store_sweep_mixed(self):
+        import requests as _requests
+        session = _make_mock_session([
+            _gql_page([_gql_product("Maito", "6410405082657")], 1),  # N110: hit
+            _gql_page([], 0),                                          # K532: miss
+            _requests.ConnectionError("down"),                        # N137: error
+        ])
+        s = KRuokaScraper(store_id="N110,K532,N137", session=session, request_delay=0)
+        result = s.check_store_availability("6410405082657")
+        assert result == [
+            StoreAvailability(store_id="N110", available=True),
+            StoreAvailability(store_id="K532", available=False),
+        ]
+        # store_id must be restored after the sweep
+        assert s.store_id == "N110"
+
+    def test_graphql_assortment_ean_list_matches(self):
+        item = _gql_assortment("Pirkka maito", ["6410405082657", "6410405082664"])
+        session = _make_mock_session([_gql_page([item], 1)])
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        # The target EAN is the assortment's SECOND ean → still a match.
+        result = s.check_store_availability("6410405082664")
+        assert result[0].available is True
+
+    def test_normalizes_padded_ean(self):
+        session = _make_mock_session(
+            [_gql_page([_gql_product("Tuote", "90493508")], 1)]
+        )
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        result = s.check_store_availability("0000090493508")
+        assert result[0].available is True
+
+    def test_krapi_found_with_price(self):
+        item = _kr_make_search_item("Maito", "6410405082657")
+        item["mobilescan"] = {"pricing": {"normal": {
+            "price": 2.35,
+            "unitPrice": {"value": 2.35, "unit": "l"},
+        }}}
+        session = _make_mock_session([_kr_search_page([item], 1)])
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        result = s.check_store_availability("6410405082657")
+        assert result == [StoreAvailability(store_id="N110", available=True,
+                                            price=2.35, price_currency="EUR")]
+
+    def test_krapi_not_found(self):
+        session = _make_mock_session([_kr_search_page([], 0)])
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        result = s.check_store_availability("6410405082657")
+        assert result == [StoreAvailability(store_id="N110", available=False)]
+
+    def test_empty_ean_returns_empty(self):
+        session = _make_mock_session([])
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        assert s.check_store_availability("") == []
+
+
+# ---------------------------------------------------------------------------
+# fetch_store_name
+# ---------------------------------------------------------------------------
+
+class TestFetchStoreName:
+    def test_graphql_backend_returns_none(self):
+        session = _make_mock_session([])
+        s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        assert s.fetch_store_name("N110") is None
+
+    def test_krapi_store_search_match(self):
+        session = _make_mock_session([
+            {"stores": [
+                {"id": "N106", "name": "K-Citymarket Iso Omena"},
+                {"id": "N110", "name": "K-Citymarket Kupittaa"},
+            ]}
+        ])
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        assert s.fetch_store_name("N110") == "K-Citymarket Kupittaa"
+
+    def test_krapi_localized_name_shape(self):
+        session = _make_mock_session([
+            [{"id": "N110", "localizedName": {"finnish": "K-Citymarket Kupittaa"}}]
+        ])
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        assert s.fetch_store_name("N110") == "K-Citymarket Kupittaa"
+
+    def test_krapi_error_returns_none(self):
+        import requests as _requests
+        session = _make_mock_session([_requests.ConnectionError("cf")])
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        assert s.fetch_store_name("N110") is None
+
+    def test_no_match_returns_none(self):
+        session = _make_mock_session([{"stores": [{"id": "K532", "name": "X"}]}])
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        assert s.fetch_store_name("N110") is None
