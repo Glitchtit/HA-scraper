@@ -38,6 +38,7 @@ import posixpath
 import re
 import sys
 import time
+from pathlib import Path
 
 try:
     from dotenv import load_dotenv
@@ -669,10 +670,9 @@ def _process_products(args: argparse.Namespace, storage: StorageClient | None, k
 
     avail_scrapers: list[KRuokaScraper] = []
     if not args.dry_run:
-        avail_scrapers = list(price_scrapers)
-        if not avail_scrapers:
-            avail_scrapers = [KRuokaScraper(store_id=args.store,
-                                            use_graphql=args.use_graphql)]
+        # Availability via GraphQL only — kr-api is reserved for prices.
+        avail_scrapers = [KRuokaScraper(store_id=args.store,
+                                        use_graphql=args.use_graphql)]
         _register_stores(storage, store_ids, price_scrapers)
 
     for product in _run_scraper(args):
@@ -735,7 +735,9 @@ def _discover_single_barcode(
         for sid in store_ids
     ]
     price_scrapers = _make_price_scrapers(store_ids)
-    avail_scrapers: list[KRuokaScraper] = list(price_scrapers) or scrapers
+    # Availability is answerable by the un-throttled GraphQL backend;
+    # reserve the rate-limited kr-api strictly for price lookups.
+    avail_scrapers: list[KRuokaScraper] = scrapers
     _register_stores(storage, store_ids, price_scrapers)
 
     # Check if barcode already exists in Storage.
@@ -880,7 +882,9 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         for sid in store_ids
     ]
     price_scrapers = _make_price_scrapers(store_ids)
-    avail_scrapers: list[KRuokaScraper] = list(price_scrapers) or scrapers
+    # Availability is answerable by the un-throttled GraphQL backend;
+    # reserve the rate-limited kr-api strictly for price lookups.
+    avail_scrapers: list[KRuokaScraper] = scrapers
     _register_stores(storage, store_ids, price_scrapers)
 
     # Pre-load known barcodes.
@@ -1099,6 +1103,57 @@ def _delete_all_products(storage: StorageClient) -> int:
     return 0 if errors == 0 else 1
 
 
+# --------------------------------------------------------------------------
+# Price refresh budget — kr-api is rate limited, so --update refreshes at
+# most KRAPI_PRICE_BUDGET products per run, oldest-refreshed first, skipping
+# products refreshed within KRAPI_PRICE_TTL_DAYS.  State lives in /data so
+# rotation survives restarts.
+# --------------------------------------------------------------------------
+
+def _price_ttl_seconds() -> float:
+    return float(os.environ.get("KRAPI_PRICE_TTL_DAYS", "3")) * 86400
+
+
+def _price_budget() -> int:
+    return int(os.environ.get("KRAPI_PRICE_BUDGET", "200"))
+
+
+def _price_state_path() -> Path:
+    return Path(os.environ.get("SCRAPER_STATE_DIR", "/data")) / "price_refresh.json"
+
+
+def _load_price_state() -> dict[str, float]:
+    """product_id (str) → unix time of last kr-api price refresh."""
+    try:
+        data = json.loads(_price_state_path().read_text())
+        return {str(k): float(v) for k, v in data.items()}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _save_price_state(state: dict[str, float]) -> None:
+    """Best-effort persist — never raises."""
+    try:
+        _price_state_path().write_text(json.dumps(state))
+    except OSError:
+        pass
+
+
+def _select_price_refresh_ids(
+    products: list[dict], state: dict[str, float], now: float,
+) -> tuple[set[int], int]:
+    """Pick up to the budget of stale products, oldest-refreshed first.
+
+    Returns ``(selected_ids, deferred_count)`` where *deferred_count* is the
+    number of stale products that didn't fit in this run's budget.
+    """
+    ttl = _price_ttl_seconds()
+    stale = [p for p in products if now - state.get(str(p["id"]), 0.0) >= ttl]
+    stale.sort(key=lambda p: state.get(str(p["id"]), 0.0))
+    selected = {int(p["id"]) for p in stale[:_price_budget()]}
+    return selected, max(0, len(stale) - len(selected))
+
+
 def _is_placeholder_name(name: str) -> bool:
     """True for names that carry no real product information.
 
@@ -1132,7 +1187,9 @@ def _update_products(args: argparse.Namespace) -> int:
     # fetched via a separate set of kr-api scrapers (independent of the GraphQL
     # name/image lookups above).  Empty when no CF bypass is configured.
     price_scrapers = _make_price_scrapers(store_ids)
-    avail_scrapers: list[KRuokaScraper] = list(price_scrapers) or scrapers
+    # Availability is answerable by the un-throttled GraphQL backend;
+    # reserve the rate-limited kr-api strictly for price lookups.
+    avail_scrapers: list[KRuokaScraper] = scrapers
     _register_stores(storage, store_ids, price_scrapers)
 
     try:
@@ -1162,6 +1219,20 @@ def _update_products(args: argparse.Namespace) -> int:
     logger.info("Updating %d product(s) from K-Ruoka / S-kaupat …", len(products))
     updated = skipped = errors = 0
     max_products = getattr(args, "max_products", None)
+
+    # kr-api price lookups are budgeted per run (rate-limit avoidance).
+    price_state = _load_price_state()
+    now = time.time()
+    price_refresh_ids: set[int] = set()
+    if price_scrapers:
+        price_refresh_ids, deferred = _select_price_refresh_ids(
+            products, price_state, now,
+        )
+        if deferred:
+            logger.info(
+                "Price refresh budget (%d) reached — %d stale product(s) "
+                "deferred to a later run.", _price_budget(), deferred,
+            )
 
     for storage_product in products:
         if max_products is not None and updated >= max_products:
@@ -1243,6 +1314,11 @@ def _update_products(args: argparse.Namespace) -> int:
             avail_entries = _collect_availability(avail_ean, avail_scrapers)
             _write_availability(storage, pid, avail_entries)
 
+        # Consume this product's budget slot even if it isn't found online,
+        # so unfound products rotate out instead of re-selecting every run.
+        if pid in price_refresh_ids:
+            price_state[str(pid)] = now
+
         if found is None:
             logger.debug("  Product %d ('%s') not found online – skipping.", pid, current_name)
             skipped += 1
@@ -1269,7 +1345,7 @@ def _update_products(args: argparse.Namespace) -> int:
         price = found.price
         if price is None:
             price = _price_from_entries(avail_entries)
-        if price is None and price_scrapers:
+        if price is None and price_scrapers and pid in price_refresh_ids:
             price = _lookup_price(price_scrapers, matched_ean)
         if price is not None and storage_product.get("unit_price") != price:
             update_fields["unit_price"] = price
@@ -1300,6 +1376,7 @@ def _update_products(args: argparse.Namespace) -> int:
 
         updated += 1
 
+    _save_price_state(price_state)
     logger.info(
         "--update complete: updated: %d  skipped: %d  errors: %d",
         updated, skipped, errors,

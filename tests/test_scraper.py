@@ -1263,9 +1263,10 @@ class TestKrApiRateLimiting:
 
         throttle = _KrApiThrottle(min_interval=1.0)
         throttle.wait()   # first request: no wait
-        throttle.wait()   # second request: must wait ~1s
+        throttle.wait()   # second request: must wait one (jittered) interval
 
-        assert sleeps and abs(sum(sleeps) - 1.0) < 0.01
+        # Jitter is 0.7–1.5× the base interval.
+        assert sleeps and 0.7 <= sum(sleeps) <= 1.5
 
     def test_throttle_penalty_delays_next_request(self, monkeypatch):
         """A 429 penalty pushes back the next allowed request time."""
@@ -1347,3 +1348,127 @@ class TestRetryAfterCap:
         resp = MagicMock()
         resp.headers = {"Retry-After": "7"}
         assert _retry_after_seconds(resp, 0) == 7.0
+
+
+# ---------------------------------------------------------------------------
+# kr-api circuit breaker
+# ---------------------------------------------------------------------------
+
+class TestKrApiCircuitBreaker:
+    def _scraper(self, session: MagicMock) -> KRuokaScraper:
+        return KRuokaScraper(
+            store_id="N110", session=session, request_delay=0, use_graphql=False
+        )
+
+    def test_circuit_opens_after_consecutive_429_exhaustion(self, monkeypatch):
+        """After 3 requests exhaust their 429 retries, further requests are
+        skipped without touching the network."""
+        monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.post.return_value = _make_429_response()
+
+        s = self._scraper(session)
+        for _ in range(3):
+            assert s._post_json("https://www.k-ruoka.fi/kr-api/x", None) is None
+        calls_before = session.post.call_count
+
+        # Circuit is now open: no further network calls.
+        assert s._post_json("https://www.k-ruoka.fi/kr-api/x", None) is None
+        assert session.post.call_count == calls_before
+
+    def test_success_resets_consecutive_counter(self, monkeypatch):
+        monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        # 2 exhausted-429 requests, then a success, then 2 more failures:
+        # circuit must NOT open (streak broken).
+        responses = (
+            [_make_429_response()] * 8      # 2 requests x (1+3 retries)
+            + [_make_ok_response({"ok": 1})]
+            + [_make_429_response()] * 8
+        )
+        session.post.side_effect = responses
+
+        s = self._scraper(session)
+        s._post_json("u", None)
+        s._post_json("u", None)
+        assert s._post_json("u", None) == {"ok": 1}
+        s._post_json("u", None)
+        s._post_json("u", None)
+        # 17 network calls happened -> circuit never opened mid-way.
+        assert session.post.call_count == 17
+
+    def test_circuit_recloses_after_cooldown(self, monkeypatch):
+        from scraper.scraper import _KrApiCircuit
+
+        clock = {"now": 0.0}
+        monkeypatch.setattr("scraper.scraper.time.monotonic", lambda: clock["now"])
+
+        c = _KrApiCircuit(threshold=1, cooldown=60.0)
+        c.record_failure()
+        assert c.is_open()
+        clock["now"] = 61.0
+        assert not c.is_open()
+
+
+# ---------------------------------------------------------------------------
+# Throttle jitter
+# ---------------------------------------------------------------------------
+
+class TestThrottleJitter:
+    def test_intervals_are_jittered(self, monkeypatch):
+        """Consecutive waits should not be a fixed cadence."""
+        from scraper.scraper import _KrApiThrottle
+
+        clock = {"now": 0.0}
+        sleeps: list[float] = []
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            clock["now"] += s
+
+        monkeypatch.setattr("scraper.scraper.time.monotonic", lambda: clock["now"])
+        monkeypatch.setattr("scraper.scraper.time.sleep", fake_sleep)
+
+        throttle = _KrApiThrottle(min_interval=2.0)
+        for _ in range(8):
+            throttle.wait()
+
+        gaps = sleeps  # each wait after the first sleeps one gap
+        assert len(gaps) >= 7
+        assert len({round(g, 3) for g in gaps}) > 1, "gaps look metronomic"
+        assert all(1.0 <= g <= 3.5 for g in gaps)
+
+
+# ---------------------------------------------------------------------------
+# CF clearance persistence
+# ---------------------------------------------------------------------------
+
+class TestCfClearancePersistence:
+    def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
+        from scraper.scraper import _load_cached_cf, _save_cached_cf
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        _save_cached_cf({"cf_clearance": "tok"}, "UA-string")
+        loaded = _load_cached_cf()
+        assert loaded == ({"cf_clearance": "tok"}, "UA-string")
+
+    def test_expired_cache_ignored(self, tmp_path, monkeypatch):
+        import json as _json
+        from scraper.scraper import _load_cached_cf
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        (tmp_path / "cf_clearance.json").write_text(_json.dumps({
+            "cookies": {"cf_clearance": "old"},
+            "user_agent": "UA",
+            "saved_at": 1000.0,  # ancient wall-clock time
+        }))
+        assert _load_cached_cf() is None
+
+    def test_missing_dir_is_harmless(self, monkeypatch):
+        from scraper.scraper import _load_cached_cf, _save_cached_cf
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", "/nonexistent/nope")
+        _save_cached_cf({"cf_clearance": "x"}, "UA")  # must not raise
+        assert _load_cached_cf() is None

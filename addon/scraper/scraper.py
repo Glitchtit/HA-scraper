@@ -46,10 +46,13 @@ Relevant environment variables
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import random
 import threading
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 from urllib.parse import urlencode
@@ -183,16 +186,25 @@ _REQUEST_DELAY = 0.5
 # rate-limits aggressively (HTTP 429) when hit back-to-back for several
 # stores per EAN across a whole catalogue update, so all kr-api requests —
 # across every KRuokaScraper instance — share one minimum interval.
-_KRAPI_MIN_INTERVAL = float(os.environ.get("KRAPI_MIN_INTERVAL", "1.0"))
+_KRAPI_MIN_INTERVAL = float(os.environ.get("KRAPI_MIN_INTERVAL", "2.0"))
 _RATE_LIMIT_MAX_RETRIES = 3
 _RATE_LIMIT_BACKOFF = 5.0  # base backoff (s) when no Retry-After header
 # Cloudflare sometimes demands hours via Retry-After; sleeping that long
 # would stall a whole catalogue run, so cap and give up via retries instead.
 _RATE_LIMIT_BACKOFF_MAX = 120.0
+# Circuit breaker: after this many consecutive requests exhaust their 429
+# retries, stop hitting kr-api entirely for the cooldown period.  Hammering
+# an already-throttled edge is what escalates 429s into real blocks.
+_KRAPI_CIRCUIT_THRESHOLD = 3
+_KRAPI_CIRCUIT_COOLDOWN = float(os.environ.get("KRAPI_CIRCUIT_COOLDOWN", "900"))
 
 
 class _KrApiThrottle:
-    """Process-wide request pacing with 429 penalty support (thread-safe)."""
+    """Process-wide request pacing with 429 penalty support (thread-safe).
+
+    Each gap is jittered (0.7–1.5× the base interval) so the traffic doesn't
+    have a machine-perfect cadence.
+    """
 
     def __init__(self, min_interval: float = _KRAPI_MIN_INTERVAL) -> None:
         self._min_interval = min_interval
@@ -201,10 +213,11 @@ class _KrApiThrottle:
 
     def wait(self) -> None:
         """Block until the next request slot, then claim the one after it."""
+        interval = self._min_interval * random.uniform(0.7, 1.5)
         with self._lock:
             now = time.monotonic()
             delay = self._next_allowed - now
-            self._next_allowed = max(now, self._next_allowed) + self._min_interval
+            self._next_allowed = max(now, self._next_allowed) + interval
         if delay > 0:
             time.sleep(delay)
 
@@ -217,6 +230,48 @@ class _KrApiThrottle:
 
 
 _krapi_throttle = _KrApiThrottle()
+
+
+class _KrApiCircuit:
+    """Trip after consecutive rate-limit failures; auto-close after cooldown."""
+
+    def __init__(
+        self,
+        threshold: int = _KRAPI_CIRCUIT_THRESHOLD,
+        cooldown: float = _KRAPI_CIRCUIT_COOLDOWN,
+    ) -> None:
+        self._threshold = threshold
+        self._cooldown = cooldown
+        self._lock = threading.Lock()
+        self._consecutive = 0
+        self._open_until = 0.0
+
+    def is_open(self) -> bool:
+        with self._lock:
+            return time.monotonic() < self._open_until
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._consecutive = 0
+
+    def record_failure(self) -> None:
+        """Count one request that exhausted all its 429 retries."""
+        with self._lock:
+            self._consecutive += 1
+            if (
+                self._consecutive >= self._threshold
+                and time.monotonic() >= self._open_until
+            ):
+                self._open_until = time.monotonic() + self._cooldown
+                logger.warning(
+                    "kr-api rate limited %d times in a row — pausing all "
+                    "kr-api requests for %.0f min (prices/availability from "
+                    "kr-api will be skipped; GraphQL lookups continue).",
+                    self._consecutive, self._cooldown / 60,
+                )
+
+
+_krapi_circuit = _KrApiCircuit()
 
 
 def _retry_after_seconds(response, attempt: int) -> float:
@@ -361,6 +416,38 @@ def _make_graphql_session() -> requests.Session:
     return session
 
 
+# CF clearance cookies are typically valid ~30 min; persist them so runs
+# started within that window skip the FlareSolverr solve entirely.
+_CF_CACHE_TTL = float(os.environ.get("CF_CLEARANCE_TTL", "1500"))  # 25 min
+
+
+def _cf_cache_path() -> Path:
+    return Path(os.environ.get("SCRAPER_STATE_DIR", "/data")) / "cf_clearance.json"
+
+
+def _load_cached_cf() -> Optional[tuple[dict, str]]:
+    """Return (cookies, user_agent) from the on-disk cache, or None."""
+    try:
+        data = json.loads(_cf_cache_path().read_text())
+        if time.time() - float(data["saved_at"]) < _CF_CACHE_TTL:
+            return dict(data["cookies"]), str(data["user_agent"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+def _save_cached_cf(cookies: dict, user_agent: str) -> None:
+    """Persist the CF solution (best-effort — never raises)."""
+    try:
+        _cf_cache_path().write_text(json.dumps({
+            "cookies": cookies,
+            "user_agent": user_agent,
+            "saved_at": time.time(),
+        }))
+    except OSError:
+        pass
+
+
 def _flaresolverr_endpoint(base_url: str) -> str:
     """Return the FlareSolverr API endpoint for a configured base URL.
 
@@ -442,7 +529,12 @@ def _make_krapi_session() -> requests.Session:
         try:
             with _cf_solution_lock:
                 if _cf_solution is None:
+                    _cf_solution = _load_cached_cf()
+                    if _cf_solution is not None:
+                        logger.info("Reusing cached CF clearance from disk.")
+                if _cf_solution is None:
                     _cf_solution = _resolve_cf_flaresolverr(site_url)
+                    _save_cached_cf(*_cf_solution)
                 cookies, ua = _cf_solution
             return _build_krapi_session(cookies, ua)
         except Exception as exc:
@@ -1022,6 +1114,9 @@ class KRuokaScraper:
         up to :data:`_RATE_LIMIT_MAX_RETRIES` times; any other failure
         returns ``None`` as before.
         """
+        if _krapi_circuit.is_open():
+            logger.debug("kr-api circuit open — skipping %s", url)
+            return None
         for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
             _krapi_throttle.wait()
             try:
@@ -1030,6 +1125,7 @@ class KRuokaScraper:
                 else:
                     resp = self._session.post(url, json=payload, timeout=15)
                 resp.raise_for_status()
+                _krapi_circuit.record_success()
                 return resp.json()
             except requests.HTTPError as exc:
                 status = getattr(exc.response, "status_code", None)
@@ -1041,6 +1137,8 @@ class KRuokaScraper:
                     )
                     _krapi_throttle.penalize(backoff)
                     continue
+                if status == 429:
+                    _krapi_circuit.record_failure()
                 logger.error("HTTP error %s for %s: %s", status, url, exc)
             except requests.RequestException as exc:
                 logger.error("Request failed for %s: %s", url, exc)

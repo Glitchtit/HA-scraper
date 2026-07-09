@@ -1,3 +1,11 @@
+## 2.5.0
+- Rate-limit avoidance overhaul for k-ruoka.fi's new limits:
+  - Per-store availability sweeps now always use the un-throttled mobile GraphQL backend; the Cloudflare-walled kr-api is reserved strictly for price lookups (~6× fewer kr-api requests per update).
+  - Price refreshes are budgeted per run: at most `KRAPI_PRICE_BUDGET` (default 200) products per update, oldest-refreshed first, skipping products refreshed within `KRAPI_PRICE_TTL_DAYS` (default 3). Rotation state persists in `/data/price_refresh.json`, so the whole catalogue still cycles through across runs.
+  - Circuit breaker: after 3 consecutive kr-api requests exhaust their 429 retries, all kr-api traffic pauses for `KRAPI_CIRCUIT_COOLDOWN` (default 15 min) instead of hammering an already-throttled edge. GraphQL name/availability lookups keep running.
+  - Request pacing is jittered (0.7–1.5× the interval) and the default `KRAPI_MIN_INTERVAL` is now 2 s, so traffic no longer has a machine-perfect cadence.
+  - The FlareSolverr Cloudflare clearance is cached in `/data/cf_clearance.json` (~25 min TTL, `CF_CLEARANCE_TTL`) and reused across runs instead of re-solving every time.
+
 ## 2.4.1
 - FlareSolverr URL is normalized to the `/v1` API endpoint, so `flaresolverr_url` works with or without the path (the bare root only accepts GET and answered POST with 405, silently disabling the Cloudflare bypass).
 - The Cloudflare clearance is resolved once per run and shared by all per-store kr-api sessions instead of hitting FlareSolverr once per store.

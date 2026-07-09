@@ -2200,6 +2200,149 @@ class TestUpdateSearXNGConfidence:
         assert kwargs["name"] == "Fresh S-kaupat name"
 
 
+class TestUpdateTrafficReduction:
+    """Availability sweeps use GraphQL; kr-api is reserved for prices and
+    gated by a per-run budget with staleness rotation."""
+
+    def _args(self):
+        return Namespace(
+            store="K532,N141",
+            storage_url="https://storage.example.com",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+        )
+
+    @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_availability_swept_via_graphql_not_krapi(
+        self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
+    ):
+        from addon.main import _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Maito", "unit_price": None},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "123"},
+        ]
+
+        graphql_scrapers, krapi_scrapers = [], []
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            s.search.return_value = iter([Product(name="Maito", ean="123")])
+            s.check_store_availability.return_value = []
+            (graphql_scrapers if kwargs.get("use_graphql", True)
+             else krapi_scrapers).append(s)
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        rc = _update_products(self._args())
+        assert rc == 0
+        assert any(s.check_store_availability.called for s in graphql_scrapers)
+        assert not any(s.check_store_availability.called for s in krapi_scrapers)
+
+    @patch.dict("os.environ", {
+        "FLARESOLVERR_URL": "http://fs:8191", "KRAPI_PRICE_BUDGET": "1",
+    })
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_price_budget_caps_krapi_lookups(
+        self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
+    ):
+        from addon.main import _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Maito", "unit_price": None},
+            {"id": 2, "name": "Leipä", "unit_price": None},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "111"},
+            {"product_id": 2, "barcode": "222"},
+        ]
+
+        krapi_scrapers = []
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            # Only kr-api scrapers carry prices (like the real backends).
+            price = None if kwargs.get("use_graphql", True) else 2.0
+            s.search.side_effect = lambda q, max_products=None, _p=price: iter(
+                [Product(name="X", ean=q, price=_p)]
+            )
+            s.check_store_availability.return_value = []
+            if not kwargs.get("use_graphql", True):
+                krapi_scrapers.append(s)
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        rc = _update_products(self._args())
+        assert rc == 0
+        # Budget=1: exactly one product got a kr-api price lookup.
+        priced_eans = {
+            call.args[0]
+            for s in krapi_scrapers for call in s.search.call_args_list
+        }
+        assert len(priced_eans) == 1
+        # State file records the refreshed product for rotation.
+        import json as _json
+        state = _json.loads((tmp_path / "price_refresh.json").read_text())
+        assert len(state) >= 1
+
+    @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_fresh_products_skip_price_lookup(
+        self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
+    ):
+        import json as _json
+        import time as _time
+        from addon.main import _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        # Product 1 was price-refreshed moments ago -> within TTL, skip.
+        (tmp_path / "price_refresh.json").write_text(
+            _json.dumps({"1": _time.time()})
+        )
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Maito", "unit_price": None},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "111"},
+        ]
+
+        krapi_scrapers = []
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            s.search.return_value = iter([Product(name="Maito", ean="111")])
+            s.check_store_availability.return_value = []
+            if not kwargs.get("use_graphql", True):
+                krapi_scrapers.append(s)
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        rc = _update_products(self._args())
+        assert rc == 0
+        assert not any(s.search.called for s in krapi_scrapers)
+
+
 class TestUpdatePrices:
     """Prices are fetched via the kr-api backend and written as unit_price."""
 
