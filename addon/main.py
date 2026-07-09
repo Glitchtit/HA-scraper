@@ -1099,6 +1099,20 @@ def _delete_all_products(storage: StorageClient) -> int:
     return 0 if errors == 0 else 1
 
 
+def _is_placeholder_name(name: str) -> bool:
+    """True for names that carry no real product information.
+
+    Covers empty names, the SearXNG Strategy-3 fallback ``Unknown product
+    (<EAN>)``, and names that are just a bare barcode.
+    """
+    stripped = name.strip()
+    return (
+        not stripped
+        or stripped.startswith("Unknown product (")
+        or stripped.isdigit()
+    )
+
+
 def _update_products(args: argparse.Namespace) -> int:
     """Update existing Storage products with names and images from K-Ruoka / S-kaupat.
 
@@ -1166,6 +1180,9 @@ def _update_products(args: argparse.Namespace) -> int:
         # Try each EAN until we find a match, trying all configured stores.
         found: Product | None = None
         matched_ean = ""
+        # SearXNG web-search names are low-confidence: they may fill in
+        # placeholder names but must never overwrite an existing real name.
+        name_low_confidence = False
         for ean in eans:
             # K-Ruoka first — try each store.
             for scraper in scrapers:
@@ -1211,6 +1228,7 @@ def _update_products(args: argparse.Namespace) -> int:
                             image_url=sx.image_url,
                         )
                         matched_ean = ean
+                        name_low_confidence = True
                         break
                 except SearXNGError as exc:
                     logger.debug("  SearXNG lookup failed for %s: %s", ean, exc)
@@ -1233,7 +1251,14 @@ def _update_products(args: argparse.Namespace) -> int:
         # Update product in Storage.
         update_fields: dict = {}
         if found.name and found.name != current_name:
-            update_fields["name"] = found.name
+            if name_low_confidence and not _is_placeholder_name(current_name):
+                logger.debug(
+                    "  Keeping existing name for product %d ('%s'); "
+                    "low-confidence SearXNG name '%s' ignored.",
+                    pid, current_name, found.name,
+                )
+            else:
+                update_fields["name"] = found.name
         if found.description:
             update_fields["description"] = found.description
 

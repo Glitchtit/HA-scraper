@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
@@ -177,6 +178,53 @@ _DEFAULT_IMPERSONATE = "chrome124"
 
 # Courtesy delay between requests.
 _REQUEST_DELAY = 0.5
+
+# Global pacing for the kr-api backend.  The v2/product-search endpoint
+# rate-limits aggressively (HTTP 429) when hit back-to-back for several
+# stores per EAN across a whole catalogue update, so all kr-api requests —
+# across every KRuokaScraper instance — share one minimum interval.
+_KRAPI_MIN_INTERVAL = float(os.environ.get("KRAPI_MIN_INTERVAL", "1.0"))
+_RATE_LIMIT_MAX_RETRIES = 3
+_RATE_LIMIT_BACKOFF = 5.0  # base backoff (s) when no Retry-After header
+
+
+class _KrApiThrottle:
+    """Process-wide request pacing with 429 penalty support (thread-safe)."""
+
+    def __init__(self, min_interval: float = _KRAPI_MIN_INTERVAL) -> None:
+        self._min_interval = min_interval
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self) -> None:
+        """Block until the next request slot, then claim the one after it."""
+        with self._lock:
+            now = time.monotonic()
+            delay = self._next_allowed - now
+            self._next_allowed = max(now, self._next_allowed) + self._min_interval
+        if delay > 0:
+            time.sleep(delay)
+
+    def penalize(self, seconds: float) -> None:
+        """Push back the next allowed request (server asked us to back off)."""
+        with self._lock:
+            self._next_allowed = max(
+                self._next_allowed, time.monotonic() + seconds
+            )
+
+
+_krapi_throttle = _KrApiThrottle()
+
+
+def _retry_after_seconds(response, attempt: int) -> float:
+    """Backoff duration for a 429: Retry-After header, else exponential."""
+    try:
+        header = (response.headers or {}).get("Retry-After", "")
+        if header:
+            return max(float(header), 1.0)
+    except (AttributeError, TypeError, ValueError):
+        pass
+    return _RATE_LIMIT_BACKOFF * (2 ** attempt)
 
 
 def _api_headers() -> dict:
@@ -940,43 +988,50 @@ class KRuokaScraper:
     def _api_url(self, path: str) -> str:
         return f"{_BASE_URL}{_KR_API}/{path}"
 
+    def _request_json(
+        self, method: str, url: str, payload: Optional[dict] = None
+    ) -> Optional[dict]:
+        """Perform a throttled kr-api request and return parsed JSON.
+
+        All kr-api requests share the global :data:`_krapi_throttle` pacing.
+        HTTP 429 responses are retried with Retry-After/exponential backoff
+        up to :data:`_RATE_LIMIT_MAX_RETRIES` times; any other failure
+        returns ``None`` as before.
+        """
+        for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+            _krapi_throttle.wait()
+            try:
+                if method == "GET":
+                    resp = self._session.get(url, timeout=15)
+                else:
+                    resp = self._session.post(url, json=payload, timeout=15)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.HTTPError as exc:
+                status = getattr(exc.response, "status_code", None)
+                if status == 429 and attempt < _RATE_LIMIT_MAX_RETRIES:
+                    backoff = _retry_after_seconds(exc.response, attempt)
+                    logger.warning(
+                        "HTTP 429 for %s — backing off %.1fs (retry %d/%d)",
+                        url, backoff, attempt + 1, _RATE_LIMIT_MAX_RETRIES,
+                    )
+                    _krapi_throttle.penalize(backoff)
+                    continue
+                logger.error("HTTP error %s for %s: %s", status, url, exc)
+            except requests.RequestException as exc:
+                logger.error("Request failed for %s: %s", url, exc)
+            except ValueError as exc:
+                logger.error("Failed to decode JSON from %s: %s", url, exc)
+            return None
+        return None
+
     def _post_json(self, url: str, payload: Optional[dict]) -> Optional[dict]:
         """Perform a POST request and return parsed JSON, or ``None`` on failure."""
-        try:
-            resp = self._session.post(url, json=payload, timeout=15)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.HTTPError as exc:
-            logger.error(
-                "HTTP error %s for %s: %s",
-                exc.response.status_code,
-                url,
-                exc,
-            )
-        except requests.RequestException as exc:
-            logger.error("Request failed for %s: %s", url, exc)
-        except ValueError as exc:
-            logger.error("Failed to decode JSON from %s: %s", url, exc)
-        return None
+        return self._request_json("POST", url, payload)
 
     def _get_json(self, url: str) -> Optional[dict]:
         """Perform a GET request and return parsed JSON, or ``None`` on failure."""
-        try:
-            resp = self._session.get(url, timeout=15)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.HTTPError as exc:
-            logger.error(
-                "HTTP error %s for %s: %s",
-                exc.response.status_code,
-                url,
-                exc,
-            )
-        except requests.RequestException as exc:
-            logger.error("Request failed for %s: %s", url, exc)
-        except ValueError as exc:
-            logger.error("Failed to decode JSON from %s: %s", url, exc)
-        return None
+        return self._request_json("GET", url)
 
     # ------------------------------------------------------------------
     # kr-api data extraction helpers

@@ -9,6 +9,7 @@ from scraper.searxng_client import (
     SearXNGError,
     SearXNGProduct,
     _check_kesko_cdn,
+    _looks_like_junk_title,
     _slug_to_name,
     lookup_ean,
 )
@@ -27,6 +28,34 @@ class TestSlugToName:
 
     def test_empty_slug(self):
         assert _slug_to_name("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _looks_like_junk_title
+# ---------------------------------------------------------------------------
+
+class TestLooksLikeJunkTitle:
+    def test_barcode_plus_domain_is_junk(self):
+        assert _looks_like_junk_title(
+            "8002270626883 - world.openfoodfacts.org", "8002270626883"
+        )
+
+    def test_bare_barcode_is_junk(self):
+        assert _looks_like_junk_title("8002270626883", "8002270626883")
+
+    def test_barcode_with_separators_is_junk(self):
+        assert _looks_like_junk_title("EAN 8002270626883 | ean-search.org", "8002270626883")
+
+    def test_real_product_name_is_not_junk(self):
+        assert not _looks_like_junk_title(
+            "Aranciata Rossa Sparkling Water – San Pellegrino – 330ml",
+            "8002270626883",
+        )
+
+    def test_name_containing_ean_is_not_junk(self):
+        assert not _looks_like_junk_title(
+            "Capsi merisuolamylly 230g (6430025642017)", "6430025642017"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +190,28 @@ class TestLookupEan:
         # Should fall through to Strategy 3 (CDN image only, not the trademark title)
         assert result is not None
         assert "GODLY" not in result.name
+        assert result.name == f"Unknown product ({EAN})"
+
+    def test_strategy2_junk_barcode_title_skipped(self):
+        """Trusted domain whose title is just the barcode + domain is skipped.
+
+        OpenFoodFacts pages for unnamed products title themselves
+        '<EAN> - world.openfoodfacts.org' — that must never become a name.
+        """
+        data = {
+            "results": [
+                {
+                    "url": f"https://world.openfoodfacts.org/product/{EAN}",
+                    "title": f"{EAN} - world.openfoodfacts.org",
+                    "content": "",
+                },
+            ]
+        }
+        sess = _make_session(data)
+        result = lookup_ean(EAN, searxng_url=SEARXNG, session=sess)
+
+        # Falls through to Strategy 3 (CDN image exists in this mock).
+        assert result is not None
         assert result.name == f"Unknown product ({EAN})"
 
     def test_strategy3_cdn_only(self):

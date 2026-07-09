@@ -1142,3 +1142,148 @@ class TestFetchStoreName:
         s = KRuokaScraper(store_id="N110", session=session,
                           request_delay=0, use_graphql=False)
         assert s.fetch_store_name("N110") is None
+
+
+# ---------------------------------------------------------------------------
+# kr-api rate limiting (429 backoff + global throttle)
+# ---------------------------------------------------------------------------
+
+def _make_429_response() -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 429
+    resp.headers = {}
+    resp.raise_for_status.side_effect = requests.HTTPError(
+        "429 Client Error: Too Many Requests", response=resp
+    )
+    return resp
+
+
+def _make_ok_response(payload: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.headers = {}
+    resp.raise_for_status.return_value = None
+    resp.json.return_value = payload
+    return resp
+
+
+class TestKrApiRateLimiting:
+    def _scraper(self, session: MagicMock) -> KRuokaScraper:
+        return KRuokaScraper(
+            store_id="N110", session=session, request_delay=0, use_graphql=False
+        )
+
+    def test_429_is_retried_with_backoff(self, monkeypatch):
+        """A 429 response is retried after a backoff instead of failing."""
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "scraper.scraper.time.sleep", lambda s: sleeps.append(s)
+        )
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.post.side_effect = [
+            _make_429_response(),
+            _make_ok_response({"result": []}),
+        ]
+
+        s = self._scraper(session)
+        data = s._post_json("https://www.k-ruoka.fi/kr-api/v2/product-search/x", None)
+
+        assert data == {"result": []}
+        assert session.post.call_count == 2
+        assert any(sl > 0 for sl in sleeps), "expected a backoff sleep before retry"
+
+    def test_429_gives_up_after_max_retries(self, monkeypatch):
+        """Persistent 429s eventually give up and return None."""
+        from scraper.scraper import _RATE_LIMIT_MAX_RETRIES
+
+        monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.post.return_value = _make_429_response()
+
+        s = self._scraper(session)
+        data = s._post_json("https://www.k-ruoka.fi/kr-api/v2/product-search/x", None)
+
+        assert data is None
+        assert session.post.call_count == _RATE_LIMIT_MAX_RETRIES + 1
+
+    def test_429_honors_retry_after_header(self, monkeypatch):
+        """A Retry-After header sets the backoff duration."""
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "scraper.scraper.time.sleep", lambda s: sleeps.append(s)
+        )
+        resp_429 = _make_429_response()
+        resp_429.headers = {"Retry-After": "7"}
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.post.side_effect = [resp_429, _make_ok_response({"result": []})]
+
+        s = self._scraper(session)
+        data = s._post_json("https://www.k-ruoka.fi/kr-api/v2/product-search/x", None)
+
+        assert data == {"result": []}
+        # Real clock ticks between penalize() and wait(), so allow slack.
+        assert any(sl >= 6.5 for sl in sleeps)
+
+    def test_get_json_also_rate_limited(self, monkeypatch):
+        """_get_json shares the same 429 retry logic."""
+        sleeps: list[float] = []
+        monkeypatch.setattr(
+            "scraper.scraper.time.sleep", lambda s: sleeps.append(s)
+        )
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.get.side_effect = [
+            _make_429_response(),
+            _make_ok_response({"name": "K-Citymarket X"}),
+        ]
+
+        s = self._scraper(session)
+        data = s._get_json("https://www.k-ruoka.fi/kr-api/store/N110")
+
+        assert data == {"name": "K-Citymarket X"}
+        assert session.get.call_count == 2
+
+    def test_global_throttle_spaces_requests(self, monkeypatch):
+        """Consecutive kr-api requests are spaced by the global min interval,
+        even across separate scraper instances."""
+        from scraper.scraper import _KrApiThrottle
+
+        clock = {"now": 0.0}
+        sleeps: list[float] = []
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            clock["now"] += s
+
+        monkeypatch.setattr("scraper.scraper.time.monotonic", lambda: clock["now"])
+        monkeypatch.setattr("scraper.scraper.time.sleep", fake_sleep)
+
+        throttle = _KrApiThrottle(min_interval=1.0)
+        throttle.wait()   # first request: no wait
+        throttle.wait()   # second request: must wait ~1s
+
+        assert sleeps and abs(sum(sleeps) - 1.0) < 0.01
+
+    def test_throttle_penalty_delays_next_request(self, monkeypatch):
+        """A 429 penalty pushes back the next allowed request time."""
+        from scraper.scraper import _KrApiThrottle
+
+        clock = {"now": 0.0}
+        sleeps: list[float] = []
+
+        def fake_sleep(s):
+            sleeps.append(s)
+            clock["now"] += s
+
+        monkeypatch.setattr("scraper.scraper.time.monotonic", lambda: clock["now"])
+        monkeypatch.setattr("scraper.scraper.time.sleep", fake_sleep)
+
+        throttle = _KrApiThrottle(min_interval=1.0)
+        throttle.wait()
+        throttle.penalize(30.0)
+        throttle.wait()
+
+        assert any(sl >= 29 for sl in sleeps)

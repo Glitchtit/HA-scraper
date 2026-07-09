@@ -1,3 +1,8 @@
+## 2.4.0
+- SearXNG lookups no longer accept junk titles that are just the barcode plus a site domain (e.g. `8002270626883 - world.openfoodfacts.org` from OpenFoodFacts pages for unnamed products). Such results fall through to the image-only fallback.
+- `--update` treats SearXNG web-search names as low-confidence: they can fill in placeholder names (`Unknown product (…)`, bare barcodes) but never overwrite an existing real product name. K-Ruoka and S-kaupat hits keep full overwrite rights.
+- kr-api rate limiting: all kr-api requests share a global minimum interval (default 1 s, override with `KRAPI_MIN_INTERVAL`), and HTTP 429 responses are retried up to 3 times with Retry-After/exponential backoff instead of failing the store sweep.
+
 ## 2.3.2
 - Store names now resolve via the real kr-api `store/{id}` endpoint (the previous `store-search` guess 404'd, leaving raw IDs) and Unicode hyphens are normalized so HA-stock's chip shortening works.
 

@@ -68,6 +68,33 @@ class SearXNGProduct:
     source_url: str = ""
 
 
+# Generic barcode vocabulary — titles made only of these plus the EAN itself
+# carry no product name ("EAN 8002270626883 | ean-search.org").
+_JUNK_TITLE_WORDS: frozenset[str] = frozenset({
+    "ean", "gtin", "upc", "barcode", "viivakoodi", "code", "product",
+})
+
+
+def _looks_like_junk_title(title: str, ean: str) -> bool:
+    """True when a result title carries no real product name.
+
+    Pages for unnamed products often title themselves with just the barcode
+    plus the site's domain, e.g. ``8002270626883 - world.openfoodfacts.org``.
+    Trusted domains produce these too, so the domain allowlist alone cannot
+    catch them.
+    """
+    residue = title.replace(ean, " ")
+    words = [
+        w for w in re.split(r"[\s\-–—|:,()\[\]]+", residue)
+        # Domain-like tokens contain a dot; drop them along with empties.
+        if w and "." not in w
+    ]
+    return not any(
+        re.search(r"[^\W\d_]{2,}", w) and w.lower() not in _JUNK_TITLE_WORDS
+        for w in words
+    )
+
+
 def _slug_to_name(slug: str) -> str:
     """Convert a URL slug to a human-readable product name.
 
@@ -156,7 +183,7 @@ def lookup_ean(
         title = result.get("title", "").strip()
         if ean in result_url or ean in content:
             if title:
-                netloc = urlparse(result_url).netloc.lower().lstrip("www.")
+                netloc = urlparse(result_url).netloc.lower().removeprefix("www.")
                 if not any(
                     netloc == d or netloc.endswith("." + d)
                     for d in _TRUSTED_PRODUCT_DOMAINS
@@ -164,6 +191,12 @@ def lookup_ean(
                     logger.debug(
                         "SearXNG: skipping untrusted domain '%s' for EAN %s",
                         netloc, ean,
+                    )
+                    continue
+                if _looks_like_junk_title(title, ean):
+                    logger.debug(
+                        "SearXNG: skipping junk title '%s' for EAN %s",
+                        title, ean,
                     )
                     continue
                 image_url = _check_kesko_cdn(ean, sess) or ""

@@ -2092,6 +2092,114 @@ class TestMultiStoreUpdateFallback:
         storage_instance.update_product.assert_called_once()
 
 
+class TestUpdateSearXNGConfidence:
+    """SearXNG fallback names are low-confidence: they may fill placeholder
+    names but must never overwrite an existing real product name."""
+
+    def _args(self):
+        return Namespace(
+            store="K532",
+            storage_url="https://storage.example.com",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+            searxng_url="http://searxng:8080",
+        )
+
+    def _no_hit_scraper(self, MockScraper):
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            s.search.return_value = iter([])
+            return s
+        MockScraper.side_effect = make_scraper
+
+    @patch("addon.main.searxng_lookup")
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_searxng_does_not_overwrite_real_name(
+        self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
+    ):
+        from addon.main import _update_products
+        from scraper.searxng_client import SearXNGProduct
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Aranciata Rossa Sparkling Water"},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "8002270626883"},
+        ]
+        self._no_hit_scraper(MockScraper)
+        mock_searxng.return_value = SearXNGProduct(
+            name="Junk Title From The Web", ean="8002270626883",
+        )
+
+        rc = _update_products(self._args())
+        assert rc == 0
+        # No name overwrite → no update at all (no price configured either).
+        for call in storage_instance.update_product.call_args_list:
+            assert "name" not in call.kwargs
+
+    @patch("addon.main.searxng_lookup")
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_searxng_fills_placeholder_name(
+        self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
+    ):
+        from addon.main import _update_products
+        from scraper.searxng_client import SearXNGProduct
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Unknown product (8002270626883)"},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "8002270626883"},
+        ]
+        self._no_hit_scraper(MockScraper)
+        mock_searxng.return_value = SearXNGProduct(
+            name="San Pellegrino Aranciata Rossa 330ml", ean="8002270626883",
+        )
+
+        rc = _update_products(self._args())
+        assert rc == 0
+        storage_instance.update_product.assert_called_once()
+        _, kwargs = storage_instance.update_product.call_args
+        assert kwargs["name"] == "San Pellegrino Aranciata Rossa 330ml"
+
+    @patch("addon.main.searxng_lookup")
+    @patch("addon.main.skaupat_lookup")
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_skaupat_still_overwrites_real_name(
+        self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
+    ):
+        """Real store hits (S-kaupat) keep full overwrite rights."""
+        from addon.main import _update_products
+        from scraper.skaupat_client import SKaupatProduct
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": "Old stale name"},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "123"},
+        ]
+        self._no_hit_scraper(MockScraper)
+        mock_skaupat.return_value = SKaupatProduct(
+            name="Fresh S-kaupat name", ean="123",
+        )
+
+        rc = _update_products(self._args())
+        assert rc == 0
+        mock_searxng.assert_not_called()
+        _, kwargs = storage_instance.update_product.call_args
+        assert kwargs["name"] == "Fresh S-kaupat name"
+
+
 class TestUpdatePrices:
     """Prices are fetched via the kr-api backend and written as unit_price."""
 
