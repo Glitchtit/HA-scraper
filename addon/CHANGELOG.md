@@ -1,3 +1,7 @@
+## 2.3.0
+- Per-store availability: every configured store ID is now swept per product (discover/search and --update) and the result — carried / not carried, with kr-api price when available — is written to HA-Storage's new availability API.
+- Store IDs are registered in Storage with friendly names resolved via kr-api store-search (falls back to the raw ID without a Cloudflare bypass).
+
 ## 2.2.0
 - K-Ruoka prices: products now capture the store-specific consumer price and store it as Storage `unit_price` (EUR, VAT incl.). The Update button refreshes prices for all registered products (matched by barcode); Discover and Add also set the price on creation. Prices come from the per-product `mobilescan.pricing.normal` block on the kr-api `v2/product-search` response — the parser now reads the current `result`/`product` wrapper shape and uses the regular price (not short-lived discounts).
 - Prices require the kr-api backend, which is behind Cloudflare, so a bypass must be configured. The `flaresolverr_url` add-on option is now actually exported to the scraper's `FLARESOLVERR_URL` environment variable (previously the option was read but never wired through, so it had no effect). Name/image lookups still use the no-setup GraphQL backend; price lookups use a separate kr-api scraper and are skipped (with a log line) when no FlareSolverr / `cf_clearance` is configured — everything else keeps working.

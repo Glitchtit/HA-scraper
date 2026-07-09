@@ -288,6 +288,80 @@ def _lookup_price(price_scrapers: list[KRuokaScraper], ean: str) -> float | None
     return None
 
 
+def _register_stores(
+    storage: StorageClient,
+    store_ids: list[str],
+    name_scrapers: list[KRuokaScraper],
+) -> None:
+    """Register every configured store in Storage with a friendly name.
+
+    Names come from the kr-api store-search (first scraper that resolves
+    wins); without a CF bypass the raw store ID is used as the name.
+    Best-effort: never raises.
+    """
+    for sid in store_ids:
+        name: str | None = None
+        for scraper in name_scrapers:
+            try:
+                name = scraper.fetch_store_name(sid)
+            except Exception as exc:
+                logger.debug("Store-name lookup failed for %s: %s", sid, exc)
+                name = None
+            if name:
+                break
+        try:
+            storage.upsert_store(sid, name or sid)
+        except StorageAPIError as exc:
+            logger.warning("Could not register store %s in Storage: %s", sid, exc)
+
+
+def _sync_availability(
+    storage: StorageClient,
+    product_id: int,
+    ean: str,
+    avail_scrapers: list[KRuokaScraper],
+) -> None:
+    """Sweep all configured stores for *ean* and upsert the result in Storage.
+
+    Best-effort: scraper errors skip that scraper, Storage errors are logged.
+    A store that appears in several scrapers is written once (first result
+    wins — kr-api scrapers are passed first so their price is preferred).
+    """
+    if not ean or not avail_scrapers:
+        return
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for scraper in avail_scrapers:
+        try:
+            results = scraper.check_store_availability(ean)
+        except Exception as exc:
+            logger.debug("Availability sweep failed on %s: %s",
+                         getattr(scraper, "store_ids", "?"), exc)
+            continue
+        for a in results:
+            if a.store_id in seen:
+                continue
+            seen.add(a.store_id)
+            entry: dict = {"store_id": a.store_id, "available": a.available}
+            if a.price is not None:
+                entry["price"] = a.price
+                entry["price_currency"] = a.price_currency
+            entries.append(entry)
+    if not entries:
+        return
+    try:
+        storage.set_product_availability(product_id, entries)
+        logger.info(
+            "  → Availability: %s",
+            ", ".join(f"{e['store_id']}={'✓' if e['available'] else '✗'}"
+                      for e in entries),
+        )
+    except StorageAPIError as exc:
+        logger.warning(
+            "Failed to write availability for product %d: %s", product_id, exc
+        )
+
+
 def sync_product(
     product: Product,
     storage: StorageClient,
@@ -298,6 +372,7 @@ def sync_product(
     known_barcodes: set[str],
     upload_images: bool = True,
     price_scrapers: list[KRuokaScraper] | None = None,
+    avail_scrapers: list[KRuokaScraper] | None = None,
 ) -> bool:
     """Add *product* to Storage.
 
@@ -375,6 +450,10 @@ def sync_product(
     # Upload product image.
     if upload_images and product.image_url:
         _upload_product_image(product, storage, product_id)
+
+    # Record per-store assortment availability (best-effort).
+    if avail_scrapers:
+        _sync_availability(storage, product_id, product.ean, avail_scrapers)
 
     return True
 
@@ -534,9 +613,16 @@ def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
 def _process_products(args: argparse.Namespace, storage: StorageClient | None, known_barcodes: set[str]) -> int:
     """Process scraped products; return 0 on success, 1 if any errors occurred."""
     created = skipped = errors = 0
-    price_scrapers = (
-        _make_price_scrapers(_parse_store_ids(args.store)) if not args.dry_run else []
-    )
+    store_ids = _parse_store_ids(args.store)
+    price_scrapers = _make_price_scrapers(store_ids) if not args.dry_run else []
+
+    avail_scrapers: list[KRuokaScraper] = []
+    if not args.dry_run:
+        avail_scrapers = list(price_scrapers)
+        if not avail_scrapers:
+            avail_scrapers = [KRuokaScraper(store_id=args.store,
+                                            use_graphql=args.use_graphql)]
+        _register_stores(storage, store_ids, price_scrapers)
 
     for product in _run_scraper(args):
         if args.dry_run:
@@ -557,6 +643,7 @@ def _process_products(args: argparse.Namespace, storage: StorageClient | None, k
                 known_barcodes=known_barcodes,
                 upload_images=args.upload_images,
                 price_scrapers=price_scrapers,
+                avail_scrapers=avail_scrapers,
             )
         except StorageAPIError as exc:
             logger.error("Storage error for '%s': %s", product.name, exc)
@@ -597,6 +684,8 @@ def _discover_single_barcode(
         for sid in store_ids
     ]
     price_scrapers = _make_price_scrapers(store_ids)
+    avail_scrapers: list[KRuokaScraper] = list(price_scrapers) or scrapers
+    _register_stores(storage, store_ids, price_scrapers)
 
     # Check if barcode already exists in Storage.
     try:
@@ -679,6 +768,7 @@ def _discover_single_barcode(
             known_barcodes=known_barcodes,
             upload_images=args.upload_images,
             price_scrapers=price_scrapers,
+            avail_scrapers=avail_scrapers,
         )
     except StorageAPIError as exc:
         logger.error("Storage error for '%s': %s", product.name, exc)
@@ -739,6 +829,8 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         for sid in store_ids
     ]
     price_scrapers = _make_price_scrapers(store_ids)
+    avail_scrapers: list[KRuokaScraper] = list(price_scrapers) or scrapers
+    _register_stores(storage, store_ids, price_scrapers)
 
     # Pre-load known barcodes.
     known_barcodes: set[str] = set()
@@ -842,6 +934,7 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
                 skip_existing=False,
                 known_barcodes=known_barcodes,
                 upload_images=args.upload_images,
+                avail_scrapers=avail_scrapers,
             )
         except StorageAPIError as exc:
             logger.error("Storage error for '%s': %s", product.name, exc)
@@ -974,6 +1067,8 @@ def _update_products(args: argparse.Namespace) -> int:
     # fetched via a separate set of kr-api scrapers (independent of the GraphQL
     # name/image lookups above).  Empty when no CF bypass is configured.
     price_scrapers = _make_price_scrapers(store_ids)
+    avail_scrapers: list[KRuokaScraper] = list(price_scrapers) or scrapers
+    _register_stores(storage, store_ids, price_scrapers)
 
     try:
         products = storage.get_all_products()
@@ -1068,6 +1163,12 @@ def _update_products(args: argparse.Namespace) -> int:
                         break
                 except SearXNGError as exc:
                     logger.debug("  SearXNG lookup failed for %s: %s", ean, exc)
+
+        # Refresh per-store availability regardless of whether the product
+        # was found by name/EAN search above.
+        avail_ean = matched_ean or (eans[0] if eans else "")
+        if avail_ean:
+            _sync_availability(storage, pid, avail_ean, avail_scrapers)
 
         if found is None:
             logger.debug("  Product %d ('%s') not found online – skipping.", pid, current_name)

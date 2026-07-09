@@ -205,6 +205,21 @@ class Product:
     extra: dict = field(default_factory=dict)
 
 
+@dataclass
+class StoreAvailability:
+    """Assortment-level availability of one product at one store.
+
+    ``available`` means the product appears in the store's store-scoped
+    search — it says the store *carries* the product, not that shelves are
+    stocked right now.  ``price`` is only filled by the kr-api backend.
+    """
+
+    store_id: str
+    available: bool
+    price: Optional[float] = None
+    price_currency: str = "EUR"
+
+
 def _parse_mobilescan_pricing(
     product: dict,
 ) -> tuple[Optional[float], Optional[float], str]:
@@ -505,6 +520,114 @@ class KRuokaScraper:
                 yielded += 1
                 if max_products is not None and yielded >= max_products:
                     return
+
+    def check_store_availability(self, ean: str) -> list[StoreAvailability]:
+        """Check every configured store for *ean* (assortment sweep).
+
+        Unlike :meth:`search`, this does NOT stop at the first hit — it asks
+        each store in ``self.store_ids`` in turn.  Stores whose lookup errors
+        (CF wall, timeout, HTTP error) are OMITTED from the result so the
+        caller never records a false negative.
+        """
+        target = _normalize_ean(ean)
+        if not target:
+            return []
+        results: list[StoreAvailability] = []
+        original = self.store_id
+        try:
+            for index, store_id in enumerate(self.store_ids):
+                if index:
+                    time.sleep(self.request_delay)
+                self.store_id = store_id
+                entry = self._check_one_store(target)
+                if entry is not None:
+                    results.append(entry)
+        finally:
+            self.store_id = original
+        return results
+
+    def _check_one_store(self, target: str) -> Optional[StoreAvailability]:
+        """One-page EAN lookup at the current store.
+
+        Returns ``None`` when the request failed (indeterminate — caller
+        omits the store), otherwise a :class:`StoreAvailability`.
+        """
+        if self._use_graphql:
+            data = self._post_graphql({
+                "query": target,
+                "storeId": self.store_id,
+                "limit": float(_GRAPHQL_PAGE_SIZE),
+                "offset": 0.0,
+            })
+            if data is None:
+                return None
+            items = (
+                (data.get("data") or {})
+                .get("productAndAssortmentSearchV2") or {}
+            ).get("results") or []
+            for item in items:
+                eans = {_normalize_ean(str(e)) for e in (item.get("eans") or [])}
+                eans.add(_normalize_ean(str(item.get("ean") or "")))
+                if target in eans:
+                    return StoreAvailability(store_id=self.store_id, available=True)
+            return StoreAvailability(store_id=self.store_id, available=False)
+
+        # kr-api backend — price rides along via the mobilescan block.
+        path = _SEARCH_PATH.format(query=target)
+        params = {
+            "storeId": self.store_id,
+            "limit": _SEARCH_PAGE_SIZE,
+            "offset": 0,
+            "language": "fi",
+            "discountFilter": False,
+            "isTosTrOffer": False,
+        }
+        url = self._api_url(path) + "?" + urlencode(
+            {k: v for k, v in params.items() if v is not False}
+        )
+        data = self._post_json(url, payload=None)
+        if data is None:
+            return None
+        for item in self._extract_search_results(data):
+            product = self._parse_search_product(item)
+            if product is not None and product.ean == target:
+                return StoreAvailability(
+                    store_id=self.store_id,
+                    available=True,
+                    price=product.price,
+                )
+        return StoreAvailability(store_id=self.store_id, available=False)
+
+    def fetch_store_name(self, store_id: str) -> Optional[str]:
+        """Resolve a K-store ID to its display name via kr-api store-search.
+
+        Only works on the kr-api backend (needs the CF-bypassed session);
+        the GraphQL backend returns ``None`` and callers fall back to the
+        raw store ID.  The response shape is scanned defensively: a list of
+        store dicts either at the top level or under a ``stores`` key, each
+        with ``id`` plus ``name`` or ``localizedName.finnish``.
+        """
+        if self._use_graphql:
+            return None
+        data = self._post_json(self._api_url("store-search"), {"query": store_id})
+        if data is None:
+            return None
+        stores = data if isinstance(data, list) else (
+            data.get("stores") if isinstance(data.get("stores"), list) else []
+        )
+        for store in stores:
+            if not isinstance(store, dict) or str(store.get("id")) != store_id:
+                continue
+            localized = store.get("localizedName") or {}
+            name = (
+                store.get("name")
+                or localized.get("finnish")
+                or localized.get("fi")
+                or ""
+            ).strip()
+            if name:
+                return name
+        return None
 
     def browse(self, max_products: Optional[int] = None) -> Iterator[Product]:
         """Yield all available products in the store catalogue.

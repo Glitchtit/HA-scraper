@@ -7,7 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from addon.main import main, parse_args, sync_product, _parse_store_ids
+from addon.main import (
+    main, parse_args, sync_product, _parse_store_ids,
+    _sync_availability, _register_stores,
+)
 from scraper.scraper import Product
 from scraper.storage_client import StorageAPIError, StorageClient
 
@@ -3618,3 +3621,106 @@ class TestIncrementalDensityAndRecipeCheck:
         mock_pkg.assert_called_once()
         mock_density.assert_called_once()
         mock_recipe_check.assert_called_once()
+
+
+class TestSyncAvailability:
+    def test_writes_merged_entries(self):
+        from unittest.mock import MagicMock
+        from scraper.scraper import StoreAvailability
+
+        storage = MagicMock()
+        s1 = MagicMock()
+        s1.check_store_availability.return_value = [
+            StoreAvailability(store_id="N110", available=True, price=2.35),
+        ]
+        s2 = MagicMock()
+        s2.check_store_availability.return_value = [
+            StoreAvailability(store_id="K532", available=False),
+        ]
+        _sync_availability(storage, 42, "6410405082657", [s1, s2])
+        storage.set_product_availability.assert_called_once_with(42, [
+            {"store_id": "N110", "available": True,
+             "price": 2.35, "price_currency": "EUR"},
+            {"store_id": "K532", "available": False},
+        ])
+
+    def test_first_scraper_wins_duplicate_stores(self):
+        from unittest.mock import MagicMock
+        from scraper.scraper import StoreAvailability
+
+        storage = MagicMock()
+        s1 = MagicMock()
+        s1.check_store_availability.return_value = [
+            StoreAvailability(store_id="N110", available=True, price=2.0),
+        ]
+        s2 = MagicMock()
+        s2.check_store_availability.return_value = [
+            StoreAvailability(store_id="N110", available=False),
+        ]
+        _sync_availability(storage, 1, "123", [s1, s2])
+        entries = storage.set_product_availability.call_args[0][1]
+        assert entries == [{"store_id": "N110", "available": True,
+                            "price": 2.0, "price_currency": "EUR"}]
+
+    def test_no_entries_no_write(self):
+        from unittest.mock import MagicMock
+        storage = MagicMock()
+        scraper = MagicMock()
+        scraper.check_store_availability.return_value = []
+        _sync_availability(storage, 1, "123", [scraper])
+        storage.set_product_availability.assert_not_called()
+
+    def test_empty_ean_or_scrapers_noop(self):
+        from unittest.mock import MagicMock
+        storage = MagicMock()
+        _sync_availability(storage, 1, "", [MagicMock()])
+        _sync_availability(storage, 1, "123", [])
+        storage.set_product_availability.assert_not_called()
+
+    def test_scraper_exception_skipped_storage_error_swallowed(self):
+        from unittest.mock import MagicMock
+        from scraper.scraper import StoreAvailability
+        from scraper.storage_client import StorageAPIError
+
+        storage = MagicMock()
+        storage.set_product_availability.side_effect = StorageAPIError("down")
+        bad = MagicMock()
+        bad.check_store_availability.side_effect = RuntimeError("cf wall")
+        good = MagicMock()
+        good.check_store_availability.return_value = [
+            StoreAvailability(store_id="N110", available=True),
+        ]
+        # Must not raise despite both failure modes.
+        _sync_availability(storage, 1, "123", [bad, good])
+        storage.set_product_availability.assert_called_once()
+
+
+class TestRegisterStores:
+    def test_friendly_name_from_first_resolving_scraper(self):
+        from unittest.mock import MagicMock
+
+        storage = MagicMock()
+        s1 = MagicMock()
+        s1.fetch_store_name.return_value = None
+        s2 = MagicMock()
+        s2.fetch_store_name.return_value = "K-Citymarket Kupittaa"
+        _register_stores(storage, ["N110"], [s1, s2])
+        storage.upsert_store.assert_called_once_with("N110", "K-Citymarket Kupittaa")
+
+    def test_fallback_to_raw_id(self):
+        from unittest.mock import MagicMock
+
+        storage = MagicMock()
+        _register_stores(storage, ["N110"], [])
+        storage.upsert_store.assert_called_once_with("N110", "N110")
+
+    def test_errors_never_raise(self):
+        from unittest.mock import MagicMock
+        from scraper.storage_client import StorageAPIError
+
+        storage = MagicMock()
+        storage.upsert_store.side_effect = StorageAPIError("down")
+        s = MagicMock()
+        s.fetch_store_name.side_effect = RuntimeError("cf")
+        _register_stores(storage, ["N110", "K532"], [s])  # must not raise
+        assert storage.upsert_store.call_count == 2
