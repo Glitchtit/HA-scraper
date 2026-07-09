@@ -1,3 +1,7 @@
+## 2.3.1
+
+- Products added via the ingress UI / HA-stock quick-add now record per-store availability (and reuse the sweep for the price lookup), same as the discover and --update flows.
+
 ## 2.3.0
 - Per-store availability: every configured store ID is now swept per product (discover/search and --update) and the result — carried / not carried, with kr-api price when available — is written to HA-Storage's new availability API.
 - Store IDs are registered in Storage with friendly names resolved via kr-api store-search (falls back to the raw ID without a Cloudflare bypass).

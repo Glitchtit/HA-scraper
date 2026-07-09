@@ -528,6 +528,94 @@ class TestHandleAddProducts:
         assert result["added"] == 1
         mock_upload.assert_not_called()
 
+    def test_collects_and_writes_availability_for_ean(self, ingress_mod: ModuleType) -> None:
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 77
+        entries = [{"store_id": "N110", "available": True}]
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
+             mock.patch("main._collect_availability", return_value=entries) as mock_collect, \
+             mock.patch("main._write_availability") as mock_write:
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "Maito 1L", "ean": "6411234000001"}]}
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        mock_collect.assert_called_once_with("6411234000001", [])
+        mock_write.assert_called_once_with(mock_storage, 77, entries)
+
+    def test_sweep_price_used_skips_lookup_price(self, ingress_mod: ModuleType) -> None:
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 5
+        entries = [
+            {"store_id": "N110", "available": True, "price": 2.5, "price_currency": "EUR"}
+        ]
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
+             mock.patch("main._make_price_scrapers", return_value=["dummy-scraper"]), \
+             mock.patch("main._collect_availability", return_value=entries), \
+             mock.patch("main._write_availability"), \
+             mock.patch("main._lookup_price") as mock_lookup:
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "Juice", "ean": "999"}]}
+            )
+
+        assert result["success"] is True
+        mock_storage.create_product.assert_called_once_with(
+            "Juice",
+            description="",
+            location_id=None,
+            unit_id=None,
+            unit_price=2.5,
+            unit_price_currency="EUR",
+        )
+        mock_lookup.assert_not_called()
+
+    def test_no_ean_skips_availability_sweep(self, ingress_mod: ModuleType) -> None:
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.create_product.return_value = 3
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
+             mock.patch("main._collect_availability") as mock_collect, \
+             mock.patch("main._write_availability") as mock_write:
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "No EAN item"}]}
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        mock_collect.assert_not_called()
+        mock_write.assert_not_called()
+
+    def test_availability_sweep_and_write_failures_do_not_fail_request(
+        self, ingress_mod: ModuleType
+    ) -> None:
+        opts = {"storage_url": "http://storage"}
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 9
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
+             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
+             mock.patch("main._collect_availability", side_effect=RuntimeError("sweep boom")), \
+             mock.patch("main._write_availability", side_effect=RuntimeError("write boom")):
+            result = ingress_mod._handle_add_products(
+                {"products": [{"name": "Flaky", "ean": "123"}]}
+            )
+
+        assert result["success"] is True
+        assert result["added"] == 1
+        assert result["errors"] == []
+
     def test_chains_ai_sort_date_group_when_gemini_key_set(self, ingress_mod: ModuleType) -> None:
         opts = {
             "storage_url": "http://storage",
