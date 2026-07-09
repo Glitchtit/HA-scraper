@@ -250,6 +250,25 @@ def _parse_mobilescan_pricing(
     )
 
 
+def _normalize_store_name(name: str) -> str:
+    """Normalize Unicode punctuation the kr-api uses in store names.
+
+    ``kr-api/store/{id}`` returns names using the Unicode NON-BREAKING HYPHEN
+    (U+2011, e.g. ``"K‑Citymarket Pirkkala"``) instead of an ASCII hyphen.
+    Downstream, HA-stock shortens chip labels by matching the ASCII prefix
+    ``"K-Citymarket "``, so these characters must be normalized to their
+    ASCII equivalents. Also normalizes the HYPHEN (U+2010) and NO-BREAK SPACE
+    (U+00A0) characters that appear in the same API responses.
+    """
+    return (
+        (name or "")
+        .replace("‑", "-")
+        .replace("‐", "-")
+        .replace(" ", " ")
+        .strip()
+    )
+
+
 def _normalize_ean(ean: str) -> str:
     """Normalize an EAN/GTIN code by stripping spurious leading zeros.
 
@@ -599,35 +618,23 @@ class KRuokaScraper:
         return StoreAvailability(store_id=self.store_id, available=False)
 
     def fetch_store_name(self, store_id: str) -> Optional[str]:
-        """Resolve a K-store ID to its display name via kr-api store-search.
+        """Resolve a K-store ID to its display name via ``kr-api/store/{id}``.
 
         Only works on the kr-api backend (needs the CF-bypassed session);
         the GraphQL backend returns ``None`` and callers fall back to the
-        raw store ID.  The response shape is scanned defensively: a list of
-        store dicts either at the top level or under a ``stores`` key, each
-        with ``id`` plus ``name`` or ``localizedName.finnish``.
+        raw store ID.  The endpoint returns a single JSON dict (not a list)
+        with ``name`` (falling back to ``shortName``); Unicode punctuation
+        in the name (non-breaking hyphen, hyphen, no-break space) is
+        normalized to ASCII so downstream chip-shortening (HA-stock) still
+        matches on the ASCII ``"K-Citymarket "`` prefix.
         """
         if self._use_graphql:
             return None
-        data = self._post_json(self._api_url("store-search"), {"query": store_id})
-        if data is None:
+        data = self._get_json(self._api_url(f"store/{store_id}"))
+        if not isinstance(data, dict):
             return None
-        stores = data if isinstance(data, list) else (
-            data.get("stores") if isinstance(data.get("stores"), list) else []
-        )
-        for store in stores:
-            if not isinstance(store, dict) or str(store.get("id")) != store_id:
-                continue
-            localized = store.get("localizedName") or {}
-            name = (
-                store.get("name")
-                or localized.get("finnish")
-                or localized.get("fi")
-                or ""
-            ).strip()
-            if name:
-                return name
-        return None
+        name = _normalize_store_name(data.get("name") or data.get("shortName") or "")
+        return name or None
 
     def browse(self, max_products: Optional[int] = None) -> Iterator[Product]:
         """Yield all available products in the store catalogue.
@@ -937,6 +944,25 @@ class KRuokaScraper:
         """Perform a POST request and return parsed JSON, or ``None`` on failure."""
         try:
             resp = self._session.post(url, json=payload, timeout=15)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as exc:
+            logger.error(
+                "HTTP error %s for %s: %s",
+                exc.response.status_code,
+                url,
+                exc,
+            )
+        except requests.RequestException as exc:
+            logger.error("Request failed for %s: %s", url, exc)
+        except ValueError as exc:
+            logger.error("Failed to decode JSON from %s: %s", url, exc)
+        return None
+
+    def _get_json(self, url: str) -> Optional[dict]:
+        """Perform a GET request and return parsed JSON, or ``None`` on failure."""
+        try:
+            resp = self._session.get(url, timeout=15)
             resp.raise_for_status()
             return resp.json()
         except requests.HTTPError as exc:

@@ -1,3 +1,6 @@
+## 2.3.2
+- Store names now resolve via the real kr-api `store/{id}` endpoint (the previous `store-search` guess 404'd, leaving raw IDs) and Unicode hyphens are normalized so HA-stock's chip shortening works.
+
 ## 2.3.1
 - Products added via the ingress UI / HA-stock quick-add now record per-store availability (and reuse the sweep for the price lookup), same as the discover and --update flows.
 

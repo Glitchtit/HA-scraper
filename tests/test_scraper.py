@@ -1074,39 +1074,71 @@ class TestCheckStoreAvailability:
 # ---------------------------------------------------------------------------
 
 class TestFetchStoreName:
-    def test_graphql_backend_returns_none(self):
+    def test_graphql_backend_returns_none_without_request(self):
         session = _make_mock_session([])
         s = KRuokaScraper(store_id="N110", session=session, request_delay=0)
         assert s.fetch_store_name("N110") is None
+        session.get.assert_not_called()
+        session.post.assert_not_called()
 
-    def test_krapi_store_search_match(self):
-        session = _make_mock_session([
-            {"stores": [
-                {"id": "N106", "name": "K-Citymarket Iso Omena"},
-                {"id": "N110", "name": "K-Citymarket Kupittaa"},
-            ]}
-        ])
-        s = KRuokaScraper(store_id="N110", session=session,
+    def test_krapi_store_endpoint_normalizes_unicode_hyphen(self):
+        session = _make_mock_session([])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "id": "N141",
+            "name": "K‑Citymarket Pirkkala",
+            "chainName": "K-Citymarket",
+            "shortName": "K‑Citymarket Pirkkala",
+        }
+        mock_resp.raise_for_status.return_value = None
+        session.get.return_value = mock_resp
+
+        s = KRuokaScraper(store_id="N141", session=session,
                           request_delay=0, use_graphql=False)
-        assert s.fetch_store_name("N110") == "K-Citymarket Kupittaa"
+        assert s.fetch_store_name("N141") == "K-Citymarket Pirkkala"
+        session.get.assert_called_once()
+        called_url = session.get.call_args[0][0]
+        assert called_url.endswith("/kr-api/store/N141")
 
-    def test_krapi_localized_name_shape(self):
-        session = _make_mock_session([
-            [{"id": "N110", "localizedName": {"finnish": "K-Citymarket Kupittaa"}}]
-        ])
-        s = KRuokaScraper(store_id="N110", session=session,
-                          request_delay=0, use_graphql=False)
-        assert s.fetch_store_name("N110") == "K-Citymarket Kupittaa"
-
-    def test_krapi_error_returns_none(self):
-        import requests as _requests
-        session = _make_mock_session([_requests.ConnectionError("cf")])
+    def test_krapi_request_error_returns_none(self):
+        session = _make_mock_session([])
+        session.get.side_effect = requests.ConnectionError("cf")
         s = KRuokaScraper(store_id="N110", session=session,
                           request_delay=0, use_graphql=False)
         assert s.fetch_store_name("N110") is None
 
-    def test_no_match_returns_none(self):
-        session = _make_mock_session([{"stores": [{"id": "K532", "name": "X"}]}])
+    def test_krapi_non_dict_response_returns_none(self):
+        session = _make_mock_session([])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = [{"id": "N110", "name": "Should not be used"}]
+        mock_resp.raise_for_status.return_value = None
+        session.get.return_value = mock_resp
+
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        assert s.fetch_store_name("N110") is None
+
+    def test_krapi_missing_name_falls_back_to_short_name(self):
+        session = _make_mock_session([])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "id": "N110",
+            "shortName": "K‑Citymarket Kupittaa",
+        }
+        mock_resp.raise_for_status.return_value = None
+        session.get.return_value = mock_resp
+
+        s = KRuokaScraper(store_id="N110", session=session,
+                          request_delay=0, use_graphql=False)
+        assert s.fetch_store_name("N110") == "K-Citymarket Kupittaa"
+
+    def test_krapi_empty_body_returns_none(self):
+        session = _make_mock_session([])
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {}
+        mock_resp.raise_for_status.return_value = None
+        session.get.return_value = mock_resp
+
         s = KRuokaScraper(store_id="N110", session=session,
                           request_delay=0, use_graphql=False)
         assert s.fetch_store_name("N110") is None
