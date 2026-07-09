@@ -306,6 +306,49 @@ class StorageClient:
             ) from exc
 
     # ------------------------------------------------------------------
+    # Stores / per-store availability
+    # ------------------------------------------------------------------
+
+    def upsert_store(self, store_id: str, name: str) -> None:
+        """Register or rename a store (K-group store ID → display name)."""
+        url = self._url(f"/api/stores/{store_id}")
+        try:
+            resp = self._session.put(url, json={"name": name}, timeout=self.timeout)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise StorageAPIError(
+                f"Failed to upsert store {store_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise StorageAPIError(
+                f"Failed to upsert store {store_id}: {exc}"
+            ) from exc
+
+    def set_product_availability(
+        self, product_id: int, entries: list[dict]
+    ) -> None:
+        """Upsert per-store availability rows for *product_id*.
+
+        Each entry is ``{"store_id", "available"}`` plus optional ``"price"``
+        and ``"price_currency"``.  Stores absent from *entries* keep their
+        previous state in Storage.
+        """
+        url = self._url(f"/api/products/{product_id}/availability")
+        try:
+            resp = self._session.put(url, json=entries, timeout=self.timeout)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            body = _response_error_detail(exc.response)
+            raise StorageAPIError(
+                f"Failed to set availability for product {product_id}: {exc}{body}"
+            ) from exc
+        except requests.RequestException as exc:
+            raise StorageAPIError(
+                f"Failed to set availability for product {product_id}: {exc}"
+            ) from exc
+
+    # ------------------------------------------------------------------
     # Barcode Queue
     # ------------------------------------------------------------------
 

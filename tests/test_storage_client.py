@@ -718,3 +718,44 @@ class TestDeleteStockEntry:
         session.delete.return_value = _mock_response(raise_for=http_err, status_code=404)
         with pytest.raises(StorageAPIError, match="stock entry"):
             client.delete_stock_entry(42)
+
+
+# ---------------------------------------------------------------------------
+# Stores / availability
+# ---------------------------------------------------------------------------
+
+class TestUpsertStore:
+    def test_puts_to_store_endpoint(self):
+        client, session = _make_client()
+        session.put.return_value = _mock_response({"id": "N110", "name": "K-Citymarket Kupittaa"})
+        client.upsert_store("N110", "K-Citymarket Kupittaa")
+        session.put.assert_called_once()
+        url = session.put.call_args[0][0]
+        assert url == "https://storage.example.com/api/stores/N110"
+        assert session.put.call_args.kwargs["json"] == {"name": "K-Citymarket Kupittaa"}
+
+    def test_http_error_raises_storage_api_error(self):
+        client, session = _make_client()
+        err = requests.HTTPError(response=_mock_response({"detail": "boom"}, 500))
+        session.put.return_value = _mock_response(raise_for=err)
+        with pytest.raises(StorageAPIError):
+            client.upsert_store("N110", "X")
+
+
+class TestSetProductAvailability:
+    def test_puts_entries_as_body(self):
+        client, session = _make_client()
+        session.put.return_value = _mock_response([])
+        entries = [{"store_id": "N110", "available": True, "price": 2.35,
+                    "price_currency": "EUR"},
+                   {"store_id": "K532", "available": False}]
+        client.set_product_availability(42, entries)
+        url = session.put.call_args[0][0]
+        assert url == "https://storage.example.com/api/products/42/availability"
+        assert session.put.call_args.kwargs["json"] == entries
+
+    def test_request_error_raises_storage_api_error(self):
+        client, session = _make_client()
+        session.put.side_effect = requests.ConnectionError("down")
+        with pytest.raises(StorageAPIError):
+            client.set_product_availability(42, [{"store_id": "N110", "available": True}])
