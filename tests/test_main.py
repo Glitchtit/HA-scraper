@@ -3724,3 +3724,140 @@ class TestRegisterStores:
         s.fetch_store_name.side_effect = RuntimeError("cf")
         _register_stores(storage, ["N110", "K532"], [s])  # must not raise
         assert storage.upsert_store.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# _price_from_entries
+# ---------------------------------------------------------------------------
+
+class TestPriceFromEntries:
+    def test_first_available_priced_entry_wins(self):
+        from addon.main import _price_from_entries
+
+        entries = [
+            {"store_id": "N110", "available": False},
+            {"store_id": "K532", "available": True,
+             "price": 1.5, "price_currency": "EUR"},
+            {"store_id": "N137", "available": True,
+             "price": 9.9, "price_currency": "EUR"},
+        ]
+        assert _price_from_entries(entries) == 1.5
+
+    def test_unavailable_priced_entry_is_skipped(self):
+        from addon.main import _price_from_entries
+
+        entries = [
+            {"store_id": "N110", "available": False,
+             "price": 3.0, "price_currency": "EUR"},
+            {"store_id": "K532", "available": True,
+             "price": 4.0, "price_currency": "EUR"},
+        ]
+        assert _price_from_entries(entries) == 4.0
+
+    def test_no_priced_entries_returns_none(self):
+        from addon.main import _price_from_entries
+
+        entries = [{"store_id": "N110", "available": True}]
+        assert _price_from_entries(entries) is None
+
+    def test_empty_entries_returns_none(self):
+        from addon.main import _price_from_entries
+
+        assert _price_from_entries([]) is None
+
+
+# ---------------------------------------------------------------------------
+# sync_product – price derived from the availability sweep (no duplicate
+# kr-api lookup for the same EAN; see CLAUDE.md finding on CF-walled traffic)
+# ---------------------------------------------------------------------------
+
+class TestSyncProductSweepPricing:
+    def _storage(self):
+        g = MagicMock(spec=StorageClient)
+        g.get_product_by_barcode.return_value = None
+        g.create_product.return_value = 123
+        return g
+
+    def test_price_from_sweep_avoids_second_lookup(self):
+        from scraper.scraper import StoreAvailability
+
+        storage = self._storage()
+        avail_scraper = MagicMock()
+        avail_scraper.check_store_availability.return_value = [
+            StoreAvailability(store_id="N110", available=True, price=3.49),
+        ]
+        price_scraper = MagicMock()
+        product = Product(name="Maito", ean="123456")
+
+        result = sync_product(
+            product, storage,
+            location_id=None, quantity_unit_id=None,
+            skip_existing=False, known_barcodes=set(),
+            price_scrapers=[price_scraper],
+            avail_scrapers=[avail_scraper],
+        )
+
+        assert result is True
+        storage.create_product.assert_called_once_with(
+            name="Maito", description="", location_id=None, unit_id=None,
+            unit_price=3.49, unit_price_currency="EUR",
+        )
+        # Price came from the availability sweep — _lookup_price's
+        # per-store `.search()` must never be called for this EAN.
+        price_scraper.search.assert_not_called()
+        # Only one sweep of the availability endpoint total (reused for
+        # both price derivation and the availability write below).
+        avail_scraper.check_store_availability.assert_called_once_with("123456")
+        storage.set_product_availability.assert_called_once_with(
+            123, [{"store_id": "N110", "available": True,
+                   "price": 3.49, "price_currency": "EUR"}],
+        )
+
+    def test_lookup_price_fallback_when_sweep_has_no_price(self):
+        from scraper.scraper import StoreAvailability
+
+        storage = self._storage()
+        avail_scraper = MagicMock()
+        avail_scraper.check_store_availability.return_value = [
+            StoreAvailability(store_id="N110", available=False),
+        ]
+        price_scraper = MagicMock()
+        priced = Product(name="Maito", ean="123456", price=2.10)
+        price_scraper.search.return_value = iter([priced])
+        product = Product(name="Maito", ean="123456")
+
+        result = sync_product(
+            product, storage,
+            location_id=None, quantity_unit_id=None,
+            skip_existing=False, known_barcodes=set(),
+            price_scrapers=[price_scraper],
+            avail_scrapers=[avail_scraper],
+        )
+
+        assert result is True
+        price_scraper.search.assert_called_once()
+        storage.create_product.assert_called_once_with(
+            name="Maito", description="", location_id=None, unit_id=None,
+            unit_price=2.10, unit_price_currency="EUR",
+        )
+
+    def test_no_avail_scrapers_still_uses_lookup_price(self):
+        storage = self._storage()
+        price_scraper = MagicMock()
+        priced = Product(name="Maito", ean="123456", price=1.99)
+        price_scraper.search.return_value = iter([priced])
+        product = Product(name="Maito", ean="123456")
+
+        sync_product(
+            product, storage,
+            location_id=None, quantity_unit_id=None,
+            skip_existing=False, known_barcodes=set(),
+            price_scrapers=[price_scraper],
+            avail_scrapers=[],
+        )
+
+        price_scraper.search.assert_called_once()
+        storage.create_product.assert_called_once_with(
+            name="Maito", description="", location_id=None, unit_id=None,
+            unit_price=1.99, unit_price_currency="EUR",
+        )

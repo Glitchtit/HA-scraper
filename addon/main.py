@@ -315,20 +315,19 @@ def _register_stores(
             logger.warning("Could not register store %s in Storage: %s", sid, exc)
 
 
-def _sync_availability(
-    storage: StorageClient,
-    product_id: int,
+def _collect_availability(
     ean: str,
     avail_scrapers: list[KRuokaScraper],
-) -> None:
-    """Sweep all configured stores for *ean* and upsert the result in Storage.
+) -> list[dict]:
+    """Sweep all configured stores for *ean* and return the merged entries.
 
-    Best-effort: scraper errors skip that scraper, Storage errors are logged.
-    A store that appears in several scrapers is written once (first result
-    wins — kr-api scrapers are passed first so their price is preferred).
+    Best-effort: scraper errors skip that scraper. A store that appears in
+    several scrapers is included once (first result wins — kr-api scrapers
+    are passed first so their price is preferred). Returns ``[]`` when *ean*
+    or *avail_scrapers* is empty, or when no scraper yields a result.
     """
     if not ean or not avail_scrapers:
-        return
+        return []
     entries: list[dict] = []
     seen: set[str] = set()
     for scraper in avail_scrapers:
@@ -347,6 +346,19 @@ def _sync_availability(
                 entry["price"] = a.price
                 entry["price_currency"] = a.price_currency
             entries.append(entry)
+    return entries
+
+
+def _write_availability(
+    storage: StorageClient,
+    product_id: int,
+    entries: list[dict],
+) -> None:
+    """Upsert already-collected availability *entries* in Storage.
+
+    Best-effort: Storage errors are logged, never raised. No-op if *entries*
+    is empty.
+    """
     if not entries:
         return
     try:
@@ -360,6 +372,35 @@ def _sync_availability(
         logger.warning(
             "Failed to write availability for product %d: %s", product_id, exc
         )
+
+
+def _sync_availability(
+    storage: StorageClient,
+    product_id: int,
+    ean: str,
+    avail_scrapers: list[KRuokaScraper],
+) -> None:
+    """Sweep all configured stores for *ean* and upsert the result in Storage.
+
+    Thin composition of :func:`_collect_availability` and
+    :func:`_write_availability`, kept for callers that don't need to reuse
+    the swept entries for anything else (e.g. price derivation).
+    """
+    entries = _collect_availability(ean, avail_scrapers)
+    _write_availability(storage, product_id, entries)
+
+
+def _price_from_entries(entries: list[dict]) -> float | None:
+    """Return the first available entry's price, or ``None``.
+
+    Mirrors the "first store wins" ordering already used when building
+    *entries* (kr-api scrapers are swept first), so this is equivalent to
+    a fresh ``_lookup_price`` call but without re-querying anything.
+    """
+    for entry in entries:
+        if entry.get("available") and entry.get("price") is not None:
+            return entry["price"]
+    return None
 
 
 def sync_product(
@@ -405,8 +446,17 @@ def sync_product(
         known_barcodes.add(product.ean)
         return False
 
+    # Sweep per-store availability once up front so its entries can also
+    # supply the creation price below — avoids a second Cloudflare-bypassed
+    # kr-api query for the same EAN.
+    avail_entries: list[dict] = []
+    if avail_scrapers:
+        avail_entries = _collect_availability(product.ean, avail_scrapers)
+
     # Resolve a K-Ruoka price for this barcode (kr-api only; needs CF bypass).
     price = product.price
+    if price is None:
+        price = _price_from_entries(avail_entries)
     if price is None and price_scrapers:
         price = _lookup_price(price_scrapers, product.ean)
     price_kwargs: dict = {}
@@ -451,9 +501,10 @@ def sync_product(
     if upload_images and product.image_url:
         _upload_product_image(product, storage, product_id)
 
-    # Record per-store assortment availability (best-effort).
+    # Record per-store assortment availability (best-effort) using the
+    # entries already collected above — no second sweep.
     if avail_scrapers:
-        _sync_availability(storage, product_id, product.ean, avail_scrapers)
+        _write_availability(storage, product_id, avail_entries)
 
     return True
 
@@ -1165,10 +1216,14 @@ def _update_products(args: argparse.Namespace) -> int:
                     logger.debug("  SearXNG lookup failed for %s: %s", ean, exc)
 
         # Refresh per-store availability regardless of whether the product
-        # was found by name/EAN search above.
+        # was found by name/EAN search above.  Collect once and reuse the
+        # entries below for the price refresh — avoids a second
+        # Cloudflare-bypassed kr-api query for the same EAN.
         avail_ean = matched_ean or (eans[0] if eans else "")
+        avail_entries: list[dict] = []
         if avail_ean:
-            _sync_availability(storage, pid, avail_ean, avail_scrapers)
+            avail_entries = _collect_availability(avail_ean, avail_scrapers)
+            _write_availability(storage, pid, avail_entries)
 
         if found is None:
             logger.debug("  Product %d ('%s') not found online – skipping.", pid, current_name)
@@ -1183,9 +1238,12 @@ def _update_products(args: argparse.Namespace) -> int:
             update_fields["description"] = found.description
 
         # Refresh the K-Ruoka price (kr-api only).  Reuse the price already
-        # attached to *found* when it came from the kr-api backend, otherwise
-        # look it up via the dedicated price scrapers.
+        # attached to *found* when it came from the kr-api backend, then the
+        # availability sweep entries collected above, and only fall back to
+        # a fresh _lookup_price query if neither yielded a price.
         price = found.price
+        if price is None:
+            price = _price_from_entries(avail_entries)
         if price is None and price_scrapers:
             price = _lookup_price(price_scrapers, matched_ean)
         if price is not None and storage_product.get("unit_price") != price:
