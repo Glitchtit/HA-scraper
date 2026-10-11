@@ -1,3 +1,6 @@
+## 2.6.0
+- Adding products (`/api/add_products`) accepts a parent and an aisle group for each new product, so HA-storage can file a product it finds for a generic shopping-list item directly under that item
+
 ## 2.5.0
 - Rate-limit avoidance overhaul for k-ruoka.fi's new limits:
   - Per-store availability sweeps now always use the un-throttled mobile GraphQL backend; the Cloudflare-walled kr-api is reserved strictly for price lookups (~6× fewer kr-api requests per update).
