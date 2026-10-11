@@ -417,6 +417,23 @@ class TestHandleAddProducts:
         assert result["added"] == 0
         mock_storage.create_product.assert_not_called()
 
+    def test_forwards_parent_and_group(self, ingress_mod: ModuleType) -> None:
+        """HA-storage files a product it finds for a generic item under it."""
+        mock_storage = mock.MagicMock()
+        mock_storage.get_product_by_barcode.return_value = None
+        mock_storage.create_product.return_value = 43
+        with mock.patch.object(ingress_mod, "_read_options", return_value={"storage_url": "http://storage"}):
+            with mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage):
+                result = ingress_mod._handle_add_products({"products": [
+                    {"name": "Valio juustokreemi", "ean": "6408430142842",
+                     "parent_id": 1941, "product_group_id": 21},
+                    {"name": "Toinen", "ean": "6408430142843", "parent_id": "x", "product_group_id": True},
+                ]})
+        assert result["added_ids"] == [43, 43]
+        first, second = mock_storage.create_product.call_args_list
+        assert first.kwargs["parent_id"] == 1941 and first.kwargs["product_group_id"] == 21
+        assert "parent_id" not in second.kwargs and "product_group_id" not in second.kwargs
+
     def test_empty_product_list(self, ingress_mod: ModuleType) -> None:
         result = ingress_mod._handle_add_products({"products": []})
         assert result["success"] is False

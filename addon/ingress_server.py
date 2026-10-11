@@ -19,7 +19,8 @@ POST /api/sort          Run Gemini AI product location sorting
 POST /api/date          Run Gemini AI best-before date assignment
 POST /api/group         Run Gemini AI product grouping (parent-product assignment)
 POST /api/update        Update existing products from K-Ruoka
-POST /api/add_products  Add selected products to the Storage database
+POST /api/add_products  Add selected products to the Storage database (an item may
+                        carry parent_id / product_group_id to file it under a generic item)
 
 All POST endpoints return ``{"task_id": "...", "status": "running"}`` immediately.
 The frontend polls ``GET /api/task/{id}`` until the task completes.
@@ -461,12 +462,20 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
                     price_kwargs["unit_price"] = price
                     price_kwargs["unit_price_currency"] = "EUR"
 
+                # HA-storage files a product it finds for a generic item
+                # directly under it (which also skips its auto-placement).
+                create_kwargs = dict(price_kwargs)
+                for key in ("parent_id", "product_group_id"):
+                    value = item.get(key)
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        create_kwargs[key] = value
+
                 product_id = storage.create_product(
                     name,
                     description=description,
                     location_id=None,
                     unit_id=None,
-                    **price_kwargs,
+                    **create_kwargs,
                 )
                 if ean:
                     storage.add_barcode(product_id, ean)
