@@ -1,3 +1,7 @@
+## 2.6.1
+- New icon and logo in the add-on store, part of one matching set across all GlitchyRee apps
+- The integration has its own icon and logo on the Integrations page (Home Assistant 2026.3 or newer)
+
 ## 2.6.0
 - Adding products (`/api/add_products`) accepts a parent and an aisle group for each new product, so HA-storage can file a product it finds for a generic shopping-list item directly under that item
 
