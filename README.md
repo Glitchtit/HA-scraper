@@ -1,143 +1,87 @@
-# scraper
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Glitchtit/HA-scraper/main/addon/logo.png" alt="Scraper" height="72">
+</p>
 
-A **[Home Assistant](https://www.home-assistant.io/) custom integration** and **Home Assistant Supervisor add-on** that scrapes **[k-ruoka.fi](https://www.k-ruoka.fi/kauppa)** for Finnish food products and their EAN barcodes, then stores them in **[HA-Storage](https://github.com/Glitchtit/HA-storage)** — the central data store for this ecosystem.
+<p align="center">
+  <b>Fills Storage with Finnish grocery products from k-ruoka.fi</b><br>
+  Part of Glitchtit's HA apps — needs the Storage add-on.
+</p>
 
----
+<p align="center">
+  <a href="https://github.com/Glitchtit/HA-apps"><img alt="Home Assistant add-on" src="https://img.shields.io/badge/Home%20Assistant-add--on-0047AB?style=flat-square&logo=homeassistant&logoColor=white"></a>
+  <img alt="Version" src="https://img.shields.io/badge/dynamic/yaml?style=flat-square&color=FF4F00&label=version&url=https%3A%2F%2Fraw.githubusercontent.com%2FGlitchtit%2FHA-scraper%2Fmain%2Faddon%2Fconfig.yaml&query=%24.version">
+  <a href="https://hacs.xyz"><img alt="HACS custom" src="https://img.shields.io/badge/HACS-custom-1F2937?style=flat-square"></a>
+</p>
 
-## Home Assistant Supervisor add-on
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Glitchtit/HA-scraper/main/docs/screenshots/hero.png" alt="Scraper screenshot" width="100%">
+</p>
 
-The `addon/` directory contains a full Home Assistant Supervisor add-on that runs the scraper in a dedicated Docker container managed by HA Supervisor.
+## ✨ Features
 
-### Add-on installation
+- **Product search** — search K-Ruoka by name, tick the results you want and add them to Storage with name, EAN barcode and product image. Barcodes already in Storage are skipped.
+- **Barcode queue discovery** — **Discover** works through the pending barcodes in Storage's queue: it looks each one up on K-Ruoka, then s-kaupat.fi, then SearXNG if configured, creates the product, adds it to stock and marks the queue item done.
+- **Catalogue update** — **Update** re-checks every Storage product by barcode and refreshes its name, image and price. Names found only through SearXNG fill in placeholder names but never overwrite a real one.
+- **Prices and per-store availability** — every configured store is checked per product; whether the store carries it is written to Storage, and the store's regular price is saved as the product's `unit_price` (EUR). Prices come from Cloudflare-protected kr-api, so they need FlareSolverr and are skipped without it.
+- **Rate-limit protection** — availability uses the mobile GraphQL API, which is not throttled. kr-api price lookups are limited to 200 products per run (oldest first, skipping prices refreshed in the last 3 days), paced with jitter, paused for 15 minutes after repeated 429s, and reuse a cached Cloudflare clearance.
+- **Finds Storage by itself** — the Storage add-on is detected from the container hostname or the Supervisor API, and the scraper keeps retrying while Storage is down.
 
-1. In Home Assistant, navigate to **Settings → Add-ons → Add-on Store**.
-2. Click the **⋮** (three-dot) menu in the top-right and choose **Repositories**.
-3. Add `https://github.com/Glitchtit/HA-apps` and click **Add**.
-4. The **Scraper** add-on will appear in the store — click **Install**.
-5. Open the add-on's **Configuration** tab and fill in at minimum:
-   - `storage_url` — base URL of your HA-Storage instance (e.g. `http://a0a9ed235_ha_storage:8099`)
-   - `store_id` — K-group store ID (see [Finding your store ID](#finding-your-store-id))
-6. Click **Save** and then **Start**.
+## 🚀 Installation
 
-### Add-on options
+### Add-on
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `storage_url` | Base URL of your HA-Storage instance | *(required)* |
-| `store_id` | K-group store ID (e.g. `N110`) | `N110` |
-| `upload_images` | Download and upload product images | `true` |
-| `use_graphql` | Use the faster GraphQL backend (recommended) | `true` |
-| `gemini_api_key` | Google Gemini API key (for Sort, Date, Group, Optimize) | *(optional)* |
-| `gemini_model` | Gemini model name | `gemini-1.5-flash` |
+1. In Home Assistant open **Settings → Add-ons → Add-on Store → ⋮ → Repositories** and add `https://github.com/Glitchtit/HA-apps`
+2. Install **Storage** first, then **Scraper**
+3. In the **Configuration** tab set `store_id` to your K-group store ID(s); add `flaresolverr_url` if you want prices
+4. Start it and open **Scraper** from the sidebar
 
----
+### Integration (HACS)
 
-## Home Assistant integration
+1. In HACS open **⋮ → Custom repositories**, add `https://github.com/Glitchtit/HA-scraper` with category **Integration**
+2. Download **Scraper** and restart Home Assistant
+3. **Settings → Devices & services → Add integration → Scraper** (enter the Storage URL and your K-group store ID; the integration talks to Storage and K-Ruoka directly)
 
-The `custom_components/scraper/` directory contains a full Home Assistant integration that adds a **sidebar panel** to the HA UI, letting you search for products and trigger AI-powered actions — without ever touching the command line.
+## ⚙️ Configuration
 
-### Features
+| Option | Default | Description |
+|--------|---------|-------------|
+| `storage_hostname` | `""` | Hostname of the Storage add-on (reached on port `8099`). Leave empty to auto-detect. A full `storage_url` is also accepted in the schema and takes priority. |
+| `store_id` | `K532` | K-group store ID, or several comma-separated (e.g. `K532,N110`). Search tries them in order; availability is checked in all of them. |
+| `upload_images` | `true` | Download product images and upload them to Storage |
+| `use_graphql` | `true` | Use the mobile GraphQL API for name and image lookups. Set `false` to use kr-api, which needs a Cloudflare bypass. |
+| `flaresolverr_url` | `""` | FlareSolverr address (with or without `/v1`). Needed for prices. |
+| `searxng_url` | `""` | SearXNG instance used as a last-resort barcode lookup |
 
-- **Sidebar panel** — search k-ruoka.fi by keyword; see product names, EAN barcodes, and images in a responsive card grid
-- **Config flow** — set up Storage URL and K-Ruoka store ID through the HA UI
-- **Options flow** — configure Gemini AI settings directly from the HA settings page
-- **AI actions** — Sort (assign locations), Date (set best-before days), Group (group products), Optimize (full AI pass)
-- **Auto-discover** — periodic scan of the Storage barcode queue, looking up unknown barcodes on K-Ruoka and creating products automatically
-- **WebSocket API** — the panel communicates with the backend via HA's native WebSocket interface; no extra ports or services needed
+## 🏠 In Home Assistant
 
-### Installation
+The integration adds no entities and no sidebar panel (the add-on's panel is the UI). It registers two actions:
 
-1. Copy (or symlink) the `custom_components/scraper/` folder into your HA `config/custom_components/` directory.
-2. Copy the `scraper/` Python package folder into the **same** `config/` directory so HA can import it:
-   ```
-   config/
-   ├── custom_components/
-   │   └── scraper/   ← HA integration
-   └── scraper/       ← Python package (scraper + Storage client)
-   ```
-3. Restart Home Assistant.
-4. Navigate to **Settings → Devices & Services → Add Integration** and search for **Scraper**.
-5. Follow the config flow to enter your Storage URL and store ID.
-6. The **Scraper** entry appears in the HA sidebar.
+| Action | What it does |
+|--------|--------------|
+| `scraper.search_products` | Search K-Ruoka by name (`query`, optional `max_products`, 1–500, default 50) |
+| `scraper.add_product` | Create a product in Storage from a `name` with optional `ean`, `description` and `image_url` (the image is downloaded and uploaded) |
 
-### Settings (options flow)
+`search_products` returns `{products: [{name, ean, description, image_url}]}`; `add_product` can return `{product_id}`.
 
-Open the integration's **Configure** button to set:
+## 🧩 The family
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Upload product images | Download and upload images when creating products | `true` |
-| Use GraphQL backend | Use the faster GraphQL backend (recommended) | `true` |
-| Gemini API Key | Google Gemini API key for AI actions | *(empty)* |
-| Gemini model name | e.g. `gemini-1.5-flash` | `gemini-1.5-flash` |
-| Gemini model (Optimize) | Override model for the Optimize action | *(uses default)* |
+<p align="center">
+  <a href="https://github.com/Glitchtit/HA-storage"><img src="https://raw.githubusercontent.com/Glitchtit/HA-storage/main/storage/icon.png" width="56" alt="Storage"></a>&nbsp;
+  <a href="https://github.com/Glitchtit/HA-scraper"><img src="https://raw.githubusercontent.com/Glitchtit/HA-scraper/main/addon/icon.png" width="56" alt="Scraper"></a>&nbsp;
+  <a href="https://github.com/Glitchtit/HA-stock"><img src="https://raw.githubusercontent.com/Glitchtit/HA-stock/main/stock/icon.png" width="56" alt="Stock"></a>&nbsp;
+  <a href="https://github.com/Glitchtit/HA-recipes"><img src="https://raw.githubusercontent.com/Glitchtit/HA-recipes/main/recipes/icon.png" width="56" alt="Recipes"></a>&nbsp;
+  <a href="https://github.com/Glitchtit/HA-chores"><img src="https://raw.githubusercontent.com/Glitchtit/HA-chores/main/chores/icon.png" width="56" alt="Chores"></a>&nbsp;
+  <a href="https://github.com/Glitchtit/HA-lists"><img src="https://raw.githubusercontent.com/Glitchtit/HA-lists/main/lists/icon.png" width="56" alt="Lists"></a>&nbsp;
+  <a href="https://github.com/Glitchtit/HA-print"><img src="https://raw.githubusercontent.com/Glitchtit/HA-print/main/print/icon.png" width="56" alt="Print"></a>
+</p>
 
----
+<p align="center"><sub>Scraper writes only to Storage; Stock's quick-add and Storage's product finder call it to look up and add K-Ruoka products.</sub></p>
 
-## Backends
-
-### GraphQL (default, recommended)
-
-The mobile app GraphQL API at `https://mobile.k-ruoka.fi/graphql` — **no Cloudflare bypass required**.
-
-**Limitations**: The server enforces an `offset ≤ 1000` hard limit.  The `browse()` mode works around this by iterating all category slugs.
-
-### kr-api REST (fallback)
-
-The web SPA REST API at `https://www.k-ruoka.fi/kr-api` — requires a Cloudflare bypass.  Enable it by setting `use_graphql` to `false`.
-
----
-
-## Finding your store ID
-
-1. Go to [k-ruoka.fi/kauppa](https://www.k-ruoka.fi/kauppa).
-2. Select your local store.
-3. The store ID appears in the URL: `https://www.k-ruoka.fi/kauppa?storeId=`**`N110`**.
-
-Common store IDs: `N110` (K-Supermarket Helsinki), `N137` (K-Citymarket Tammisto).
-
----
-
-## Project structure
-
-```
-scraper/
-├── scraper/
-│   ├── __init__.py
-│   ├── scraper.py              # k-ruoka.fi product scraper (GraphQL + kr-api backends)
-│   ├── storage_client.py       # HA-Storage REST API client
-│   └── skaupat_client.py       # S-kaupat.fi EAN lookup
-├── addon/
-│   ├── scraper/          # Mirror of the package above (kept in sync)
-│   ├── main.py                 # Add-on entry point + Gemini AI helpers
-│   └── ingress_server.py       # HA ingress web server
-├── custom_components/
-│   └── scraper/          # Home Assistant integration
-│       ├── __init__.py
-│       ├── config_flow.py
-│       ├── const.py
-│       ├── manifest.json
-│       ├── strings.json
-│       ├── translations/en.json
-│       ├── ws_api.py           # WebSocket API handlers
-│       └── www/
-│           └── panel.js        # Sidebar panel web component
-└── tests/
-```
-
----
-
-## Running tests
+## 🛠️ Development
 
 ```bash
-cd scraper
+pip install -r requirements.txt pytest
 python -m pytest tests/ -v
 ```
 
----
-
-## Legal notice
-
-Scraping k-ruoka.fi is subject to their [terms of service](https://www.k-ruoka.fi).  
-This tool is intended for personal use only.  The author is not affiliated with K-ryhmä or K-ruoka.fi.
-
+Tests import the top-level `scraper/` package. `addon/scraper/` and `custom_components/scraper/scraperlib/` are copies of it and must be kept in sync by hand.

@@ -1,3 +1,6 @@
+## 2.6.2
+- New README with screenshots, configuration and Home Assistant actions
+
 ## 2.6.1
 - New icon and logo in the add-on store, part of one matching set across all GlitchyRee apps
 - The integration has its own icon and logo on the Integrations page (Home Assistant 2026.3 or newer)
