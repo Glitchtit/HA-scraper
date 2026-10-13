@@ -14,10 +14,6 @@ GET  /api/task/{id}     Poll background task status/result
 POST /api/search        Search products on K-Ruoka
 POST /api/discover      Run discover pipeline.  Optionally accepts {"barcode": "..."} for
                         single-barcode mode.
-POST /api/optimize      Run Gemini AI combined optimization (sort + date + group + pack)
-POST /api/sort          Run Gemini AI product location sorting
-POST /api/date          Run Gemini AI best-before date assignment
-POST /api/group         Run Gemini AI product grouping (parent-product assignment)
 POST /api/update        Update existing products from K-Ruoka
 POST /api/add_products  Add selected products to the Storage database (an item may
                         carry parent_id / product_group_id to file it under a generic item)

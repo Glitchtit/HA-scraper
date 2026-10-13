@@ -3,7 +3,7 @@
 Exposes two agent-callable services:
 
 * ``scraper.search_products`` (SupportsResponse.ONLY) — wraps the same
-  K-Ruoka product search used by the ``scraper/search`` WebSocket command.
+  K-Ruoka product search used by the add-on's ``/api/search``.
 * ``scraper.add_product`` (SupportsResponse.OPTIONAL) — creates a found
   product in HA-Storage (product → optional barcode → optional image).
 
