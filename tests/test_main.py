@@ -162,16 +162,30 @@ class TestSyncProduct:
         assert result is False
         storage.create_product.assert_not_called()
 
-    def test_create_product_error_returns_false(self):
+    def test_create_product_error_raises(self):
         storage = self._storage()
         storage.create_product.side_effect = StorageAPIError("fail")
         product = Product(name="Voi", ean="777")
-        result = sync_product(
-            product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=False, known_barcodes=set()
-        )
-        assert result is False
+        with pytest.raises(StorageAPIError):
+            sync_product(
+                product, storage,
+                location_id=None, quantity_unit_id=None,
+                skip_existing=False, known_barcodes=set()
+            )
+
+    def test_add_barcode_error_deletes_product_and_raises(self):
+        storage = self._storage()
+        storage.add_barcode.side_effect = StorageAPIError("fail")
+        product = Product(name="Voi", ean="777")
+        known = set()
+        with pytest.raises(StorageAPIError):
+            sync_product(
+                product, storage,
+                location_id=None, quantity_unit_id=None,
+                skip_existing=False, known_barcodes=known
+            )
+        storage.delete_product.assert_called_once_with(99)
+        assert known == set()
 
     @patch("addon.main.requests.get")
     def test_uploads_image_when_enabled(self, mock_get):
@@ -4112,3 +4126,79 @@ class TestSyncProductSweepPricing:
             name="Maito", description="", location_id=None, unit_id=None,
             unit_price=1.99, unit_price_currency="EUR",
         )
+
+
+# ---------------------------------------------------------------------------
+# _discover_single_barcode (HA-stock scan of an unknown barcode)
+# ---------------------------------------------------------------------------
+
+@patch("addon.main._collect_availability", return_value=[])
+@patch("addon.main._register_stores")
+@patch("addon.main._make_price_scrapers", return_value=[])
+@patch("addon.main.KRuokaScraper")
+@patch("addon.main.StorageClient")
+class TestDiscoverSingleBarcode:
+    EAN = "6410405082657"
+
+    def _run(self, MockStorage, MockScraper):
+        from addon.main import _discover_single_barcode
+        MockScraper.return_value.search.return_value = iter([
+            Product(name="Pirkka kevytmaito 1l", ean=self.EAN),
+        ])
+        args = Namespace(
+            storage_url="https://storage.example.com", store="N110",
+            use_graphql=True, location_id=2, quantity_unit_id=2,
+            upload_images=False,
+        )
+        return _discover_single_barcode(args, self.EAN)
+
+    def test_happy_path_creates_and_stocks(self, MockStorage, MockScraper, *_):
+        storage = MockStorage.return_value
+        storage.get_product_by_barcode.side_effect = [
+            None,  # already-known check
+            None,  # sync_product check
+            {"id": 99, "name": "Pirkka kevytmaito 1l"},  # post-creation lookup
+        ]
+        storage.create_product.return_value = 99
+        result = self._run(MockStorage, MockScraper)
+        assert result["success"] is True
+        assert result["product_id"] == 99
+        assert result["already_existed"] is False
+        storage.add_barcode.assert_called_once_with(99, self.EAN)
+        storage.add_stock.assert_called_once_with(99, amount=1.0)
+
+    def test_already_known_barcode(self, MockStorage, MockScraper, *_):
+        storage = MockStorage.return_value
+        storage.get_product_by_barcode.return_value = {"id": 5, "name": "Maito"}
+        result = self._run(MockStorage, MockScraper)
+        assert result["success"] is True
+        assert result["already_existed"] is True
+        assert result["product_id"] == 5
+        storage.create_product.assert_not_called()
+
+    def test_create_failure_reports_error(self, MockStorage, MockScraper, *_):
+        storage = MockStorage.return_value
+        storage.get_product_by_barcode.return_value = None
+        storage.create_product.side_effect = StorageAPIError("restarting")
+        result = self._run(MockStorage, MockScraper)
+        assert result["success"] is False
+        assert "Pirkka kevytmaito 1l" in result["error"]
+        storage.add_stock.assert_not_called()
+
+    def test_barcode_failure_reports_error_and_removes_orphan(self, MockStorage, MockScraper, *_):
+        storage = MockStorage.return_value
+        storage.get_product_by_barcode.return_value = None
+        storage.create_product.return_value = 99
+        storage.add_barcode.side_effect = StorageAPIError("rejected")
+        result = self._run(MockStorage, MockScraper)
+        assert result["success"] is False
+        storage.delete_product.assert_called_once_with(99)
+        storage.add_stock.assert_not_called()
+
+    def test_unresolvable_product_id_reports_error(self, MockStorage, MockScraper, *_):
+        storage = MockStorage.return_value
+        storage.get_product_by_barcode.side_effect = [None, None, StorageAPIError("down")]
+        storage.create_product.return_value = 99
+        result = self._run(MockStorage, MockScraper)
+        assert result["success"] is False
+        storage.add_stock.assert_not_called()
