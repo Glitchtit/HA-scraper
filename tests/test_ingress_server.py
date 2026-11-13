@@ -138,19 +138,15 @@ class TestHandleConfig:
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             cfg = ingress_mod._handle_config()
         assert cfg["configured"] is False
-        assert cfg["gemini_configured"] is False
 
     def test_fully_configured(self, ingress_mod: ModuleType) -> None:
         opts = {
             "storage_url": "http://storage",
             "store_id": "N110",
-            "gemini_api_key": "gem-key",
         }
         with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
             cfg = ingress_mod._handle_config()
-        assert cfg["configured"] is True
-        assert cfg["store_id"] == "N110"
-        assert cfg["gemini_configured"] is True
+        assert cfg == {"configured": True, "store_id": "N110"}
 
 
 # ---------------------------------------------------------------------------
@@ -215,31 +211,6 @@ class TestHandleDiscover:
 
         assert result["success"] is True
         assert result["skipped"] is False
-
-    def test_discover_chains_optimize(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "store_id": "N110",
-            "storage_url": "http://storage",
-            "gemini_api_key": "gem-key",
-            "gemini_model": "gemini-1.5-flash",
-            "location_id": 2,
-            "quantity_unit_id": 3,
-        }
-        mock_storage_cls = mock.MagicMock()
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
-            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                with mock.patch("scraper.storage_client.StorageClient", mock_storage_cls):
-                    main_mod = sys.modules["main"]
-                    main_mod._discover_products.return_value = (0, [42, 99])
-                    main_mod._ai_optimize_products.return_value = 5
-                    result = ingress_mod._handle_discover()
-
-        assert result["success"] is True
-        assert result["skipped"] is False
-        main_mod._discover_products.assert_called_once()
-        main_mod._ai_optimize_products.assert_called_once()
-        _, opt_kwargs = main_mod._ai_optimize_products.call_args
-        assert opt_kwargs["product_ids"] == [42, 99]
 
     def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
         opts = {
@@ -632,78 +603,6 @@ class TestHandleAddProducts:
         assert result["success"] is True
         assert result["added"] == 1
         assert result["errors"] == []
-
-    def test_chains_ai_sort_date_group_when_gemini_key_set(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "storage_url": "http://storage",
-            "gemini_api_key": "gem-key",
-            "gemini_model": "gemini-2.0-flash",
-        }
-        mock_storage = mock.MagicMock()
-        mock_storage.get_product_by_barcode.return_value = None
-        mock_storage.create_product.side_effect = [10, 20]
-
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
-             mock.patch("main._ai_optimize_products") as mock_optimize:
-            result = ingress_mod._handle_add_products(
-                {
-                    "products": [
-                        {"name": "A", "ean": "111"},
-                        {"name": "B", "ean": "222"},
-                    ]
-                }
-            )
-
-        assert result["success"] is True
-        assert result["added"] == 2
-
-        mock_optimize.assert_called_once_with(
-            mock_storage,
-            "gem-key",
-            "gemini-2.0-flash",
-            location_id=None,
-            quantity_unit_id=None,
-            product_ids=[10, 20],
-        )
-
-    def test_skips_ai_when_no_gemini_key(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "storage_url": "http://storage",
-        }
-        mock_storage = mock.MagicMock()
-        mock_storage.get_product_by_barcode.return_value = None
-        mock_storage.create_product.return_value = 10
-
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
-             mock.patch("main._ai_optimize_products") as mock_optimize:
-            result = ingress_mod._handle_add_products(
-                {"products": [{"name": "A", "ean": "111"}]}
-            )
-
-        assert result["success"] is True
-        assert result["added"] == 1
-        mock_optimize.assert_not_called()
-
-    def test_skips_ai_when_no_products_added(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "storage_url": "http://storage",
-            "gemini_api_key": "gem-key",
-        }
-        mock_storage = mock.MagicMock()
-        mock_storage.get_product_by_barcode.return_value = {"id": 1, "name": "Existing"}
-
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts), \
-             mock.patch("scraper.storage_client.StorageClient", return_value=mock_storage), \
-             mock.patch("main._ai_optimize_products") as mock_optimize:
-            result = ingress_mod._handle_add_products(
-                {"products": [{"name": "Existing", "ean": "111"}]}
-            )
-
-        assert result["success"] is True
-        assert result["added"] == 0
-        mock_optimize.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

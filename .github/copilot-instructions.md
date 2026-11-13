@@ -3,11 +3,9 @@
 ## Build, test, and lint
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements.txt pytest voluptuous
 
-# Run all tests (537 collected; ~150 are pre-existing failures — stale tests for
-# AI/Gemini code removed in 1.21.23, in test_main.py and test_ingress_server.py.
-# Diff the FAILED set against a clean checkout instead of expecting green.)
+# Run all tests (390 collected, all expected to pass)
 python -m pytest tests/ -v
 
 # Run a single test file
