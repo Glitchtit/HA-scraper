@@ -1,3 +1,8 @@
+## 2.6.3
+- Scanning an unknown barcode reports an error when the product cannot be saved to HA-storage, instead of "Discovered" with nothing saved
+- A product whose barcode cannot be attached is deleted again rather than left behind without a barcode, so later scans no longer create nameless duplicates; queue discovery and search/browse imports now count these as errors
+- Queue discovery stocks a barcode that already belongs to a product instead of creating a second, nameless product for it
+
 ## 2.6.2
 - New README with screenshots, configuration and Home Assistant actions
 

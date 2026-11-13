@@ -419,6 +419,8 @@ def sync_product(
     """Add *product* to Storage.
 
     Returns ``True`` if the product was created/updated, ``False`` if skipped.
+    Raises ``StorageAPIError`` if the product cannot be created or its barcode
+    cannot be attached (the barcode-less product is then deleted again).
     When *price_scrapers* is provided, the product's K-Ruoka price is looked up
     by barcode and stored as ``unit_price`` on creation.
     """
@@ -465,27 +467,24 @@ def sync_product(
         price_kwargs["unit_price"] = price
         price_kwargs["unit_price_currency"] = "EUR"
 
-    # Create the product entry.
-    try:
-        product_id = storage.create_product(
-            name=product.name,
-            description=product.description,
-            location_id=location_id,
-            unit_id=quantity_unit_id,
-            **price_kwargs,
+    # Create the product entry (a StorageAPIError propagates to the caller).
+    product_id = storage.create_product(
+        name=product.name,
+        description=product.description,
+        location_id=location_id,
+        unit_id=quantity_unit_id,
+        **price_kwargs,
+    )
+    if price is not None:
+        logger.info(
+            "Created product '%s' (Storage product ID %d, price %.2f EUR).",
+            product.name, product_id, price,
         )
-        if price is not None:
-            logger.info(
-                "Created product '%s' (Storage product ID %d, price %.2f EUR).",
-                product.name, product_id, price,
-            )
-        else:
-            logger.info("Created product '%s' (Storage product ID %d).", product.name, product_id)
-    except StorageAPIError as exc:
-        logger.error("Failed to create product '%s': %s", product.name, exc)
-        return False
+    else:
+        logger.info("Created product '%s' (Storage product ID %d).", product.name, product_id)
 
-    # Attach the EAN barcode.
+    # Attach the EAN barcode.  A product without it is never found by barcode,
+    # so every later scan would create another one: delete it and fail instead.
     try:
         storage.add_barcode(product_id, product.ean)
         known_barcodes.add(product.ean)
@@ -497,6 +496,12 @@ def sync_product(
             product.ean,
             exc,
         )
+        try:
+            storage.delete_product(product_id)
+            logger.info("  → Deleted product %d again.", product_id)
+        except StorageAPIError as del_exc:
+            logger.error("Could not delete barcode-less product %d: %s", product_id, del_exc)
+        raise
 
     # Upload product image.
     if upload_images and product.image_url:
@@ -825,7 +830,7 @@ def _discover_single_barcode(
         )
     except StorageAPIError as exc:
         logger.error("Storage error for '%s': %s", product.name, exc)
-        return {"success": False, "error": f"Failed to create product in Storage: {exc}"}
+        return {"success": False, "error": f"Found {product.name} but could not save it to Storage: {exc}"}
 
     # Look up the Storage product ID.
     product_id = None
@@ -833,16 +838,20 @@ def _discover_single_barcode(
         existing = storage.get_product_by_barcode(barcode)
         if existing:
             product_id = existing.get("id")
-    except StorageAPIError:
-        pass
+    except StorageAPIError as exc:
+        logger.error("Could not look up barcode %s after saving: %s", barcode, exc)
+    if product_id is None:
+        return {
+            "success": False,
+            "error": f"Found {product.name} but could not save it to Storage (see scraper logs)",
+        }
 
     # Add 1 unit to stock.
-    if product_id is not None:
-        try:
-            storage.add_stock(int(product_id), amount=1.0)
-            logger.info("Added 1 unit to Storage stock (product ID %s).", product_id)
-        except (StorageAPIError, ValueError) as exc:
-            logger.warning("Could not add stock for '%s': %s", product.name, exc)
+    try:
+        storage.add_stock(int(product_id), amount=1.0)
+        logger.info("Added 1 unit to Storage stock (product ID %s).", product_id)
+    except (StorageAPIError, ValueError) as exc:
+        logger.warning("Could not add stock for '%s': %s", product.name, exc)
 
     logger.info("Single-barcode discover complete for EAN %s.", barcode)
     return {
@@ -986,7 +995,8 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
                 storage,
                 location_id=args.location_id,
                 quantity_unit_id=args.quantity_unit_id,
-                skip_existing=False,
+                # An already-mapped barcode is stocked below, not re-created.
+                skip_existing=True,
                 known_barcodes=known_barcodes,
                 upload_images=args.upload_images,
                 avail_scrapers=avail_scrapers,
