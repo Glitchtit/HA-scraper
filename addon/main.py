@@ -995,7 +995,8 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
                 storage,
                 location_id=args.location_id,
                 quantity_unit_id=args.quantity_unit_id,
-                skip_existing=False,
+                # An already-mapped barcode is stocked below, not re-created.
+                skip_existing=True,
                 known_barcodes=known_barcodes,
                 upload_images=args.upload_images,
                 avail_scrapers=avail_scrapers,

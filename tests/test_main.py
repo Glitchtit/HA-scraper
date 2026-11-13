@@ -1792,6 +1792,42 @@ class TestDiscoverProducts:
             42, status="done", result_product_id=99,
         )
 
+    @patch("addon.main.KRuokaScraper")
+    @patch("addon.main.StorageClient")
+    def test_barcode_already_in_storage_stocks_existing_product(self, MockStorage, MockScraper):
+        """A queued barcode that already maps to a product is stocked, not re-created."""
+        from addon.main import _discover_products
+        from argparse import Namespace
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_barcodes.return_value = [{"barcode": "6410405082657"}]
+        storage_instance.get_barcode_queue.return_value = [
+            {"id": 42, "barcode": "6410405082657", "source": "scanner"},
+        ]
+        storage_instance.get_product_by_barcode.return_value = {"id": 5, "name": "Maito"}
+        # Storage rejects a second product's barcode with 409.
+        storage_instance.add_barcode.side_effect = StorageAPIError("409 already exists")
+        MockScraper.return_value.search.return_value = iter([
+            Product(name="Pirkka kevytmaito 1l", ean="6410405082657"),
+        ])
+
+        args = Namespace(
+            storage_url="https://storage.example.com",
+            store="N110",
+            use_graphql=True,
+            location_id=2,
+            quantity_unit_id=2,
+            upload_images=False,
+        )
+        rc, discovered_ids = _discover_products(args)
+        assert rc == 0
+        assert discovered_ids == [5]
+        storage_instance.create_product.assert_not_called()
+        storage_instance.add_stock.assert_called_once_with(5, amount=1.0)
+        storage_instance.update_barcode_queue_item.assert_called_once_with(
+            42, status="done", result_product_id=5,
+        )
+
     @patch("addon.main.skaupat_lookup")
     @patch("addon.main.KRuokaScraper")
     @patch("addon.main.StorageClient")
