@@ -523,7 +523,8 @@ def _update_products(args: argparse.Namespace) -> int:
 
     For each product in Storage that has at least one barcode, search K-Ruoka
     by EAN.  If not found, try S-kaupat.  When a match is found, fill in a
-    placeholder name, update the description and upload the product image.
+    placeholder name, write a changed description, refresh the price and
+    upload an image when the product has none.
 
     Returns 0 on success, 1 if any errors occurred.
     """
@@ -615,9 +616,9 @@ def _update_products(args: argparse.Namespace) -> int:
             continue
 
         # Refresh per-store availability regardless of whether the product
-        # was found by name/EAN search above.  Collect once and reuse the
-        # entries below for the price refresh — avoids a second
-        # Cloudflare-bypassed kr-api query for the same EAN.
+        # was found by name/EAN search above.  A store the lookup already
+        # asked answers from that response (the scraper keeps it); the
+        # entries are reused below for the price refresh.
         avail_ean = matched_ean or (eans[0] if eans else "")
         avail_entries: list[dict] = []
         if avail_ean:
@@ -640,7 +641,7 @@ def _update_products(args: argparse.Namespace) -> int:
         # in Storage, by hand or by its optimizer, and must not be undone.
         if found.name and found.name != current_name and _is_placeholder_name(current_name):
             update_fields["name"] = found.name
-        if found.description:
+        if found.description and found.description != storage_product.get("description"):
             update_fields["description"] = found.description
 
         # Refresh the K-Ruoka price (kr-api only).  Reuse the price already
@@ -689,8 +690,8 @@ def _update_products(args: argparse.Namespace) -> int:
             price_state[str(pid)] = now
             _save_price_state(price_state)
 
-        # Upload image if available.
-        if found.image_url and args.upload_images:
+        # A product that has a picture keeps it.
+        if found.image_url and args.upload_images and not storage_product.get("picture_filename"):
             upload_image(storage, pid, found.image_url, found.ean)
 
         updated += 1

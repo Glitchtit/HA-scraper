@@ -549,6 +549,10 @@ class KRuokaScraper:
         # Requests that got no answer (error, rate limit, breaker open):
         # lets a caller tell "no result" from "no answer".
         self.failed_requests = 0
+        # The last GraphQL answer, by its variables: an availability check
+        # right after a lookup of the same barcode reuses it (searches
+        # always ask).
+        self._last_graphql: tuple = (None, None)
         if session is not None:
             self._session = session
         elif use_graphql:
@@ -680,7 +684,7 @@ class KRuokaScraper:
                 "storeId": self.store_id,
                 "limit": float(_GRAPHQL_PAGE_SIZE),
                 "offset": 0.0,
-            })
+            }, reuse=True)
             if data is None:
                 return None
             items = (
@@ -795,11 +799,16 @@ class KRuokaScraper:
 
             time.sleep(self.request_delay)
 
-    def _post_graphql(self, variables: dict) -> Optional[dict]:
+    def _post_graphql(self, variables: dict, reuse: bool = False) -> Optional[dict]:
         """POST a GraphQL query and return the response.
 
-        Returns ``None`` on error, counted in ``failed_requests``.
+        Returns ``None`` on error, counted in ``failed_requests``.  With
+        *reuse*, the previous answer is returned when it was for the same
+        variables.
         """
+        key = tuple(sorted(variables.items()))
+        if reuse and self._last_graphql[0] == key:
+            return self._last_graphql[1]
         payload = {
             "operationName": "productAndAssortmentSearchV2",
             "variables": variables,
@@ -812,6 +821,7 @@ class KRuokaScraper:
             resp.raise_for_status()
             data = resp.json()
             if not data.get("errors"):
+                self._last_graphql = (key, data)
                 return data
             logger.warning("GraphQL errors: %s", data["errors"])
         except requests.HTTPError as exc:

@@ -1441,3 +1441,68 @@ class TestKRuokaUnreachable:
         assert _load_price_state() == {}
         assert world.storage.called("update_product") == []
         assert world.storage.called("set_product_availability") == []
+
+
+# ---------------------------------------------------------------------------
+# Update does no more than it needs to
+# ---------------------------------------------------------------------------
+
+class TestUpdateDoesLess:
+    EAN = "6410405082657"
+
+    def _update(self, world, upload_images=True):
+        from main import _update_products
+
+        world.kruoka.catalogue = {"K532": {self.EAN: "Pirkka kevytmaito 1l"}}
+        return _update_products(Namespace(
+            store="K532", storage_url="http://storage",
+            upload_images=upload_images, searxng_url="",
+        ))
+
+    def test_product_with_a_picture_gets_no_image_download(self, world):
+        world.storage.add_product("Maito", barcode=self.EAN, picture_filename="mine.jpg")
+
+        assert self._update(world) == 0
+        assert world.downloads == []
+        assert world.storage.called("upload_product_image") == []
+
+    def test_product_without_a_picture_gets_one(self, world):
+        pid = world.storage.add_product("Maito", barcode=self.EAN)
+
+        self._update(world)
+
+        assert world.storage.products[pid]["picture_filename"] == f"{self.EAN}.jpg"
+
+    def test_availability_reuses_the_lookup_response(self, world):
+        pid = world.storage.add_product("Maito", barcode=self.EAN)
+
+        self._update(world)
+
+        assert world.kruoka.asked("graphql") == [("K532", self.EAN)]
+        assert world.storage.availability[pid] == [{"store_id": "K532", "available": True}]
+
+    def test_unchanged_description_is_not_written(self, world, monkeypatch):
+        world.storage.add_product("Maito", barcode=self.EAN, description="Kevytmaito")
+        monkeypatch.setattr(
+            "scraper.scraper.KRuokaScraper._parse_graphql_result",
+            staticmethod(lambda item: Product(
+                name="Pirkka kevytmaito 1l", ean=item["ean"], description="Kevytmaito",
+            )),
+        )
+
+        self._update(world)
+
+        assert world.storage.called("update_product") == []
+
+    def test_changed_description_is_written(self, world, monkeypatch):
+        pid = world.storage.add_product("Maito", barcode=self.EAN, description="Vanha")
+        monkeypatch.setattr(
+            "scraper.scraper.KRuokaScraper._parse_graphql_result",
+            staticmethod(lambda item: Product(
+                name="Pirkka kevytmaito 1l", ean=item["ean"], description="Kevytmaito",
+            )),
+        )
+
+        self._update(world)
+
+        assert world.storage.called("update_product") == [((pid,), {"description": "Kevytmaito"})]
