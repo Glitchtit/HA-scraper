@@ -754,3 +754,127 @@ class TestHTMLContent:
 
     def test_has_add_status(self, ingress_mod: ModuleType) -> None:
         assert 'id="add-status"' in ingress_mod._HTML
+
+
+# ---------------------------------------------------------------------------
+# Nightly Update
+# ---------------------------------------------------------------------------
+
+
+class TestNightlyUpdate:
+    """The add-on starts an Update once a night at ``update_hour``; the test
+    drives the clock by calling the loop's tick with the times it would see."""
+
+    _make_handler = TestHTTPHandler._make_handler
+    _wait_for_task = TestHTTPHandler._wait_for_task
+
+    @pytest.fixture
+    def runs(self, ingress_mod: ModuleType, world):
+        calls: list = []
+
+        def fake_update(args):
+            calls.append(args)
+            return 0
+
+        with mock.patch("main._update_products", fake_update):
+            yield calls
+
+    def _opts(self, ingress_mod, **extra):
+        opts = {"store_id": "K532", "storage_url": "http://storage", **extra}
+        return mock.patch.object(ingress_mod, "_read_options", return_value=opts)
+
+    def _tick(self, ingress_mod, previous, now):
+        from datetime import datetime
+
+        task_id = ingress_mod._nightly_tick(
+            datetime.fromisoformat(now), datetime.fromisoformat(previous)
+        )
+        if task_id is not None:
+            self._wait_for_task(ingress_mod, task_id)
+        return task_id
+
+    def test_runs_once_when_the_hour_passes(self, ingress_mod, runs):
+        with self._opts(ingress_mod, update_hour=3):
+            assert self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00")
+            assert self._tick(ingress_mod, "2026-11-18T03:00", "2026-11-18T03:01") is None
+
+        assert len(runs) == 1
+        task_id = max(ingress_mod._tasks, key=int)
+        assert ingress_mod._tasks[task_id]["success"] is True
+
+    def test_not_twice_the_same_day(self, ingress_mod, runs):
+        with self._opts(ingress_mod, update_hour=3):
+            self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00")
+            # As if the add-on had restarted at 02:59 and watched 03:00 again.
+            assert self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00") is None
+            assert self._tick(ingress_mod, "2026-11-19T02:59", "2026-11-19T03:00")
+
+        assert len(runs) == 2
+
+    def test_not_right_after_start(self, ingress_mod, runs):
+        """The first tick after a start inside the hour is not an hour passing."""
+        with self._opts(ingress_mod, update_hour=3):
+            assert self._tick(ingress_mod, "2026-11-18T03:10", "2026-11-18T03:11") is None
+
+        assert runs == []
+
+    def test_off_with_minus_one(self, ingress_mod, runs):
+        with self._opts(ingress_mod, update_hour=-1):
+            for hour in range(24):
+                self._tick(ingress_mod, f"2026-11-18T{hour:02d}:00", f"2026-11-18T{hour:02d}:01")
+                self._tick(ingress_mod, f"2026-11-17T23:59", f"2026-11-18T{hour:02d}:00")
+
+        assert runs == []
+
+    def test_absent_option_behaves_as_3(self, ingress_mod, runs):
+        with self._opts(ingress_mod):
+            assert self._tick(ingress_mod, "2026-11-18T01:59", "2026-11-18T02:00") is None
+            assert self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00")
+
+        assert len(runs) == 1
+
+    def test_skipped_while_another_long_operation_runs(self, ingress_mod, runs):
+        assert ingress_mod._op_lock.acquire(blocking=False)
+        try:
+            with self._opts(ingress_mod, update_hour=3):
+                assert self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00") is None
+        finally:
+            ingress_mod._op_lock.release()
+
+        assert runs == []
+
+    def test_manual_update_gets_409_while_the_nightly_one_runs(self, ingress_mod, world):
+        release = threading.Event()
+        with mock.patch("main._update_products", lambda args: release.wait(5) and 0), \
+             self._opts(ingress_mod, update_hour=3):
+            from datetime import datetime
+
+            task_id = ingress_mod._nightly_tick(
+                datetime(2026, 11, 18, 3, 0), datetime(2026, 11, 18, 2, 59))
+            status, _ = self._make_handler(ingress_mod, "POST", "/api/update")
+            release.set()
+            self._wait_for_task(ingress_mod, task_id)
+
+        assert status == 409
+
+    def test_skipped_without_stores(self, ingress_mod, runs, caplog):
+        with self._opts(ingress_mod, update_hour=3, store_id=""), \
+             caplog.at_level(logging.INFO, logger="ingress_server"):
+            assert self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00") is None
+
+        assert runs == []
+        assert "no stores" in caplog.text
+
+    def test_skipped_when_storage_is_unreachable(self, ingress_mod, runs, monkeypatch, caplog):
+        import requests
+
+        def refuse(url, timeout=None):
+            raise requests.ConnectionError("no route")
+
+        monkeypatch.setattr(requests, "get", refuse)
+        with self._opts(ingress_mod, update_hour=3), \
+             caplog.at_level(logging.INFO, logger="ingress_server"):
+            assert self._tick(ingress_mod, "2026-11-18T02:59", "2026-11-18T03:00") is None
+
+        assert runs == []
+        assert "Storage" in caplog.text

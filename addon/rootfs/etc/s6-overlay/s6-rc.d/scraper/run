@@ -2,9 +2,8 @@
 
 bashio::log.info "Starting Scraper add-on..."
 
-# The scraper no longer runs periodic discover loops.  All discovery
-# is triggered on-demand via the ingress web UI (single-barcode or
-# barcode-queue).  This service simply keeps the container alive so
-# the ingress server (a separate s6 service) remains reachable.
+# All work runs in the ingress server (a separate s6 service): discover
+# on demand, Update on demand and once a night.  This service simply
+# keeps the container alive so the ingress server remains reachable.
 
 exec sleep infinity

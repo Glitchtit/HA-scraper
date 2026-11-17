@@ -23,6 +23,7 @@ options:
   upload_images: true
   flaresolverr_url: ""
   searxng_url: ""
+  update_hour: 3
 schema:
   storage_hostname: str?
   storage_url: str?
@@ -30,3 +31,4 @@ schema:
   upload_images: bool
   flaresolverr_url: str?
   searxng_url: str?
+  update_hour: int?

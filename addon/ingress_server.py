@@ -34,7 +34,9 @@ import os
 import sys
 import threading
 from contextlib import contextmanager
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from typing import Any, Generator
 
@@ -1013,6 +1015,131 @@ _POST_HANDLERS: dict[str, Any] = {
 }
 
 
+def _start_task(path: str, handler: Any, body: dict[str, Any]) -> str | None:
+    """Run *handler* in a background task and return its id.
+
+    Returns ``None`` when the operation is Update or queue discover and one
+    of those is already running.  Everything else runs alongside them.
+    """
+    single_flight = handler is _handle_update or (
+        handler is _handle_discover and not str(body.get("barcode", "")).strip()
+    )
+    if single_flight and not _op_lock.acquire(blocking=False):
+        return None
+
+    # Fire-and-poll: the caller gets the task id at once, so Cloudflare
+    # never times out.
+    task_id = _next_task_id()
+    _tasks[task_id] = {"status": "running", "logs": []}
+
+    def _run() -> None:
+        try:
+            # The running task shows the lines logged so far.
+            with _capture_logs() as live:
+                _tasks[task_id] = {"status": "running", "logs": live}
+                if handler is _handle_update:
+                    result = handler()
+                else:
+                    result = handler(body)
+        except Exception as exc:
+            logger.exception("API handler %s failed", path)
+            result = {"success": False, "error": str(exc)}
+        finally:
+            if single_flight:
+                _op_lock.release()
+        result["status"] = "done"
+        _tasks[task_id] = result
+
+    threading.Thread(target=_run, daemon=True).start()
+    return task_id
+
+
+# ---------------------------------------------------------------------------
+# Nightly Update
+# ---------------------------------------------------------------------------
+
+_DEFAULT_UPDATE_HOUR = 3
+
+
+def _nightly_state_path() -> Path:
+    return Path("/data/nightly_update.json")
+
+
+def _nightly_tick(now: datetime, previous: datetime) -> str | None:
+    """Start the nightly Update when the clock has just entered ``update_hour``.
+
+    Called by the loop with the time now and at its previous tick, so the
+    first tick after the add-on starts inside the hour does not count.  Runs
+    at most once per calendar day (the date is kept in /data) and goes
+    through the same task registry and lock as ``POST /api/update``.
+    Returns the task id, or ``None`` when nothing was started.
+    """
+    opts = _read_options()
+    raw = opts.get("update_hour")
+    try:
+        hour = _DEFAULT_UPDATE_HOUR if raw is None else int(raw)
+    except (TypeError, ValueError):
+        hour = -1
+    if hour not in range(24) or now.hour != hour:
+        return None
+    if previous.hour == hour and previous.date() == now.date():
+        return None
+
+    state_path = _nightly_state_path()
+    try:
+        last_run = json.loads(state_path.read_text()).get("last_run")
+    except (OSError, ValueError, AttributeError):
+        last_run = None
+    if last_run == now.date().isoformat():
+        return None
+
+    if not str(opts.get("store_id", "") or "").strip():
+        logger.info("Nightly Update skipped: no stores are configured.")
+        return None
+    storage_url = _resolve_storage_url(opts)
+    if not storage_url or not _storage_reachable(storage_url):
+        logger.info("Nightly Update skipped: Storage is unreachable.")
+        return None
+
+    task_id = _start_task("/api/update", _handle_update, {})
+    if task_id is None:
+        logger.debug("Nightly Update skipped: another operation is running.")
+        return None
+    logger.info("Nightly Update started (task %s).", task_id)
+    try:
+        state_path.write_text(json.dumps({"last_run": now.date().isoformat()}))
+    except OSError as exc:
+        logger.warning("Could not record the nightly Update: %s", exc)
+    return task_id
+
+
+def _storage_reachable(base_url: str) -> bool:
+    import requests as _req
+
+    try:
+        return _req.get(f"{base_url}/api/health", timeout=5).ok
+    except _req.RequestException:
+        return False
+
+
+def _start_nightly_update(interval: float = 60.0) -> None:
+    """Start the thread that checks once a minute whether the Update is due."""
+    import time
+
+    def _loop() -> None:
+        previous = datetime.now()
+        while True:
+            time.sleep(interval)
+            now = datetime.now()
+            try:
+                _nightly_tick(now, previous)
+            except Exception:
+                logger.exception("Nightly Update check failed")
+            previous = now
+
+    threading.Thread(target=_loop, daemon=True, name="nightly-update").start()
+
+
 class _Handler(BaseHTTPRequestHandler):
     """Route requests to the HTML page or JSON API endpoints."""
 
@@ -1068,13 +1195,12 @@ class _Handler(BaseHTTPRequestHandler):
             except (json.JSONDecodeError, ValueError):
                 self._json_response({"error": "Invalid JSON"}, status=400)
                 return
+            if not isinstance(body, dict):
+                self._json_response({"error": "Invalid JSON"}, status=400)
+                return
 
-        # Update and queue discover are single-flight; everything else runs
-        # alongside them.
-        single_flight = handler is _handle_update or (
-            handler is _handle_discover and not str(body.get("barcode", "")).strip()
-        )
-        if single_flight and not _op_lock.acquire(blocking=False):
+        task_id = _start_task(path, handler, body)
+        if task_id is None:
             self._json_response(
                 {
                     "success": False,
@@ -1083,32 +1209,6 @@ class _Handler(BaseHTTPRequestHandler):
                 status=409,
             )
             return
-
-        # Fire-and-poll: run handler in a background thread, return task_id
-        # immediately so Cloudflare never times out.
-        task_id = _next_task_id()
-        _tasks[task_id] = {"status": "running", "logs": []}
-
-        def _run() -> None:
-            try:
-                # The running task shows the lines logged so far.
-                with _capture_logs() as live:
-                    _tasks[task_id] = {"status": "running", "logs": live}
-                    if handler is _handle_update:
-                        result = handler()
-                    else:
-                        result = handler(body)
-            except Exception as exc:
-                logger.exception("API handler %s failed", path)
-                result = {"success": False, "error": str(exc)}
-            finally:
-                if single_flight:
-                    _op_lock.release()
-            result["status"] = "done"
-            _tasks[task_id] = result
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
         self._json_response({"task_id": task_id, "status": "running"})
 
     # Helpers ─────────────────────────────────────────────────────────────────
@@ -1200,6 +1300,7 @@ if __name__ == "__main__":
     if storage_url:
         _wait_for_storage(storage_url)
     _start_storage_health_monitor()
+    _start_nightly_update()
     server = _ThreadingHTTPServer(("0.0.0.0", _PORT), _Handler)
     print(f"Ingress server listening on port {_PORT}")
     server.serve_forever()

@@ -12,6 +12,7 @@ import requests
 # application root (/app): `main`, `ingress_server` and the `scraper` package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
 
+import ingress_server as ingress_mod  # noqa: E402
 import main as main_mod  # noqa: E402
 import scraper.scraper as scraper_mod  # noqa: E402
 from scraper.searxng_client import SearXNGError  # noqa: E402
@@ -28,6 +29,9 @@ def _state_files_in_tmp(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         scraper_mod, "_cf_cache_path", lambda: tmp_path / "cf_clearance.json"
+    )
+    monkeypatch.setattr(
+        ingress_mod, "_nightly_state_path", lambda: tmp_path / "nightly_update.json"
     )
 
 
