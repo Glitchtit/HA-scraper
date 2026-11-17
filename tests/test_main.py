@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from addon.main import (
+from main import (
     main, parse_args, sync_product, _parse_store_ids,
     _sync_availability, _register_stores,
 )
@@ -82,22 +82,22 @@ class TestEnvInt:
     """Unit tests for the _env_int helper."""
 
     def test_returns_int(self):
-        from addon.main import _env_int
+        from main import _env_int
         with patch.dict("os.environ", {"MY_VAR": "5"}):
             assert _env_int("MY_VAR") == 5
 
     def test_returns_none_when_unset(self):
-        from addon.main import _env_int
+        from main import _env_int
         with patch.dict("os.environ", {}, clear=True):
             assert _env_int("MY_VAR") is None
 
     def test_returns_none_for_empty_string(self):
-        from addon.main import _env_int
+        from main import _env_int
         with patch.dict("os.environ", {"MY_VAR": ""}):
             assert _env_int("MY_VAR") is None
 
     def test_raises_on_non_numeric(self):
-        from addon.main import _env_int
+        from main import _env_int
         with patch.dict("os.environ", {"MY_VAR": "abc"}):
             with pytest.raises(ValueError):
                 _env_int("MY_VAR")
@@ -188,7 +188,7 @@ class TestSyncProduct:
         storage.delete_product.assert_called_once_with(99)
         assert known == set()
 
-    @patch("addon.main.requests.get")
+    @patch("main.requests.get")
     def test_uploads_image_when_enabled(self, mock_get):
         mock_resp = MagicMock()
         mock_resp.content = b"\xff\xd8image-data"
@@ -208,17 +208,20 @@ class TestSyncProduct:
             99, "123.jpg", b"\xff\xd8image-data", content_type="image/jpeg"
         )
 
-    def test_no_image_upload_by_default(self):
+    @patch("main.requests.get")
+    def test_no_image_upload_when_disabled(self, mock_get):
         storage = self._storage()
         product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
         sync_product(
             product, storage,
             location_id=1, quantity_unit_id=1,
             skip_existing=False, known_barcodes=set(),
+            upload_images=False,
         )
+        mock_get.assert_not_called()
         storage.upload_product_image.assert_not_called()
 
-    @patch("addon.main.requests.get")
+    @patch("main.requests.get")
     def test_image_download_failure_does_not_break_sync(self, mock_get):
         import requests as req
         mock_get.side_effect = req.RequestException("timeout")
@@ -242,17 +245,17 @@ class TestSyncProduct:
 
 class TestImageExtension:
     def test_known_mime_types(self):
-        from addon.main import _image_extension
+        from main import _image_extension
         assert _image_extension("image/jpeg", "") == ".jpg"
         assert _image_extension("image/png", "") == ".png"
         assert _image_extension("image/webp", "") == ".webp"
 
     def test_unknown_mime_falls_back_to_url(self):
-        from addon.main import _image_extension
+        from main import _image_extension
         assert _image_extension("application/octet-stream", "https://example.com/img.png?w=100") == ".png"
 
     def test_unknown_mime_no_ext_defaults_to_jpg(self):
-        from addon.main import _image_extension
+        from main import _image_extension
         assert _image_extension("application/octet-stream", "https://example.com/img") == ".jpg"
 
 
@@ -270,7 +273,7 @@ class TestMainDryRun:
             Product(name="Maito", ean="111"),
             Product(name="Kerma", ean="222"),
         ]
-        with patch("addon.main.KRuokaScraper") as MockScraper:
+        with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter(products)
             rc = main(["--store", "N110", "--browse", "--dry-run"])
@@ -282,7 +285,7 @@ class TestMainDryRun:
 
     def test_dry_run_passes_use_graphql_true(self, capsys):
         """By default, KRuokaScraper is constructed with use_graphql=True."""
-        with patch("addon.main.KRuokaScraper") as MockScraper:
+        with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter([])
             main(["--store", "N110", "--browse", "--dry-run"])
@@ -292,7 +295,7 @@ class TestMainDryRun:
 
     def test_no_graphql_flag_passes_false(self, capsys):
         """--no-graphql passes use_graphql=False to KRuokaScraper."""
-        with patch("addon.main.KRuokaScraper") as MockScraper:
+        with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter([])
             main(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
@@ -317,7 +320,7 @@ class TestMainMissingStorage:
 
 class TestValidateArgs:
     def test_no_mode_fails(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         from argparse import Namespace
         args = Namespace(
             sort=False, date=False, group=False, optimize=False,
@@ -330,7 +333,7 @@ class TestValidateArgs:
         assert _validate_args(args) == 1
 
     def test_dry_run_alone_fails(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         from argparse import Namespace
         args = Namespace(
             sort=False, date=False, group=False, optimize=False,
@@ -387,15 +390,15 @@ class TestValidateArgsDeleteAll:
         return Namespace(**defaults)
 
     def test_valid_delete_all_passes(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_args()) == 0
 
     def test_missing_storage_url_fails(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_args(storage_url="")) == 1
 
     def test_store_not_required(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_args(store="")) == 0
 
 
@@ -404,17 +407,17 @@ class TestValidateArgsDeleteAll:
 # ---------------------------------------------------------------------------
 
 class TestDeleteAllProducts:
-    @patch("addon.main.StorageClient")
+    @patch("main.StorageClient")
     def test_empty_database_returns_0(self, MockStorage):
-        from addon.main import _delete_all_products
+        from main import _delete_all_products
         storage = MockStorage.return_value
         storage.get_all_products.return_value = []
         assert _delete_all_products(storage) == 0
         storage.delete_product.assert_not_called()
 
-    @patch("addon.main.StorageClient")
+    @patch("main.StorageClient")
     def test_deletes_all_products(self, MockStorage):
-        from addon.main import _delete_all_products
+        from main import _delete_all_products
         storage = MockStorage.return_value
         storage.get_all_products.return_value = [
             {"id": 1, "name": "Milk"},
@@ -427,16 +430,16 @@ class TestDeleteAllProducts:
         storage.delete_product.assert_any_call(2)
         storage.delete_product.assert_any_call(3)
 
-    @patch("addon.main.StorageClient")
+    @patch("main.StorageClient")
     def test_fetch_error_returns_1(self, MockStorage):
-        from addon.main import _delete_all_products
+        from main import _delete_all_products
         storage = MockStorage.return_value
         storage.get_all_products.side_effect = StorageAPIError("connection refused")
         assert _delete_all_products(storage) == 1
 
-    @patch("addon.main.StorageClient")
+    @patch("main.StorageClient")
     def test_partial_failure_returns_1(self, MockStorage):
-        from addon.main import _delete_all_products
+        from main import _delete_all_products
         storage = MockStorage.return_value
         storage.get_all_products.return_value = [
             {"id": 1, "name": "Milk"},
@@ -493,25 +496,25 @@ class TestValidateArgsDiscover:
         return Namespace(**defaults)
 
     def test_valid_discover_passes(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_discover_args()) == 0
 
     def test_missing_store_fails(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_discover_args(store="")) == 1
 
     def test_missing_storage_url_fails(self):
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_discover_args(storage_url="")) == 1
 
     def test_missing_location_id_ok(self):
         """location_id=None is now allowed (auto-detected by StorageClient)."""
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_discover_args(location_id=None)) == 0
 
     def test_missing_quantity_unit_id_ok(self):
         """quantity_unit_id=None is now allowed (auto-detected by StorageClient)."""
-        from addon.main import _validate_args
+        from main import _validate_args
         assert _validate_args(self._base_discover_args(quantity_unit_id=None)) == 0
 
 
@@ -520,14 +523,14 @@ class TestValidateArgsDiscover:
 # ---------------------------------------------------------------------------
 
 class TestDiscoverProducts:
-    @patch("addon.main.KRuokaScraper")
-    @patch("addon.main.StorageClient")
+    @patch("main.KRuokaScraper")
+    @patch("main.StorageClient")
     def test_no_pending_returns_0(self, MockStorage, MockScraper):
         storage_instance = MockStorage.return_value
         storage_instance.get_all_barcodes.return_value = []
         storage_instance.get_barcode_queue.return_value = []
 
-        from addon.main import _discover_products
+        from main import _discover_products
         from argparse import Namespace
         args = Namespace(
             storage_url="https://storage.example.com",
@@ -541,10 +544,10 @@ class TestDiscoverProducts:
         assert rc == 0
         assert discovered_ids == []
 
-    @patch("addon.main.KRuokaScraper")
-    @patch("addon.main.StorageClient")
+    @patch("main.KRuokaScraper")
+    @patch("main.StorageClient")
     def test_unknown_barcode_searched_on_kruoka(self, MockStorage, MockScraper):
-        from addon.main import _discover_products
+        from main import _discover_products
         from argparse import Namespace
 
         storage_instance = MockStorage.return_value
@@ -581,11 +584,11 @@ class TestDiscoverProducts:
             42, status="done", result_product_id=99,
         )
 
-    @patch("addon.main.KRuokaScraper")
-    @patch("addon.main.StorageClient")
+    @patch("main.KRuokaScraper")
+    @patch("main.StorageClient")
     def test_barcode_already_in_storage_stocks_existing_product(self, MockStorage, MockScraper):
         """A queued barcode that already maps to a product is stocked, not re-created."""
-        from addon.main import _discover_products
+        from main import _discover_products
         from argparse import Namespace
 
         storage_instance = MockStorage.return_value
@@ -617,11 +620,11 @@ class TestDiscoverProducts:
             42, status="done", result_product_id=5,
         )
 
-    @patch("addon.main.skaupat_lookup")
-    @patch("addon.main.KRuokaScraper")
-    @patch("addon.main.StorageClient")
+    @patch("main.skaupat_lookup")
+    @patch("main.KRuokaScraper")
+    @patch("main.StorageClient")
     def test_not_found_on_kruoka_or_skaupat_skips(self, MockStorage, MockScraper, mock_sk):
-        from addon.main import _discover_products
+        from main import _discover_products
         from argparse import Namespace
 
         storage_instance = MockStorage.return_value
@@ -652,13 +655,13 @@ class TestDiscoverProducts:
         )
         mock_sk.assert_called_once_with("0000000000000")
 
-    @patch("addon.main.skaupat_lookup")
-    @patch("addon.main.KRuokaScraper")
-    @patch("addon.main.StorageClient")
+    @patch("main.skaupat_lookup")
+    @patch("main.KRuokaScraper")
+    @patch("main.StorageClient")
     def test_skaupat_fallback_creates_product(self, MockStorage, MockScraper, mock_sk):
         """When K-Ruoka has no match, S-kaupat result is used."""
         from scraper.skaupat_client import SKaupatProduct
-        from addon.main import _discover_products
+        from main import _discover_products
         from argparse import Namespace
 
         storage_instance = MockStorage.return_value
@@ -703,11 +706,11 @@ class TestDiscoverProducts:
             77, status="done", result_product_id=88,
         )
 
-    @patch("addon.main.KRuokaScraper")
-    @patch("addon.main.StorageClient")
+    @patch("main.KRuokaScraper")
+    @patch("main.StorageClient")
     def test_queue_fetch_error_returns_1(self, MockStorage, MockScraper):
         from scraper.storage_client import StorageAPIError
-        from addon.main import _discover_products
+        from main import _discover_products
         from argparse import Namespace
 
         MockStorage.return_value.get_all_barcodes.return_value = []
@@ -760,7 +763,7 @@ class TestMultiStoreFallbackRunScraper:
     def test_first_store_succeeds(self, capsys):
         """When the first store works, only one scraper is created."""
         products = [Product(name="Maito", ean="111")]
-        with patch("addon.main.KRuokaScraper") as MockScraper:
+        with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.return_value = iter(products)
             rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
@@ -788,7 +791,7 @@ class TestMultiStoreFallbackRunScraper:
                 instance.browse.return_value = iter(products)
             return instance
 
-        with patch("addon.main.KRuokaScraper", side_effect=make_scraper):
+        with patch("main.KRuokaScraper", side_effect=make_scraper):
             rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
 
         assert rc == 0
@@ -797,7 +800,7 @@ class TestMultiStoreFallbackRunScraper:
 
     def test_all_stores_fail_raises(self, capsys):
         """When all stores fail, the last error is raised."""
-        with patch("addon.main.KRuokaScraper") as MockScraper:
+        with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.browse.side_effect = RuntimeError("all fail")
             with pytest.raises(RuntimeError, match="all fail"):
@@ -806,7 +809,7 @@ class TestMultiStoreFallbackRunScraper:
     def test_single_store_still_works(self, capsys):
         """Single store (no comma) still works as before."""
         products = [Product(name="Kerma", ean="222")]
-        with patch("addon.main.KRuokaScraper") as MockScraper:
+        with patch("main.KRuokaScraper") as MockScraper:
             instance = MockScraper.return_value
             instance.search.return_value = iter(products)
             rc = main(["--store", "N110", "--query", "kerma", "--dry-run"])
@@ -823,13 +826,13 @@ class TestMultiStoreFallbackRunScraper:
 class TestMultiStoreDiscoverFallback:
     """Test that discover tries multiple stores for each barcode."""
 
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_discover_tries_second_store(
         self, MockScraper, MockStorage, mock_skaupat,
     ):
-        from addon.main import _discover_products
+        from main import _discover_products
 
         # Set up barcode queue to return one pending barcode.
         storage_instance = MockStorage.return_value
@@ -885,13 +888,13 @@ class TestMultiStoreDiscoverFallback:
 class TestMultiStoreUpdateFallback:
     """Test that update tries multiple stores for each barcode."""
 
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_update_tries_second_store(
         self, MockScraper, MockStorage, mock_skaupat,
     ):
-        from addon.main import _update_products
+        from main import _update_products
 
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
@@ -953,14 +956,14 @@ class TestUpdateSearXNGConfidence:
             return s
         MockScraper.side_effect = make_scraper
 
-    @patch("addon.main.searxng_lookup")
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.searxng_lookup")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_searxng_does_not_overwrite_real_name(
         self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
     ):
-        from addon.main import _update_products
+        from main import _update_products
         from scraper.searxng_client import SearXNGProduct
 
         storage_instance = MockStorage.return_value
@@ -981,14 +984,14 @@ class TestUpdateSearXNGConfidence:
         for call in storage_instance.update_product.call_args_list:
             assert "name" not in call.kwargs
 
-    @patch("addon.main.searxng_lookup")
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.searxng_lookup")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_searxng_fills_placeholder_name(
         self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
     ):
-        from addon.main import _update_products
+        from main import _update_products
         from scraper.searxng_client import SearXNGProduct
 
         storage_instance = MockStorage.return_value
@@ -1009,15 +1012,15 @@ class TestUpdateSearXNGConfidence:
         _, kwargs = storage_instance.update_product.call_args
         assert kwargs["name"] == "San Pellegrino Aranciata Rossa 330ml"
 
-    @patch("addon.main.searxng_lookup")
-    @patch("addon.main.skaupat_lookup")
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.searxng_lookup")
+    @patch("main.skaupat_lookup")
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_skaupat_does_not_overwrite_real_name(
         self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
     ):
         """A real store hit (S-kaupat) does not replace a real name either."""
-        from addon.main import _update_products
+        from main import _update_products
         from scraper.skaupat_client import SKaupatProduct
 
         storage_instance = MockStorage.return_value
@@ -1044,7 +1047,7 @@ class TestUpdateRenamesOnlyPlaceholders:
     optimizer: only placeholder names are replaced."""
 
     def _update(self, MockScraper, MockStorage, current_name):
-        from addon.main import _update_products
+        from main import _update_products
 
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
@@ -1074,17 +1077,17 @@ class TestUpdateRenamesOnlyPlaceholders:
         assert rc == 0
         return storage_instance
 
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_real_name_is_kept(self, MockScraper, MockStorage, mock_skaupat):
         storage = self._update(MockScraper, MockStorage, "Sprite Zero 0,33l")
         for call in storage.update_product.call_args_list:
             assert "name" not in call.kwargs
 
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_placeholder_name_is_replaced(self, MockScraper, MockStorage, mock_skaupat):
         storage = self._update(MockScraper, MockStorage, "Unknown product (123)")
         storage.update_product.assert_called_once()
@@ -1106,13 +1109,13 @@ class TestUpdateTrafficReduction:
         )
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_availability_swept_via_graphql_not_krapi(
         self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
     ):
-        from addon.main import _update_products
+        from main import _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
@@ -1144,13 +1147,13 @@ class TestUpdateTrafficReduction:
     @patch.dict("os.environ", {
         "FLARESOLVERR_URL": "http://fs:8191", "KRAPI_PRICE_BUDGET": "1",
     })
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_price_budget_caps_krapi_lookups(
         self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
     ):
-        from addon.main import _update_products
+        from main import _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
@@ -1194,15 +1197,15 @@ class TestUpdateTrafficReduction:
         assert len(state) >= 1
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_fresh_products_skip_price_lookup(
         self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
     ):
         import json as _json
         import time as _time
-        from addon.main import _update_products
+        from main import _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         # Product 1 was price-refreshed moments ago -> within TTL, skip.
@@ -1289,13 +1292,13 @@ class TestPriceRotation:
     @patch.dict("os.environ", {
         "FLARESOLVERR_URL": "http://fs:8191", "KRAPI_PRICE_BUDGET": "3",
     })
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_products_without_barcodes_take_no_budget(
         self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
     ):
-        from addon.main import _update_products
+        from main import _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
@@ -1325,16 +1328,16 @@ class TestPriceRotation:
         assert sorted(priced) == ["444", "555"]
 
     @pytest.mark.parametrize("failure", ["429", "403", "breaker open"])
-    @patch("addon.main._make_price_scrapers")
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main._make_price_scrapers")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_failed_lookup_leaves_product_unstamped(
         self, MockScraper, MockStorage, mock_skaupat, mock_price_scrapers,
         failure, tmp_path, monkeypatch,
     ):
         import scraper.scraper as scraper_mod
-        from addon.main import _load_price_state, _update_products
+        from main import _load_price_state, _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
@@ -1354,15 +1357,15 @@ class TestPriceRotation:
         assert _update_products(self._args()) == 0
         assert _load_price_state() == {}
 
-    @patch("addon.main._make_price_scrapers")
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main._make_price_scrapers")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_definite_no_price_is_stamped(
         self, MockScraper, MockStorage, mock_skaupat, mock_price_scrapers,
         tmp_path, monkeypatch,
     ):
-        from addon.main import _load_price_state, _update_products
+        from main import _load_price_state, _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         self._products(MockStorage.return_value)
@@ -1377,13 +1380,13 @@ class TestPriceRotation:
         assert list(_load_price_state()) == ["1"]
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_state_is_saved_after_each_stamped_product(
         self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
     ):
-        from addon.main import _load_price_state, _update_products
+        from main import _load_price_state, _update_products
 
         monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
@@ -1410,13 +1413,13 @@ class TestUpdatePrices:
     """Prices are fetched via the kr-api backend and written as unit_price."""
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://flaresolverr:8191"})
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_update_writes_unit_price_from_krapi(
         self, MockScraper, MockStorage, mock_skaupat,
     ):
-        from addon.main import _update_products
+        from main import _update_products
 
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
@@ -1463,14 +1466,14 @@ class TestUpdatePrices:
         assert kwargs["unit_price_currency"] == "EUR"
 
     @patch.dict("os.environ", {}, clear=False)
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_no_cf_bypass_skips_price_scrapers(
         self, MockScraper, MockStorage, mock_skaupat,
     ):
         import os
-        from addon.main import _update_products
+        from main import _update_products
 
         # Ensure no CF bypass is configured.
         os.environ.pop("FLARESOLVERR_URL", None)
@@ -1638,15 +1641,15 @@ class TestScanWhileKrApiFails:
     """kr-api refusing every request during one barcode scan: the store keeps
     the name Storage has and the scan still succeeds, without a price."""
 
-    @patch("addon.main._make_price_scrapers")
-    @patch("addon.main.skaupat_lookup", return_value=None)
-    @patch("addon.main.StorageClient")
-    @patch("addon.main.KRuokaScraper")
+    @patch("main._make_price_scrapers")
+    @patch("main.skaupat_lookup", return_value=None)
+    @patch("main.StorageClient")
+    @patch("main.KRuokaScraper")
     def test_scan_succeeds_and_store_name_is_untouched(
         self, MockScraper, MockStorage, mock_skaupat, mock_price_scrapers,
         monkeypatch,
     ):
-        from addon.main import _discover_single_barcode
+        from main import _discover_single_barcode
 
         monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
         monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
@@ -1690,7 +1693,7 @@ class TestScanWhileKrApiFails:
 
 class TestPriceFromEntries:
     def test_first_available_priced_entry_wins(self):
-        from addon.main import _price_from_entries
+        from main import _price_from_entries
 
         entries = [
             {"store_id": "N110", "available": False},
@@ -1702,7 +1705,7 @@ class TestPriceFromEntries:
         assert _price_from_entries(entries) == 1.5
 
     def test_unavailable_priced_entry_is_skipped(self):
-        from addon.main import _price_from_entries
+        from main import _price_from_entries
 
         entries = [
             {"store_id": "N110", "available": False,
@@ -1713,13 +1716,13 @@ class TestPriceFromEntries:
         assert _price_from_entries(entries) == 4.0
 
     def test_no_priced_entries_returns_none(self):
-        from addon.main import _price_from_entries
+        from main import _price_from_entries
 
         entries = [{"store_id": "N110", "available": True}]
         assert _price_from_entries(entries) is None
 
     def test_empty_entries_returns_none(self):
-        from addon.main import _price_from_entries
+        from main import _price_from_entries
 
         assert _price_from_entries([]) is None
 
@@ -1825,16 +1828,16 @@ class TestSyncProductSweepPricing:
 # _discover_single_barcode (HA-stock scan of an unknown barcode)
 # ---------------------------------------------------------------------------
 
-@patch("addon.main._collect_availability", return_value=[])
-@patch("addon.main._register_stores")
-@patch("addon.main._make_price_scrapers", return_value=[])
-@patch("addon.main.KRuokaScraper")
-@patch("addon.main.StorageClient")
+@patch("main._collect_availability", return_value=[])
+@patch("main._register_stores")
+@patch("main._make_price_scrapers", return_value=[])
+@patch("main.KRuokaScraper")
+@patch("main.StorageClient")
 class TestDiscoverSingleBarcode:
     EAN = "6410405082657"
 
     def _run(self, MockStorage, MockScraper):
-        from addon.main import _discover_single_barcode
+        from main import _discover_single_barcode
         MockScraper.return_value.search.return_value = iter([
             Product(name="Pirkka kevytmaito 1l", ean=self.EAN),
         ])

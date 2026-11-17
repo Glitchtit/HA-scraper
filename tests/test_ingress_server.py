@@ -2,36 +2,27 @@
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
 import json
 import logging
-import sys
-import threading
 import time
 from io import BytesIO
 from pathlib import Path
 from types import ModuleType
-from typing import Any
 from unittest import mock
 
 import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fixture: import the ingress_server module from addon/
+# Fixture: the ingress_server module, as the add-on image imports it
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
 def ingress_mod() -> ModuleType:
-    """Import ingress_server.py as a module without running ``__main__``."""
-    path = "addon/ingress_server.py"
-    spec = importlib.util.spec_from_file_location("ingress_server", path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    import ingress_server
+
+    return ingress_server
 
 
 @pytest.fixture(autouse=True)
@@ -229,73 +220,74 @@ class TestHandleSearch:
 # ---------------------------------------------------------------------------
 
 
+EAN = "6410405082657"
+
+
+@pytest.fixture
+def options(ingress_mod: ModuleType):
+    """The add-on options as the handlers read them."""
+    opts = {"store_id": "K532", "storage_url": "http://storage"}
+    with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
+        yield opts
+
+
 class TestHandleDiscover:
-    def test_calls_discover_products(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "store_id": "N110",
-            "storage_url": "http://storage",
-        }
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
-            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                sys.modules["main"]._discover_products.return_value = (0, [10])
-                result = ingress_mod._handle_discover()
+    def test_queue_item_is_created_stocked_and_marked_done(
+        self, ingress_mod: ModuleType, world, options,
+    ) -> None:
+        world.kruoka.catalogue = {"K532": {EAN: "Pirkka kevytmaito 1l"}}
+        world.storage.enqueue(EAN)
+
+        result = ingress_mod._handle_discover()
 
         assert result["success"] is True
         assert result["skipped"] is False
+        assert any("Pirkka kevytmaito 1l" in line["message"] for line in result["logs"])
+        product_id = world.storage.barcodes[EAN]
+        product = world.storage.products[product_id]
+        assert product["name"] == "Pirkka kevytmaito 1l"
+        assert product["picture_filename"] == f"{EAN}.jpg"
+        assert world.downloads == [f"https://img.example/{EAN}"]
+        assert world.storage.stock[product_id] == 1.0
+        assert world.storage.queue[0]["status"] == "done"
+        assert world.storage.queue[0]["result_product_id"] == product_id
 
-    def test_discover_no_gemini_key_skips_ai(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "store_id": "N110",
-            "storage_url": "http://storage",
-        }
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
-            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                main_mod = sys.modules["main"]
-                main_mod._discover_products.return_value = (0, [42])
-                result = ingress_mod._handle_discover()
+    def test_barcode_found_nowhere_is_marked_as_error(
+        self, ingress_mod: ModuleType, world, options,
+    ) -> None:
+        world.storage.enqueue(EAN)
+
+        result = ingress_mod._handle_discover()
 
         assert result["success"] is True
-        main_mod._ai_sort_products.assert_not_called()
-        main_mod._ai_assign_due_dates.assert_not_called()
-        main_mod._ai_group_products.assert_not_called()
+        assert world.storage.products == {}
+        assert world.storage.queue[0]["status"] == "error"
+        assert EAN in world.storage.queue[0]["error_message"]
 
-    def test_discover_failure_skips_ai(self, ingress_mod: ModuleType) -> None:
-        opts = {
-            "store_id": "N110",
-            "storage_url": "http://storage",
-            "gemini_api_key": "gem-key",
-        }
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
-            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                main_mod = sys.modules["main"]
-                main_mod._discover_products.return_value = (1, [])
-                result = ingress_mod._handle_discover()
+    def test_unreadable_queue_fails_the_task(
+        self, ingress_mod: ModuleType, world, options,
+    ) -> None:
+        from scraper.storage_client import StorageAPIError
+
+        world.storage.failing["get_barcode_queue"] = StorageAPIError("down")
+
+        result = ingress_mod._handle_discover()
 
         assert result["success"] is False
-        main_mod._ai_sort_products.assert_not_called()
-        main_mod._ai_assign_due_dates.assert_not_called()
-        main_mod._ai_group_products.assert_not_called()
 
-    def test_discover_no_new_products_skips_ai(self, ingress_mod: ModuleType) -> None:
-        """When discover succeeds but finds no new products, AI is skipped."""
-        opts = {
-            "store_id": "N110",
-            "storage_url": "http://storage",
-            "gemini_api_key": "gem-key",
-            "gemini_model": "gemini-1.5-flash",
-            "location_id": 2,
-            "quantity_unit_id": 3,
-        }
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
-            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                main_mod = sys.modules["main"]
-                main_mod._discover_products.return_value = (0, [])
-                result = ingress_mod._handle_discover()
+    def test_single_barcode_is_created_and_stocked(
+        self, ingress_mod: ModuleType, world, options,
+    ) -> None:
+        world.kruoka.catalogue = {"K532": {EAN: "Pirkka kevytmaito 1l"}}
+
+        result = ingress_mod._handle_discover({"barcode": EAN})
 
         assert result["success"] is True
-        main_mod._ai_sort_products.assert_not_called()
-        main_mod._ai_assign_due_dates.assert_not_called()
-        main_mod._ai_group_products.assert_not_called()
+        assert result["product"]["name"] == "Pirkka kevytmaito 1l"
+        product_id = world.storage.barcodes[EAN]
+        assert result["product_id"] == product_id
+        assert world.storage.stock[product_id] == 1.0
+        assert result["logs"]
 
 
 # ---------------------------------------------------------------------------
@@ -304,14 +296,20 @@ class TestHandleDiscover:
 
 
 class TestHandleUpdate:
-    def test_calls_update_products(self, ingress_mod: ModuleType) -> None:
-        opts = {"store_id": "N110", "storage_url": "http://storage"}
-        with mock.patch.object(ingress_mod, "_read_options", return_value=opts):
-            with mock.patch.dict(sys.modules, {"main": mock.MagicMock()}):
-                sys.modules["main"]._update_products.return_value = 0
-                result = ingress_mod._handle_update()
+    def test_update_fills_in_placeholder_name_and_availability(
+        self, ingress_mod: ModuleType, world, options,
+    ) -> None:
+        world.kruoka.catalogue = {"K532": {EAN: "Pirkka kevytmaito 1l"}}
+        product_id = world.storage.add_product(f"Unknown product ({EAN})", barcode=EAN)
+
+        result = ingress_mod._handle_update()
 
         assert result["success"] is True
+        assert result["logs"]
+        assert world.storage.products[product_id]["name"] == "Pirkka kevytmaito 1l"
+        assert world.storage.availability[product_id] == [
+            {"store_id": "K532", "available": True}
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +691,16 @@ class TestHTTPHandler:
         except (json.JSONDecodeError, ValueError):
             return status, output.decode()
 
+    def _wait_for_task(self, ingress_mod: ModuleType, task_id: str) -> dict:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status, task = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
+            assert status == 200
+            if task["status"] != "running":
+                return task
+            time.sleep(0.01)
+        raise AssertionError(f"task {task_id} still running")
+
     def test_get_root_serves_html(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "GET", "/")
         assert status == 200
@@ -738,16 +746,13 @@ class TestHTTPHandler:
         assert response_status[0] == 400
 
     def test_post_discover_no_config(self, ingress_mod: ModuleType) -> None:
-        """Discover with no config runs but finds nothing (0 barcodes → success)."""
+        """Without a Storage URL the queue cannot be read: the task fails."""
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             status, body = self._make_handler(ingress_mod, "POST", "/api/discover")
-        assert status == 200
-        assert body["status"] == "running"
-        task_id = body["task_id"]
-        time.sleep(0.2)
-        status2, result = self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")
-        assert status2 == 200
-        assert result["success"] is True
+            assert status == 200
+            assert body["status"] == "running"
+            result = self._wait_for_task(ingress_mod, body["task_id"])
+        assert result["success"] is False
 
     def test_post_add_products_no_body(self, ingress_mod: ModuleType) -> None:
         status, body = self._make_handler(ingress_mod, "POST", "/api/add_products", body={})

@@ -2,27 +2,34 @@
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
-# The tests run the scraper package that ships in the add-on image, where
-# addon/ is the application root (/app).
+# The tests run the code that ships in the add-on image, where addon/ is the
+# application root (/app): `main`, `ingress_server` and the `scraper` package.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
+
+import main as main_mod  # noqa: E402
+import scraper.scraper as scraper_mod  # noqa: E402
+from scraper.searxng_client import SearXNGError  # noqa: E402
+from scraper.skaupat_client import SKaupatError  # noqa: E402
+
+from .fakes import FakeKRuoka, FakeStorage  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _skip_storage_wait():
     """Prevent wait_for_storage() from blocking during tests."""
-    with patch("addon.main.wait_for_storage", return_value=None):
+    with patch("main.wait_for_storage", return_value=None):
         yield
 
 
 @pytest.fixture(autouse=True)
 def _fresh_registered_stores():
     """Stores are named in Storage once per process; start each test clean."""
-    import addon.main as main_mod
-
     with patch.object(main_mod, "_registered_stores", set()):
         yield
 
@@ -35,11 +42,59 @@ def _fresh_krapi_throttle():
     instances); without a reset, one test's 429 penalty would make the next
     test really sleep.
     """
-    import scraper.scraper as scraper_mod
-
     with patch.object(
         scraper_mod, "_krapi_throttle", scraper_mod._KrApiThrottle(min_interval=0)
     ), patch.object(
         scraper_mod, "_krapi_circuit", scraper_mod._KrApiCircuit()
     ), patch.object(scraper_mod, "_cf_solution", None):
         yield
+
+
+@pytest.fixture
+def world(monkeypatch, tmp_path):
+    """The scraper's outside world, faked: Storage, K-Ruoka (both APIs),
+    S-kaupat, SearXNG and image downloads.
+
+    ``world.storage`` and ``world.kruoka`` are the fakes. ``world.skaupat``
+    and ``world.searxng`` map an EAN to the product that source finds;
+    adding "skaupat" or "searxng" to ``world.down`` makes that source fail
+    (``world.kruoka.down`` does the same for K-Ruoka). ``world.downloads``
+    lists the image URLs fetched.
+    """
+    w = SimpleNamespace(
+        storage=FakeStorage(), kruoka=FakeKRuoka(),
+        skaupat={}, searxng={}, down=set(), downloads=[],
+    )
+
+    def skaupat(ean, **kwargs):
+        if "skaupat" in w.down:
+            raise SKaupatError("S-kaupat unreachable")
+        return w.skaupat.get(ean)
+
+    def searxng(ean, **kwargs):
+        if "searxng" in w.down:
+            raise SearXNGError("SearXNG unreachable")
+        return w.searxng.get(ean)
+
+    def download(url, timeout=None):
+        w.downloads.append(url)
+        resp = MagicMock()
+        resp.content = b"image"
+        resp.headers = {"Content-Type": "image/jpeg"}
+        resp.raise_for_status.return_value = None
+        return resp
+
+    def storage(base_url, **kwargs):
+        return w.storage
+
+    monkeypatch.setattr(main_mod, "StorageClient", storage)
+    monkeypatch.setattr("scraper.storage_client.StorageClient", storage)
+    monkeypatch.setattr(scraper_mod, "_make_graphql_session", lambda: w.kruoka)
+    monkeypatch.setattr(scraper_mod, "_make_krapi_session", lambda: w.kruoka)
+    monkeypatch.setattr(main_mod, "skaupat_lookup", skaupat)
+    monkeypatch.setattr(main_mod, "searxng_lookup", searxng)
+    monkeypatch.setattr(requests, "get", download)
+    # The code under test exports this option to the environment itself.
+    monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
+    monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+    return w

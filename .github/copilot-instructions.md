@@ -106,6 +106,6 @@ Do **not** bump the version or update the changelog for changes that only touch 
 
 - Main CLI options have env-var defaults (`KRUOKA_STORE_ID`, `STORAGE_URL`, `GROCY_LOCATION_ID`, `GROCY_QUANTITY_UNIT_ID`, `SEARXNG_URL`); `.env` is loaded via `python-dotenv` when installed. In the add-on, options come from `/data/options.json` (only `flaresolverr_url` is exported to the environment).
 - External API errors are wrapped in `StorageAPIError` / `SKaupatError` / `SearXNGError` rather than leaking `requests` exceptions.
-- Tests use `unittest.mock` — `StorageClient` and session mocks are injected.
+- Tests import `main`, `ingress_server` and the `scraper` package from `addon/`. New tests use the `world` fixture (`tests/conftest.py`): an in-memory `FakeStorage` and a `FakeKRuoka` session (`tests/fakes.py`), so the scraper's own code runs; older tests inject `unittest.mock` objects.
 - The scraper yields `Product` objects lazily via generators.
 - Product names are in Finnish (Storage canonical names); the ingress UI is in English.
