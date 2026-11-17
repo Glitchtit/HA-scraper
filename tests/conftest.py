@@ -62,20 +62,22 @@ def world(monkeypatch):
     ``world.storage`` and ``world.kruoka`` are the fakes. ``world.skaupat``
     and ``world.searxng`` map an EAN to the product that source finds;
     adding "skaupat" or "searxng" to ``world.down`` makes that source fail
-    (``world.kruoka.down`` does the same for K-Ruoka). ``world.downloads``
-    lists the image URLs fetched.
+    (``world.kruoka.down`` does the same for K-Ruoka). ``world.asked`` lists
+    the fallback lookups made, ``world.downloads`` the image URLs fetched.
     """
     w = SimpleNamespace(
         storage=FakeStorage(), kruoka=FakeKRuoka(),
-        skaupat={}, searxng={}, down=set(), downloads=[],
+        skaupat={}, searxng={}, down=set(), asked=[], downloads=[],
     )
 
     def skaupat(ean, **kwargs):
+        w.asked.append(("skaupat", ean))
         if "skaupat" in w.down:
             raise SKaupatError("S-kaupat unreachable")
         return w.skaupat.get(ean)
 
     def searxng(ean, **kwargs):
+        w.asked.append(("searxng", ean))
         if "searxng" in w.down:
             raise SearXNGError("SearXNG unreachable")
         return w.searxng.get(ean)
@@ -95,8 +97,8 @@ def world(monkeypatch):
     monkeypatch.setattr("scraper.storage_client.StorageClient", storage)
     monkeypatch.setattr(scraper_mod, "_make_graphql_session", lambda: w.kruoka)
     monkeypatch.setattr(scraper_mod, "_make_krapi_session", lambda: w.kruoka)
-    monkeypatch.setattr(main_mod, "skaupat_lookup", skaupat)
-    monkeypatch.setattr(main_mod, "searxng_lookup", searxng)
+    monkeypatch.setattr("scraper.lookup.skaupat_lookup", skaupat)
+    monkeypatch.setattr("scraper.lookup.searxng_lookup", searxng)
     monkeypatch.setattr(requests, "get", download)
     # The code under test exports this option to the environment itself.
     monkeypatch.delenv("FLARESOLVERR_URL", raising=False)

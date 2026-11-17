@@ -38,6 +38,7 @@ No linter or formatter is configured.
 | `addon/scraper/storage_client.py` | HA-Storage REST API client |
 | `addon/scraper/skaupat_client.py` | S-kaupat.fi EAN lookup (fallback) |
 | `addon/scraper/searxng_client.py` | SearXNG EAN lookup (last-resort fallback) |
+| `addon/scraper/lookup.py` | `resolve_ean()` — the one lookup cascade over those three; raises `LookupFailed` when K-Ruoka could not be asked |
 | `addon/main.py` | The operations the ingress server runs: single and queue discover, update, price budget, store registration |
 | `addon/ingress_server.py` | HTTP server for HA ingress web UI; fire-and-poll `/api/*` tasks |
 | `custom_components/scraper/services.py` | `scraper.search_products` / `scraper.add_product` handlers |
@@ -52,7 +53,7 @@ No linter or formatter is configured.
 - **GraphQL** (`KRuokaScraper(store_id)`): `mobile.k-ruoka.fi/graphql`. No Cloudflare bypass. Hard limit of `offset ≤ 1000`. No prices. Used for name/image lookups and per-store availability sweeps.
 - **kr-api REST** (`KRuokaScraper(store_id, use_graphql=False)`): `www.k-ruoka.fi/kr-api`. Needs a Cloudflare clearance from FlareSolverr (the `flaresolverr_url` option → `FLARESOLVERR_URL`). The only source of prices and friendly store names; price scrapers are not built without FlareSolverr.
 
-`store_id` may be comma-separated; stores are tried in order. EAN lookups fall back K-Ruoka → S-kaupat → SearXNG (only if `searxng_url` is set). Update only replaces placeholder names (`Unknown product (…)`, bare barcodes); a real name is never overwritten, whatever the source.
+`store_id` may be comma-separated; stores are tried in order. Every EAN lookup goes through `resolve_ean()`: K-Ruoka → S-kaupat → SearXNG (only if `searxng_url` is set). It returns `None` when no source has the product and raises `LookupFailed` when a K-Ruoka store got no answer and S-kaupat did not have it either (SearXNG is then not asked): a single scan fails with a retry message, a queue item stays pending, Update skips the product. A failing fallback while K-Ruoka answered is only logged. `KRuokaScraper.failed_requests` is how a caller tells an empty result from no answer. Update only replaces placeholder names (`Unknown product (…)`, bare barcodes); a real name is never overwritten, whatever the source.
 
 ### kr-api rate limiting
 

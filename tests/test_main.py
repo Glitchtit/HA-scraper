@@ -303,7 +303,7 @@ class TestDiscoverProducts:
             42, status="done", result_product_id=5,
         )
 
-    @patch("main.skaupat_lookup")
+    @patch("scraper.lookup.skaupat_lookup")
     @patch("main.KRuokaScraper")
     @patch("main.StorageClient")
     def test_not_found_on_kruoka_or_skaupat_skips(self, MockStorage, MockScraper, mock_sk):
@@ -337,7 +337,7 @@ class TestDiscoverProducts:
         )
         mock_sk.assert_called_once_with("0000000000000")
 
-    @patch("main.skaupat_lookup")
+    @patch("scraper.lookup.skaupat_lookup")
     @patch("main.KRuokaScraper")
     @patch("main.StorageClient")
     def test_skaupat_fallback_creates_product(self, MockStorage, MockScraper, mock_sk):
@@ -444,7 +444,7 @@ class TestParseStoreIds:
 class TestMultiStoreDiscoverFallback:
     """Test that discover tries multiple stores for each barcode."""
 
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_discover_tries_second_store(
@@ -505,7 +505,7 @@ class TestMultiStoreDiscoverFallback:
 class TestMultiStoreUpdateFallback:
     """Test that update tries multiple stores for each barcode."""
 
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_update_tries_second_store(
@@ -569,8 +569,8 @@ class TestUpdateSearXNGConfidence:
             return s
         MockScraper.side_effect = make_scraper
 
-    @patch("main.searxng_lookup")
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.searxng_lookup")
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_searxng_does_not_overwrite_real_name(
@@ -597,8 +597,8 @@ class TestUpdateSearXNGConfidence:
         for call in storage_instance.update_product.call_args_list:
             assert "name" not in call.kwargs
 
-    @patch("main.searxng_lookup")
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.searxng_lookup")
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_searxng_fills_placeholder_name(
@@ -625,8 +625,8 @@ class TestUpdateSearXNGConfidence:
         _, kwargs = storage_instance.update_product.call_args
         assert kwargs["name"] == "San Pellegrino Aranciata Rossa 330ml"
 
-    @patch("main.searxng_lookup")
-    @patch("main.skaupat_lookup")
+    @patch("scraper.lookup.searxng_lookup")
+    @patch("scraper.lookup.skaupat_lookup")
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_skaupat_does_not_overwrite_real_name(
@@ -688,7 +688,7 @@ class TestUpdateRenamesOnlyPlaceholders:
         assert rc == 0
         return storage_instance
 
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_real_name_is_kept(self, MockScraper, MockStorage, mock_skaupat):
@@ -696,7 +696,7 @@ class TestUpdateRenamesOnlyPlaceholders:
         for call in storage.update_product.call_args_list:
             assert "name" not in call.kwargs
 
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_placeholder_name_is_replaced(self, MockScraper, MockStorage, mock_skaupat):
@@ -718,7 +718,7 @@ class TestUpdateTrafficReduction:
         )
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_availability_swept_via_graphql_not_krapi(
@@ -754,7 +754,7 @@ class TestUpdateTrafficReduction:
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
     @patch("main._PRICE_BUDGET", 1)
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_price_budget_caps_krapi_lookups(
@@ -803,7 +803,7 @@ class TestUpdateTrafficReduction:
         assert len(state) >= 1
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_fresh_products_skip_price_lookup(
@@ -894,7 +894,7 @@ class TestPriceRotation:
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
     @patch("main._PRICE_BUDGET", 3)
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_products_without_barcodes_take_no_budget(
@@ -930,7 +930,7 @@ class TestPriceRotation:
 
     @pytest.mark.parametrize("failure", ["429", "403", "breaker open"])
     @patch("main._make_price_scrapers")
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_failed_lookup_leaves_product_unstamped(
@@ -958,7 +958,7 @@ class TestPriceRotation:
         assert _load_price_state() == {}
 
     @patch("main._make_price_scrapers")
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_definite_no_price_is_stamped(
@@ -979,7 +979,7 @@ class TestPriceRotation:
         assert list(_load_price_state()) == ["1"]
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_state_is_saved_after_each_stamped_product(
@@ -1011,7 +1011,7 @@ class TestUpdatePrices:
     """Prices are fetched via the kr-api backend and written as unit_price."""
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://flaresolverr:8191"})
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_update_writes_unit_price_from_krapi(
@@ -1062,7 +1062,7 @@ class TestUpdatePrices:
         assert kwargs["unit_price_currency"] == "EUR"
 
     @patch.dict("os.environ", {}, clear=False)
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_no_cf_bypass_skips_price_scrapers(
@@ -1235,7 +1235,7 @@ class TestScanWhileKrApiFails:
     the name Storage has and the scan still succeeds, without a price."""
 
     @patch("main._make_price_scrapers")
-    @patch("main.skaupat_lookup", return_value=None)
+    @patch("scraper.lookup.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
     def test_scan_succeeds_and_store_name_is_untouched(
@@ -1491,3 +1491,68 @@ class TestDiscoverSingleBarcode:
         result = self._run(MockStorage, MockScraper)
         assert result["success"] is False
         storage.add_stock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# K-Ruoka unreachable: a failed lookup, not "product not found"
+# ---------------------------------------------------------------------------
+
+class TestKRuokaUnreachable:
+    EAN = "6410405082657"
+
+    def _args(self):
+        return Namespace(
+            store="K532", storage_url="http://storage", upload_images=False,
+            searxng_url="http://searxng:8080",
+            location_id=None, quantity_unit_id=None,
+        )
+
+    def test_single_scan_fails_and_creates_nothing(self, world):
+        from main import _discover_single_barcode
+        from scraper.searxng_client import SearXNGProduct
+
+        world.kruoka.down = True
+        world.searxng[self.EAN] = SearXNGProduct(
+            name=f"Unknown product ({self.EAN})", ean=self.EAN,
+        )
+
+        result = _discover_single_barcode(self._args(), self.EAN)
+
+        assert result["success"] is False
+        assert "Lookup failed" in result["error"]
+        assert "again" in result["error"]
+        assert world.storage.products == {}
+
+    def test_queue_item_stays_pending_until_the_next_run(self, world):
+        from main import _discover_products
+
+        world.kruoka.catalogue = {"K532": {self.EAN: "Pirkka kevytmaito 1l"}}
+        world.kruoka.down = True
+        world.storage.enqueue(self.EAN)
+
+        rc, _ = _discover_products(self._args())
+
+        assert rc == 1
+        assert world.storage.queue[0]["status"] == "pending"
+        assert world.storage.products == {}
+
+        world.kruoka.down = False
+        rc, _ = _discover_products(self._args())
+
+        assert rc == 0
+        assert world.storage.queue[0]["status"] == "done"
+        assert world.storage.stock[world.storage.barcodes[self.EAN]] == 1.0
+
+    def test_update_skips_the_product_unstamped(self, world, monkeypatch):
+        from main import _load_price_state, _update_products
+
+        monkeypatch.setenv("FLARESOLVERR_URL", "http://fs:8191")
+        world.storage.add_product("Maito", barcode=self.EAN)
+        world.kruoka.down = True
+
+        rc = _update_products(self._args())
+
+        assert rc == 1
+        assert _load_price_state() == {}
+        assert world.storage.called("update_product") == []
+        assert world.storage.called("set_product_availability") == []

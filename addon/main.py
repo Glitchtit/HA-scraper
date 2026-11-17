@@ -15,10 +15,9 @@ import posixpath
 import time
 from pathlib import Path
 
+from scraper.lookup import LookupFailed, resolve_ean
 from scraper.storage_client import StorageAPIError, StorageClient
 from scraper.scraper import KRuokaScraper, Product
-from scraper.searxng_client import SearXNGError, lookup_ean as searxng_lookup
-from scraper.skaupat_client import SKaupatError, lookup_ean as skaupat_lookup
 
 import requests
 
@@ -373,50 +372,19 @@ def _discover_single_barcode(
 
     logger.info("Looking up EAN %s …", barcode)
 
-    # Search K-Ruoka by EAN across configured stores.
-    product = None
-    for scraper in scrapers:
-        try:
-            for p in scraper.search(barcode, max_products=10):
-                if p.ean == barcode:
-                    product = p
-                    break
-        except Exception as exc:
-            logger.warning(
-                "Store %s failed for EAN %s (%s); trying next store …",
-                scraper.store_id, barcode, exc,
-            )
-        if product is not None:
-            break
-
-    # Fallback: S-kaupat EAN lookup.
-    if product is None:
-        try:
-            sk = skaupat_lookup(barcode)
-            if sk is not None:
-                logger.info("Found on S-kaupat: '%s'.", sk.name)
-                product = Product(
-                    name=sk.name,
-                    ean=sk.ean,
-                    description=sk.description,
-                    image_url=sk.image_url,
-                )
-        except SKaupatError as exc:
-            logger.debug("S-kaupat lookup failed: %s", exc)
-
-    # Fallback: SearXNG web search.
-    if product is None and getattr(args, "searxng_url", ""):
-        try:
-            sx = searxng_lookup(barcode, searxng_url=args.searxng_url)
-            if sx is not None:
-                logger.info("Found via SearXNG: '%s'.", sx.name)
-                product = Product(
-                    name=sx.name,
-                    ean=sx.ean,
-                    image_url=sx.image_url,
-                )
-        except SearXNGError as exc:
-            logger.debug("SearXNG lookup failed: %s", exc)
+    try:
+        product = resolve_ean(
+            barcode, scrapers, searxng_url=getattr(args, "searxng_url", "")
+        )
+    except LookupFailed as exc:
+        logger.warning("Lookup failed for EAN %s: %s.", barcode, exc)
+        return {
+            "success": False,
+            "error": (
+                f"Lookup failed for EAN {barcode}: {exc}. "
+                "Nothing was saved; scan it again later."
+            ),
+        }
 
     if product is None:
         logger.info("EAN %s not found on K-Ruoka, S-kaupat, or SearXNG.", barcode)
@@ -535,50 +503,17 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         queue_id = entry.get("id")
         logger.info("Looking up EAN %s …", barcode)
 
-        # Search K-Ruoka first; fall back to S-kaupat, then SearXNG.
-        product = None
-        for scraper in scrapers:
-            try:
-                for p in scraper.search(barcode, max_products=10):
-                    if p.ean == barcode:
-                        product = p
-                        break
-            except Exception as exc:
-                logger.warning(
-                    "  Store %s failed for EAN %s (%s); trying next store …",
-                    scraper.store_id, barcode, exc,
-                )
-            if product is not None:
-                break
-
-        # Fallback: try S-kaupat.fi product lookup by EAN.
-        if product is None:
-            try:
-                sk = skaupat_lookup(barcode)
-                if sk is not None:
-                    logger.info("  Found on S-kaupat: '%s'.", sk.name)
-                    product = Product(
-                        name=sk.name,
-                        ean=sk.ean,
-                        description=sk.description,
-                        image_url=sk.image_url,
-                    )
-            except SKaupatError as exc:
-                logger.debug("  S-kaupat lookup failed: %s", exc)
-
-        # Fallback: SearXNG web search.
-        if product is None and getattr(args, "searxng_url", ""):
-            try:
-                sx = searxng_lookup(barcode, searxng_url=args.searxng_url)
-                if sx is not None:
-                    logger.info("  Found via SearXNG: '%s'.", sx.name)
-                    product = Product(
-                        name=sx.name,
-                        ean=sx.ean,
-                        image_url=sx.image_url,
-                    )
-            except SearXNGError as exc:
-                logger.debug("  SearXNG lookup failed: %s", exc)
+        try:
+            product = resolve_ean(
+                barcode, scrapers, searxng_url=getattr(args, "searxng_url", "")
+            )
+        except LookupFailed as exc:
+            # Not "not found": the item stays pending for the next run.
+            logger.warning(
+                "  Lookup failed for EAN %s: %s – left in the queue.", barcode, exc
+            )
+            errors += 1
+            continue
 
         if product is None:
             logger.info("  EAN %s not found on K-Ruoka, S-kaupat, or SearXNG – skipping.", barcode)
@@ -821,57 +756,26 @@ def _update_products(args: argparse.Namespace) -> int:
             skipped += 1
             continue
 
-        # Try each EAN until we find a match, trying all configured stores.
+        # Try each EAN until one is found.
         found: Product | None = None
         matched_ean = ""
-        for ean in eans:
-            # K-Ruoka first — try each store.
-            for scraper in scrapers:
-                try:
-                    for p in scraper.search(ean, max_products=10):
-                        if p.ean == ean:
-                            found = p
-                            matched_ean = ean
-                            break
-                except Exception as exc:
-                    logger.warning(
-                        "  Store %s failed for EAN %s (%s); trying next store …",
-                        scraper.store_id, ean, exc,
-                    )
-                if found:
-                    break
-            if found:
-                break
-
-            # S-kaupat fallback.
-            try:
-                sk = skaupat_lookup(ean)
-                if sk is not None:
-                    found = Product(
-                        name=sk.name,
-                        ean=sk.ean,
-                        description=sk.description,
-                        image_url=sk.image_url,
-                    )
+        try:
+            for ean in eans:
+                found = resolve_ean(
+                    ean, scrapers, searxng_url=getattr(args, "searxng_url", "")
+                )
+                if found is not None:
                     matched_ean = ean
                     break
-            except SKaupatError as exc:
-                logger.debug("  S-kaupat lookup failed for %s: %s", ean, exc)
-
-            # SearXNG fallback.
-            if getattr(args, "searxng_url", ""):
-                try:
-                    sx = searxng_lookup(ean, searxng_url=args.searxng_url)
-                    if sx is not None:
-                        found = Product(
-                            name=sx.name,
-                            ean=sx.ean,
-                            image_url=sx.image_url,
-                        )
-                        matched_ean = ean
-                        break
-                except SearXNGError as exc:
-                    logger.debug("  SearXNG lookup failed for %s: %s", ean, exc)
+        except LookupFailed as exc:
+            # Nothing is known about the product this run: leave it as it
+            # is, price refresh included.
+            logger.warning(
+                "  Product %d ('%s'): lookup failed (%s) – skipped.",
+                pid, current_name, exc,
+            )
+            errors += 1
+            continue
 
         # Refresh per-store availability regardless of whether the product
         # was found by name/EAN search above.  Collect once and reuse the

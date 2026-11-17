@@ -20,7 +20,7 @@
 ## ✨ Features
 
 - **Product search** — search K-Ruoka by name, tick the results you want and add them to Storage with name, EAN barcode and product image. Barcodes already in Storage are skipped.
-- **Barcode queue discovery** — **Discover** works through the pending barcodes in Storage's queue: it looks each one up on K-Ruoka, then s-kaupat.fi, then SearXNG if configured, creates the product, adds it to stock and marks the queue item done.
+- **Barcode queue discovery** — **Discover** works through the pending barcodes in Storage's queue: it looks each one up on K-Ruoka, then s-kaupat.fi, then SearXNG if configured, creates the product, adds it to stock and marks the queue item done. A barcode that could not be looked up because K-Ruoka did not answer stays in the queue for the next run.
 - **Catalogue update** — **Update** re-checks every Storage product by barcode and refreshes its image and price. A name is only filled in while the product still has a placeholder name (`Unknown product (…)` or a bare barcode); a real name is never overwritten.
 - **Prices and per-store availability** — every configured store is checked per product; whether the store carries it is written to Storage, and the store's regular price is saved as the product's `unit_price` (EUR). Prices come from Cloudflare-protected kr-api, so they need FlareSolverr and are skipped without it.
 - **Rate-limit protection** — availability uses the mobile GraphQL API, which is not throttled. kr-api price lookups are limited to 200 products per run (oldest first, skipping prices refreshed in the last 3 days), paced with jitter, paused for 15 minutes after repeated 429s or Cloudflare blocks, and reuse a cached Cloudflare clearance that is renewed when it expires or is rejected.

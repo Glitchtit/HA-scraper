@@ -546,8 +546,8 @@ class KRuokaScraper:
         self.store_id = self.store_ids[0]
         self.request_delay = request_delay
         self._use_graphql = use_graphql
-        # kr-api requests that got no answer (error, rate limit, breaker
-        # open): lets a caller tell "no result" from "no answer".
+        # Requests that got no answer (error, rate limit, breaker open):
+        # lets a caller tell "no result" from "no answer".
         self.failed_requests = 0
         if session is not None:
             self._session = session
@@ -796,7 +796,10 @@ class KRuokaScraper:
             time.sleep(self.request_delay)
 
     def _post_graphql(self, variables: dict) -> Optional[dict]:
-        """POST a GraphQL query and return the response, or ``None`` on error."""
+        """POST a GraphQL query and return the response.
+
+        Returns ``None`` on error, counted in ``failed_requests``.
+        """
         payload = {
             "operationName": "productAndAssortmentSearchV2",
             "variables": variables,
@@ -808,10 +811,9 @@ class KRuokaScraper:
             )
             resp.raise_for_status()
             data = resp.json()
-            if data.get("errors"):
-                logger.warning("GraphQL errors: %s", data["errors"])
-                return None
-            return data
+            if not data.get("errors"):
+                return data
+            logger.warning("GraphQL errors: %s", data["errors"])
         except requests.HTTPError as exc:
             logger.error(
                 "HTTP error %s for GraphQL: %s", exc.response.status_code, exc
@@ -820,6 +822,7 @@ class KRuokaScraper:
             logger.error("Request failed for GraphQL: %s", exc)
         except ValueError as exc:
             logger.error("Failed to decode GraphQL response: %s", exc)
+        self.failed_requests += 1
         return None
 
     @staticmethod
