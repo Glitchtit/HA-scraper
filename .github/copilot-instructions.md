@@ -34,14 +34,14 @@ No linter or formatter is configured.
 
 | Module | Role |
 |---|---|
-| `scraper/scraper.py` | K-ruoka.fi scraper (GraphQL + kr-api REST backends) |
-| `scraper/storage_client.py` | HA-Storage REST API client |
-| `scraper/skaupat_client.py` | S-kaupat.fi EAN lookup (fallback) |
-| `scraper/searxng_client.py` | SearXNG EAN lookup (last-resort fallback) |
+| `addon/scraper/scraper.py` | K-ruoka.fi scraper (GraphQL + kr-api REST backends) |
+| `addon/scraper/storage_client.py` | HA-Storage REST API client |
+| `addon/scraper/skaupat_client.py` | S-kaupat.fi EAN lookup (fallback) |
+| `addon/scraper/searxng_client.py` | SearXNG EAN lookup (last-resort fallback) |
 | `addon/main.py` | Entry point — argparse, `--query`/`--browse`/`--discover`/`--update`/`--delete-all`, discover/update pipelines, price budget |
 | `addon/ingress_server.py` | HTTP server for HA ingress web UI; fire-and-poll `/api/*` tasks |
 | `custom_components/scraper/services.py` | `scraper.search_products` / `scraper.add_product` handlers |
-| `custom_components/scraper/scraperlib/` | Vendored copy of the `scraper/` package for HACS installs |
+| `custom_components/scraper/scraperlib/` | Copy of `addon/scraper/` for HACS installs |
 
 ### Core data type
 
@@ -63,9 +63,9 @@ kr-api rate-limits aggressively, so (see `scraper.py` and `_update_products` in 
 - Price budget: `--update` refreshes at most `KRAPI_PRICE_BUDGET` (default 200) prices per run, oldest first, skipping ones refreshed within `KRAPI_PRICE_TTL_DAYS` (default 3). Only products with a barcode are selected, and a product counts as refreshed only once kr-api answered (`KRuokaScraper.failed_requests` tells "no result" from "no answer"). State in `/data/price_refresh.json`, saved after each product.
 - The FlareSolverr clearance is cached in memory and in `/data/cf_clearance.json` for `CF_CLEARANCE_TTL` (default 1500 s). A 403 drops it, solves again and retries the request once. Both state files honour `SCRAPER_STATE_DIR`.
 
-### Duplicated files
+### Two copies of the library
 
-The `scraper/` package is **copied identically** into `addon/scraper/` and `custom_components/scraper/scraperlib/` (hand-synced, no tooling). Changes to `scraper.py`, `storage_client.py`, `skaupat_client.py`, or `searxng_client.py` must be applied to all three locations. Tests import only the top-level `scraper/` copy, so drift will not show up in tests.
+The library ships twice and the two copies must stay byte-identical: `addon/scraper/` (the add-on image, and the copy the tests import — `tests/conftest.py` puts `addon/` on `sys.path`) and `custom_components/scraper/scraperlib/` (the HACS integration). Edit `addon/scraper/`, then `cp addon/scraper/*.py custom_components/scraper/scraperlib/`. CI (`.github/workflows/build.yml`) runs the tests and `diff -r -x __pycache__ addon/scraper custom_components/scraper/scraperlib`.
 
 ### AI
 

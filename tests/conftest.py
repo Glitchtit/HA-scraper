@@ -1,8 +1,14 @@
 """Shared pytest fixtures for scraper tests."""
 
+import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+# The tests run the scraper package that ships in the add-on image, where
+# addon/ is the application root (/app).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "addon"))
 
 
 @pytest.fixture(autouse=True)

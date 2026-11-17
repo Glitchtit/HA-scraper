@@ -9,6 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt pytest voluptuous
+      - run: python -m pytest tests/ -q
+      # The add-on and the HACS integration each ship their own copy of the library.
+      - run: diff -r -x __pycache__ addon/scraper custom_components/scraper/scraperlib
+
   image:
     runs-on: ubuntu-latest
     steps:

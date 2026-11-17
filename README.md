@@ -80,8 +80,14 @@ The integration adds no entities and no sidebar panel (the add-on's panel is the
 ## 🛠️ Development
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements.txt pytest voluptuous
 python -m pytest tests/ -v
 ```
 
-Tests import the top-level `scraper/` package. `addon/scraper/` and `custom_components/scraper/scraperlib/` are copies of it and must be kept in sync by hand.
+The library ships twice: `addon/scraper/` in the add-on image and `custom_components/scraper/scraperlib/` in the HACS integration. Edit `addon/scraper/` (the copy the tests run), then copy it over the other one:
+
+```bash
+cp addon/scraper/*.py custom_components/scraper/scraperlib/
+```
+
+CI runs the tests and fails when the two copies differ.
