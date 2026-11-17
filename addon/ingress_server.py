@@ -35,7 +35,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from typing import Any, Generator
 
-_PORT = int(os.environ.get("INGRESS_PORT", "8099"))
+_PORT = 8099
 _OPTIONS_PATH = "/data/options.json"
 
 # Ensure the app directory is importable (main.py + scraper package).
@@ -201,7 +201,7 @@ def _resolve_storage_url(opts: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Log-capturing helpers (mirrors ws_api._CapturingHandler)
+# Log-capturing helpers
 # ---------------------------------------------------------------------------
 
 
@@ -251,25 +251,17 @@ def _capture_logs() -> Generator[list[dict[str, str]], None, None]:
 # ---------------------------------------------------------------------------
 
 
-def _build_args(opts: dict[str, Any], **overrides: Any) -> argparse.Namespace:
+def _build_args(opts: dict[str, Any]) -> argparse.Namespace:
     """Build an ``argparse.Namespace`` from add-on options."""
     _apply_env_from_options(opts)
-    ns = argparse.Namespace(
+    return argparse.Namespace(
         store=opts.get("store_id", ""),
         storage_url=_resolve_storage_url(opts),
         location_id=None,
         quantity_unit_id=None,
         upload_images=opts.get("upload_images", True),
-        use_graphql=opts.get("use_graphql", True),
         searxng_url=opts.get("searxng_url", ""),
-        verbose=False,
-        dry_run=False,
-        skip_existing=True,
-        max_products=None,
     )
-    for key, val in overrides.items():
-        setattr(ns, key, val)
-    return ns
 
 
 def _handle_config() -> dict[str, Any]:
@@ -298,10 +290,7 @@ def _handle_search(body: dict[str, Any]) -> dict[str, Any]:
     try:
         from scraper.scraper import KRuokaScraper
 
-        scraper = KRuokaScraper(
-            store_id=opts.get("store_id", ""),
-            use_graphql=opts.get("use_graphql", True),
-        )
+        scraper = KRuokaScraper(store_id=opts.get("store_id", ""))
         products: list[dict[str, str]] = []
         for product in scraper.search(query, max_products=max_products):
             products.append(
@@ -390,7 +379,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
     price_scrapers = _main._make_price_scrapers(store_ids)
 
     # Sweep per-store availability for products added here too, same as the
-    # discover / --update flows.  Register stores once and build the
+    # discover and update flows.  Register stores once and build the
     # sweep-scraper list up front (best-effort; skipped entirely when no
     # stores are configured).
     avail_scrapers: list = []
@@ -398,10 +387,7 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
         avail_scrapers = list(price_scrapers)
         if not avail_scrapers:
             avail_scrapers = [
-                _main.KRuokaScraper(
-                    store_id=str(opts.get("store_id", "")),
-                    use_graphql=opts.get("use_graphql", True),
-                )
+                _main.KRuokaScraper(store_id=str(opts.get("store_id", "")))
             ]
         _main._register_stores(storage, store_ids, price_scrapers)
 
@@ -556,11 +542,7 @@ _HTML = """\
     .btn:disabled { opacity:0.4; cursor:not-allowed; }
     .btn-primary { background:#03a9f4; color:#fff; }
     .btn-discover { background:#6200ea; color:#fff; }
-    .btn-optimize { background:#ff6f00; color:#fff; }
-    .btn-sort     { background:#00796b; color:#fff; }
-    .btn-date     { background:#e65100; color:#fff; }
     .btn-update   { background:#1565c0; color:#fff; }
-    .btn-group    { background:#6a1b9a; color:#fff; }
     .btn-sm {
       padding:5px 12px; font-size:0.78rem; border-radius:6px;
       background:#333; color:#bbb; border:1px solid #555;
@@ -970,16 +952,12 @@ _HTML = """\
       .then(function (data) {
         if (data.logs && data.logs.length) appendLogs(label, data.logs);
 
-        if (data.skipped) {
-          actionStat.innerHTML = '<span class="error">' + esc(label) +
-            ": not configured \\u2014 see terminal output.</span>";
-        } else if (data.success !== true) {
+        if (data.success !== true) {
           actionStat.innerHTML = '<span class="error">' + esc(label) +
             " finished with errors \\u2014 see terminal output.</span>";
         } else {
-          var extra = data.updated != null ? " (" + data.updated + " updated)" : "";
           actionStat.innerHTML = '<span class="success">\\u2713 ' + esc(label) +
-            " complete" + esc(extra) + ".</span>";
+            " complete.</span>";
         }
       })
       .catch(function (err) {

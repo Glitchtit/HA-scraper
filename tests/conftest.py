@@ -21,10 +21,14 @@ from .fakes import FakeKRuoka, FakeStorage  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _skip_storage_wait():
-    """Prevent wait_for_storage() from blocking during tests."""
-    with patch("main.wait_for_storage", return_value=None):
-        yield
+def _state_files_in_tmp(tmp_path, monkeypatch):
+    """The add-on keeps its state files in /data; tests keep them in tmp_path."""
+    monkeypatch.setattr(
+        main_mod, "_price_state_path", lambda: tmp_path / "price_refresh.json"
+    )
+    monkeypatch.setattr(
+        scraper_mod, "_cf_cache_path", lambda: tmp_path / "cf_clearance.json"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +55,7 @@ def _fresh_krapi_throttle():
 
 
 @pytest.fixture
-def world(monkeypatch, tmp_path):
+def world(monkeypatch):
     """The scraper's outside world, faked: Storage, K-Ruoka (both APIs),
     S-kaupat, SearXNG and image downloads.
 
@@ -96,5 +100,4 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "get", download)
     # The code under test exports this option to the environment itself.
     monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
-    monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
     return w

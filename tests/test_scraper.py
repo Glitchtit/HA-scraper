@@ -6,6 +6,7 @@ kr-api REST backend (``use_graphql=False``).
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,7 +16,6 @@ from scraper.scraper import (
     KRuokaScraper,
     Product,
     StoreAvailability,
-    _PRODUCT_CATEGORY_SLUGS,
     _normalize_ean,
 )
 
@@ -92,33 +92,6 @@ def _gql_assortment(name: str, eans: list[str]) -> dict:
 
 def _kr_search_page(items: list[dict], total: int) -> dict:
     return {"results": items, "totalHits": total}
-
-
-def _kr_offer_categories_response(slugs: list[str]) -> dict:
-    return {
-        "offerCategories": [
-            {"slug": s, "count": 1, "name": {"finnish": s}} for s in slugs
-        ]
-    }
-
-
-def _kr_offer_category_response(offers: list[dict], total: int) -> dict:
-    return {"offers": offers, "totalHits": total}
-
-
-def _kr_make_offer(name: str, ean: str) -> dict:
-    return {
-        "id": f"S{ean}",
-        "product": {
-            "id": ean,
-            "product": {
-                "ean": ean,
-                "localizedName": {"finnish": name},
-                "images": [],
-                "productAttributes": {"ean": ean},
-            },
-        },
-    }
 
 
 def _kr_make_search_item(name: str, ean: str) -> dict:
@@ -426,95 +399,6 @@ class TestGraphqlSearch:
 # GraphQL browse – _browse_graphql
 # ---------------------------------------------------------------------------
 
-class TestGraphqlBrowse:
-    def test_browse_iterates_categories(self):
-        """browse() iterates through _PRODUCT_CATEGORY_SLUGS."""
-        # Provide one product per category (uses first slug)
-        first_slug = _PRODUCT_CATEGORY_SLUGS[0]
-        page = _gql_page([_gql_product("Kurkku", "200")], total=1)
-
-        # One response per category (all empty except the first)
-        responses = [page] + [
-            _gql_page([], total=0) for _ in _PRODUCT_CATEGORY_SLUGS[1:]
-        ]
-        session = _make_mock_session(responses)
-        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        products = list(scraper.browse())
-
-        assert len(products) == 1
-        assert products[0].ean == "200"
-
-    def test_browse_passes_category_path(self):
-        """Each category request must include the categoryPath variable."""
-        # Give every category exactly one page
-        first_page = _gql_page([_gql_product("A", "1")], total=1)
-        responses = [first_page] + [
-            _gql_page([], 0) for _ in _PRODUCT_CATEGORY_SLUGS[1:]
-        ]
-        session = _make_mock_session(responses)
-        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        list(scraper.browse())
-
-        first_call_vars = session.post.call_args_list[0][1]["json"]["variables"]
-        assert "categoryPath" in first_call_vars
-        assert first_call_vars["categoryPath"] == _PRODUCT_CATEGORY_SLUGS[0]
-
-    def test_browse_deduplicates_by_ean(self):
-        """Products appearing in multiple categories are returned only once."""
-        shared_ean = "SHARED_EAN"
-        page1 = _gql_page([_gql_product("SharedProduct", shared_ean)], total=1)
-        page2 = _gql_page([_gql_product("SharedProduct", shared_ean)], total=1)
-        rest = [_gql_page([], 0) for _ in _PRODUCT_CATEGORY_SLUGS[2:]]
-
-        session = _make_mock_session([page1, page2] + rest)
-        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        products = list(scraper.browse())
-
-        assert len(products) == 1
-        assert products[0].ean == shared_ean
-
-    def test_browse_max_products(self):
-        page = _gql_page(
-            [_gql_product(f"P{i}", str(i)) for i in range(100)], total=200
-        )
-        responses = [page] * len(_PRODUCT_CATEGORY_SLUGS) * 2
-        session = _make_mock_session(responses)
-        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        products = list(scraper.browse(max_products=3))
-
-        assert len(products) == 3
-
-    def test_browse_uses_graphql_url(self):
-        page = _gql_page([_gql_product("A", "1")], total=1)
-        responses = [page] + [
-            _gql_page([], 0) for _ in _PRODUCT_CATEGORY_SLUGS[1:]
-        ]
-        session = _make_mock_session(responses)
-        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        list(scraper.browse())
-
-        call_url = session.post.call_args_list[0][0][0]
-        assert "mobile.k-ruoka.fi" in call_url
-
-    def test_browse_uses_post_not_get(self):
-        page = _gql_page([_gql_product("A", "1")], total=1)
-        responses = [page] + [
-            _gql_page([], 0) for _ in _PRODUCT_CATEGORY_SLUGS[1:]
-        ]
-        session = _make_mock_session(responses)
-        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
-        list(scraper.browse())
-
-        assert not session.get.called
-
-    def test_browse_category_slug_list_non_empty(self):
-        """_PRODUCT_CATEGORY_SLUGS must be a non-empty list of strings."""
-        assert isinstance(_PRODUCT_CATEGORY_SLUGS, list)
-        assert len(_PRODUCT_CATEGORY_SLUGS) > 0
-        for slug in _PRODUCT_CATEGORY_SLUGS:
-            assert isinstance(slug, str) and slug
-
-
 # ---------------------------------------------------------------------------
 # use_graphql=False – kr-api backend (regression)
 # ---------------------------------------------------------------------------
@@ -601,79 +485,6 @@ class TestKrapiSearch:
         )
         products = list(scraper.search("x"))
         assert products == []
-
-
-class TestKrapiBrowse:
-    def test_browse_fetches_categories_first(self):
-        cats = _kr_offer_categories_response(["juomat"])
-        offers = _kr_offer_category_response([_kr_make_offer("Kalja", "333")], total=1)
-        session = _make_mock_session([cats, offers])
-        scraper = KRuokaScraper(
-            store_id="N110", session=session, request_delay=0, use_graphql=False
-        )
-        products = list(scraper.browse())
-
-        assert len(products) == 1
-        assert products[0].name == "Kalja"
-        assert products[0].ean == "333"
-        assert session.post.call_count == 2
-
-    def test_browse_iterates_multiple_categories(self):
-        cats = _kr_offer_categories_response(
-            ["juomat", "maito-juusto-munat-ja-rasvat"]
-        )
-        offers1 = _kr_offer_category_response([_kr_make_offer("Kalja", "1")], total=1)
-        offers2 = _kr_offer_category_response([_kr_make_offer("Maito", "2")], total=1)
-        session = _make_mock_session([cats, offers1, offers2])
-        scraper = KRuokaScraper(
-            store_id="N110", session=session, request_delay=0, use_graphql=False
-        )
-        products = list(scraper.browse())
-
-        assert len(products) == 2
-        assert {p.ean for p in products} == {"1", "2"}
-
-    def test_browse_max_products(self):
-        cats = _kr_offer_categories_response(
-            ["juomat", "maito-juusto-munat-ja-rasvat"]
-        )
-        offers1 = _kr_offer_category_response(
-            [_kr_make_offer(f"P{i}", str(i)) for i in range(25)], total=25
-        )
-        session = _make_mock_session([cats, offers1])
-        scraper = KRuokaScraper(
-            store_id="N110", session=session, request_delay=0, use_graphql=False
-        )
-        products = list(scraper.browse(max_products=3))
-
-        assert len(products) == 3
-
-    def test_browse_paginates_category(self):
-        cats = _kr_offer_categories_response(["juomat"])
-        page1 = _kr_offer_category_response(
-            [_kr_make_offer(f"X{i}", str(i)) for i in range(25)], total=30
-        )
-        page2 = _kr_offer_category_response(
-            [_kr_make_offer(f"X{i}", str(i)) for i in range(25, 30)], total=30
-        )
-        session = _make_mock_session([cats, page1, page2])
-        scraper = KRuokaScraper(
-            store_id="N110", session=session, request_delay=0, use_graphql=False
-        )
-        products = list(scraper.browse())
-
-        assert len(products) == 30
-
-    def test_browse_skips_empty_slug(self):
-        cats = {"offerCategories": [{"slug": "", "count": 0}]}
-        session = _make_mock_session([cats])
-        scraper = KRuokaScraper(
-            store_id="N110", session=session, request_delay=0, use_graphql=False
-        )
-        products = list(scraper.browse())
-
-        assert products == []
-        assert session.post.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -807,42 +618,6 @@ class TestExtractTotal:
 # _parse_offer_product (kr-api – regression)
 # ---------------------------------------------------------------------------
 
-class TestParseOfferProduct:
-    def test_standard_offer_shape(self):
-        offer = _kr_make_offer("Porkkanasose", "6418248002382")
-        p = KRuokaScraper._parse_offer_product(offer)
-        assert p is not None
-        assert p.name == "Porkkanasose"
-        assert p.ean == "6418248002382"
-
-    def test_ean_from_product_attributes(self):
-        offer = {
-            "id": "SX",
-            "product": {
-                "product": {
-                    "localizedName": {"finnish": "Tuote"},
-                    "productAttributes": {"ean": "999"},
-                }
-            },
-        }
-        p = KRuokaScraper._parse_offer_product(offer)
-        assert p is not None
-        assert p.ean == "999"
-
-    def test_name_from_offer_title_fallback(self):
-        offer = {
-            "id": "SX",
-            "title": "Banaani",
-            "product": {"product": {"ean": "888"}},
-        }
-        p = KRuokaScraper._parse_offer_product(offer)
-        assert p is not None
-        assert p.name == "Banaani"
-
-    def test_missing_name_and_ean_returns_none(self):
-        assert KRuokaScraper._parse_offer_product({}) is None
-
-
 # ---------------------------------------------------------------------------
 # _normalize_ean
 # ---------------------------------------------------------------------------
@@ -910,21 +685,6 @@ class TestLeadingZeroEanRegression:
         p = KRuokaScraper._parse_search_product(item)
         assert p is not None
         assert p.ean == "90493508"
-
-    def test_offer_product_strips_padding(self):
-        offer = {
-            "id": "X",
-            "product": {
-                "product": {
-                    "localizedName": {"finnish": "Tuote"},
-                    "ean": "0000090493508",
-                }
-            },
-        }
-        p = KRuokaScraper._parse_offer_product(offer)
-        assert p is not None
-        assert p.ean == "90493508"
-
 
 # ---------------------------------------------------------------------------
 # Multi-store search (KRuokaScraper.search with comma-separated store_id)
@@ -1449,7 +1209,6 @@ class TestCfClearancePersistence:
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         from scraper.scraper import _load_cached_cf, _save_cached_cf
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         _save_cached_cf({"cf_clearance": "tok"}, "UA-string")
         loaded = _load_cached_cf()
         assert loaded == ({"cf_clearance": "tok"}, "UA-string")
@@ -1458,7 +1217,6 @@ class TestCfClearancePersistence:
         import json as _json
         from scraper.scraper import _load_cached_cf
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         (tmp_path / "cf_clearance.json").write_text(_json.dumps({
             "cookies": {"cf_clearance": "old"},
             "user_agent": "UA",
@@ -1469,7 +1227,10 @@ class TestCfClearancePersistence:
     def test_missing_dir_is_harmless(self, monkeypatch):
         from scraper.scraper import _load_cached_cf, _save_cached_cf
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", "/nonexistent/nope")
+        monkeypatch.setattr(
+            "scraper.scraper._cf_cache_path",
+            lambda: Path("/nonexistent/nope/cf_clearance.json"),
+        )
         _save_cached_cf({"cf_clearance": "x"}, "UA")  # must not raise
         assert _load_cached_cf() is None
 
@@ -1494,9 +1255,7 @@ class TestCfClearanceExpiry:
 
     @pytest.fixture(autouse=True)
     def _flaresolverr(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         monkeypatch.setenv("FLARESOLVERR_URL", "http://fs:8191")
-        monkeypatch.delenv("CF_CLEARANCE", raising=False)
         monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
 
         # Each solve hands out the next clearance: c1, c2, ...

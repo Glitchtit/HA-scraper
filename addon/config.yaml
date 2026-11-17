@@ -17,13 +17,10 @@ ingress_port: 8099
 panel_icon: "mdi:barcode-scan"
 panel_title: "Scraper"
 panel_admin: false
-map:
-  - config:ro
 options:
   storage_hostname: ""
   store_id: "K532"
   upload_images: true
-  use_graphql: true
   flaresolverr_url: ""
   searxng_url: ""
 schema:
@@ -31,6 +28,5 @@ schema:
   storage_url: str?
   store_id: str
   upload_images: bool
-  use_graphql: bool
   flaresolverr_url: str?
   searxng_url: str?

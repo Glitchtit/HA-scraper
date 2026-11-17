@@ -1,31 +1,8 @@
-"""Main entry point for the scraper CLI.
+"""The scraper's operations: discover, update and the Storage writes.
 
-Usage examples
---------------
-Search for a specific product (GraphQL backend, no setup needed)::
-
-    python main.py --store N110 --query "maito" \\
-        --storage-url https://storage.example.com
-
-Browse the full catalogue (GraphQL backend, no setup needed)::
-
-    python main.py --store N110 --browse \\
-        --storage-url https://storage.example.com
-
-Multiple stores with automatic fallback::
-
-    python main.py --store N110,N137 --query "maito" --dry-run
-
-Dry-run (scrape only, do not write to Storage)::
-
-    python main.py --store N110 --query "maito" --dry-run
-
-Force the kr-api fallback backend (requires Cloudflare bypass)::
-
-    python main.py --store N110 --query "maito" --no-graphql --dry-run
-
-Configuration can also be provided via environment variables or a ``.env``
-file (see ``.env.example``).
+Called by ``ingress_server.py``, which passes the add-on options as an
+``argparse.Namespace`` (``store``, ``storage_url``, ``upload_images``,
+``searxng_url``).
 """
 
 from __future__ import annotations
@@ -35,17 +12,8 @@ import json
 import logging
 import os
 import posixpath
-import re
-import sys
 import time
 from pathlib import Path
-
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv()
-except ImportError:
-    pass  # python-dotenv is optional; fall back to plain env vars
 
 from scraper.storage_client import StorageAPIError, StorageClient
 from scraper.scraper import KRuokaScraper, Product
@@ -54,20 +22,7 @@ from scraper.skaupat_client import SKaupatError, lookup_ean as skaupat_lookup
 
 import requests
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-)
 logger = logging.getLogger(__name__)
-
-
-def _env_int(name: str) -> int | None:
-    """Return an env-var value as *int*, or ``None`` if unset/empty."""
-    val = os.environ.get(name)
-    if val is None or val == "":
-        return None
-    return int(val)
 
 
 def _parse_store_ids(raw: str) -> list[str]:
@@ -75,188 +30,18 @@ def _parse_store_ids(raw: str) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Scrape k-ruoka.fi for Finnish food products and populate a Storage database."
-        ),
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    # Scraping options
-    scrape_group = parser.add_mutually_exclusive_group(required=False)
-    scrape_group.add_argument(
-        "--query",
-        metavar="TERM",
-        help="Search for products matching this term.",
-    )
-    scrape_group.add_argument(
-        "--browse",
-        action="store_true",
-        default=False,
-        help="Browse the full product catalogue (may be very large).",
-    )
-    scrape_group.add_argument(
-        "--discover",
-        action="store_true",
-        default=False,
-        help=(
-            "Fetch pending barcodes from the Storage barcode queue, search "
-            "K-Ruoka for matching products, add them to Storage, stock them, "
-            "and mark the queue items as done."
-        ),
-    )
-    scrape_group.add_argument(
-        "--delete-all",
-        action="store_true",
-        default=False,
-        help=(
-            "Delete ALL products from the Storage database.  "
-            "This is a destructive operation and cannot be undone."
-        ),
-    )
-    scrape_group.add_argument(
-        "--update",
-        action="store_true",
-        default=False,
-        help=(
-            "Update all existing Storage products with names and images from "
-            "K-Ruoka (or S-kaupat as fallback).  Products are matched by "
-            "their barcode.  Requires --store."
-        ),
-    )
-
-    parser.add_argument(
-        "--store",
-        default=os.environ.get("KRUOKA_STORE_ID", ""),
-        metavar="STORE_IDS",
-        help=(
-            "Comma-separated K-group store IDs (e.g. N110,N137).  "
-            "If a scrape fails for the first store, the next store is tried "
-            "automatically.  "
-            "Also read from the KRUOKA_STORE_ID environment variable."
-        ),
-    )
-    parser.add_argument(
-        "--max-products",
-        type=int,
-        default=None,
-        metavar="N",
-        help="Stop after scraping N products.",
-    )
-
-    # Storage options
-    parser.add_argument(
-        "--storage-url",
-        default=os.environ.get("STORAGE_URL", ""),
-        dest="storage_url",
-        metavar="URL",
-        help=(
-            "Base URL of the Storage instance (e.g. https://storage.example.com).  "
-            "Also read from the STORAGE_URL environment variable."
-        ),
-    )
-    parser.add_argument(
-        "--location-id",
-        type=int,
-        default=_env_int("GROCY_LOCATION_ID"),
-        metavar="ID",
-        help=(
-            "Storage location ID to assign to new products (required). "
-            "Also read from the GROCY_LOCATION_ID environment variable."
-        ),
-    )
-    parser.add_argument(
-        "--quantity-unit-id",
-        type=int,
-        default=_env_int("GROCY_QUANTITY_UNIT_ID"),
-        metavar="ID",
-        help=(
-            "Storage quantity unit ID to assign to new products. "
-            "Also read from the GROCY_QUANTITY_UNIT_ID environment variable."
-        ),
-    )
-
-    parser.add_argument(
-        "--searxng-url",
-        default=os.environ.get("SEARXNG_URL", ""),
-        metavar="URL",
-        help=(
-            "Base URL of a SearXNG instance for fallback product lookups by EAN "
-            "(e.g. http://192.168.1.100:8181).  "
-            "Also read from the SEARXNG_URL environment variable."
-        ),
-    )
-
-    # Behaviour flags
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Scrape products but do not write anything to Storage.",
-    )
-    parser.add_argument(
-        "--skip-existing",
-        action="store_true",
-        default=True,
-        help="Skip products whose EAN is already registered in Storage (default: true).",
-    )
-    parser.add_argument(
-        "--no-skip-existing",
-        dest="skip_existing",
-        action="store_false",
-        help="Re-add products even if their EAN is already in Storage.",
-    )
-    parser.add_argument(
-        "--no-images",
-        dest="upload_images",
-        action="store_false",
-        default=True,
-        help="Skip downloading and uploading product images to Storage.",
-    )
-    parser.add_argument(
-        "--no-graphql",
-        dest="use_graphql",
-        action="store_false",
-        default=True,
-        help=(
-            "Use the kr-api REST backend (www.k-ruoka.fi/kr-api) instead of "
-            "the default GraphQL backend (mobile.k-ruoka.fi/graphql).  "
-            "The kr-api backend requires a Cloudflare bypass; "
-            "see FLARESOLVERR_URL / CF_CLEARANCE in .env.example."
-        ),
-    )
-    parser.add_argument(
-        "--verbose",
-        "-v",
-        action="store_true",
-        help="Enable DEBUG logging.",
-    )
-
-    return parser.parse_args(argv)
-
-
-def _cf_bypass_configured() -> bool:
-    """Return True if a Cloudflare bypass is configured for the kr-api backend.
-
-    K-Ruoka prices are only exposed by the Cloudflare-protected kr-api backend
-    (the default GraphQL backend has none), so price lookups require either a
-    FlareSolverr instance or a pre-supplied ``cf_clearance`` cookie.
-    """
-    return bool(os.environ.get("FLARESOLVERR_URL") or os.environ.get("CF_CLEARANCE"))
-
-
 def _make_price_scrapers(store_ids: list[str]) -> list[KRuokaScraper]:
     """Build kr-api (price-capable) scrapers, one per store.
 
-    Returns an empty list when no Cloudflare bypass is configured — callers
-    then skip price lookups entirely.  Each scraper opens a CF-cleared session
-    once (e.g. one FlareSolverr solve) and is reused across all EAN lookups.
+    Returns an empty list when FlareSolverr is not configured — callers then
+    skip price lookups entirely: K-Ruoka prices are only exposed by the
+    Cloudflare-protected kr-api backend.  Each scraper opens a CF-cleared
+    session once and is reused across all EAN lookups.
     """
-    if not _cf_bypass_configured():
+    if not os.environ.get("FLARESOLVERR_URL"):
         logger.info(
-            "No Cloudflare bypass configured (FLARESOLVERR_URL / CF_CLEARANCE); "
-            "skipping K-Ruoka price lookups. Set flaresolverr_url in the add-on "
-            "options to enable prices."
+            "FlareSolverr is not configured; skipping K-Ruoka price lookups. "
+            "Set flaresolverr_url in the add-on options to enable prices."
         )
         return []
     scrapers: list[KRuokaScraper] = []
@@ -384,22 +169,6 @@ def _write_availability(
         logger.warning(
             "Failed to write availability for product %d: %s", product_id, exc
         )
-
-
-def _sync_availability(
-    storage: StorageClient,
-    product_id: int,
-    ean: str,
-    avail_scrapers: list[KRuokaScraper],
-) -> None:
-    """Sweep all configured stores for *ean* and upsert the result in Storage.
-
-    Thin composition of :func:`_collect_availability` and
-    :func:`_write_availability`, kept for callers that don't need to reuse
-    the swept entries for anything else (e.g. price derivation).
-    """
-    entries = _collect_availability(ean, avail_scrapers)
-    _write_availability(storage, product_id, entries)
 
 
 def _price_from_entries(entries: list[dict]) -> float | None:
@@ -565,173 +334,6 @@ def _image_extension(content_type: str, url: str) -> str:
     return ext
 
 
-def _validate_args(args: argparse.Namespace) -> int:
-    """Return 0 if arguments are valid, 1 otherwise."""
-    scrape_mode = bool(args.query or args.browse)
-    discover_mode = args.discover
-    delete_all_mode = args.delete_all
-    update_mode = args.update
-
-    # At least one operational mode must be selected.
-    if not scrape_mode and not discover_mode and not delete_all_mode and not update_mode:
-        logger.error(
-            "Specify a scraping mode (--query / --browse), --discover, "
-            "--update, or --delete-all."
-        )
-        return 1
-
-    # Store is required when scraping, discovering, or updating.
-    if scrape_mode or discover_mode or update_mode:
-        if not _parse_store_ids(args.store):
-            logger.error(
-                "Store ID is required.  Use --store or set the KRUOKA_STORE_ID "
-                "environment variable.  Multiple stores can be comma-separated."
-            )
-            return 1
-
-    if (scrape_mode and not args.dry_run) or discover_mode or delete_all_mode or update_mode:
-        # Storage connection is required for non-dry-run scraping, discover,
-        # update, and delete-all.
-        if not args.storage_url:
-            logger.error(
-                "Storage URL is required.  Use --storage-url or set STORAGE_URL."
-            )
-            return 1
-
-    return 0
-
-
-def wait_for_storage(base_url: str, max_retries: int = 30, delay: float = 5.0) -> None:
-    """Block until Storage addon is reachable."""
-    for attempt in range(1, max_retries + 1):
-        try:
-            resp = requests.get(f"{base_url}/api/health", timeout=5)
-            if resp.ok:
-                logger.info("Storage addon is ready (%s).", resp.json().get("version", "?"))
-                return
-        except requests.RequestException:
-            pass
-        if attempt < max_retries:
-            logger.info("Storage not ready (attempt %d/%d), retrying in %.0fs…", attempt, max_retries, delay)
-            time.sleep(delay)
-    raise SystemExit("ERROR: Storage addon not reachable after %d attempts." % max_retries)
-
-
-def _setup_storage(args: argparse.Namespace) -> tuple[StorageClient | None, set[str]]:
-    """Create a Storage client and pre-load known barcodes if not a dry run."""
-    if args.dry_run:
-        return None, set()
-
-    storage = StorageClient(base_url=args.storage_url)
-    known_barcodes: set[str] = set()
-
-    if args.skip_existing:
-        logger.info("Fetching existing barcodes from Storage …")
-        try:
-            for entry in storage.get_all_barcodes():
-                bc = entry.get("barcode")
-                if bc:
-                    known_barcodes.add(str(bc))
-            logger.info("  %d barcode(s) already registered.", len(known_barcodes))
-        except StorageAPIError as exc:
-            logger.warning(
-                "Could not fetch existing barcodes (%s); will check each individually.",
-                exc,
-            )
-
-    return storage, known_barcodes
-
-
-def _run_scraper(args: argparse.Namespace):  # type: ignore[return]
-    """Yield products from the k-ruoka.fi scraper.
-
-    When multiple store IDs are configured (comma-separated ``--store``),
-    the first store is tried; if it raises an exception the next store is
-    attempted, and so on.  Results are streamed lazily (not materialised in
-    memory).
-    """
-    store_ids = _parse_store_ids(args.store)
-    backend = "GraphQL" if args.use_graphql else "kr-api"
-
-    for idx, store_id in enumerate(store_ids):
-        scraper = KRuokaScraper(store_id=store_id, use_graphql=args.use_graphql)
-        try:
-            if args.query:
-                logger.info(
-                    "Searching k-ruoka.fi (store=%s, backend=%s) for '%s' …",
-                    store_id, backend, args.query,
-                )
-                yield from scraper.search(args.query, max_products=args.max_products)
-            else:
-                logger.info(
-                    "Browsing k-ruoka.fi catalogue (store=%s, backend=%s) …",
-                    store_id, backend,
-                )
-                yield from scraper.browse(max_products=args.max_products)
-            return  # Store succeeded – stop trying.
-        except Exception as exc:
-            if idx < len(store_ids) - 1:
-                logger.warning(
-                    "Store %s failed (%s); trying next store …", store_id, exc,
-                )
-            else:
-                raise
-
-
-def _process_products(args: argparse.Namespace, storage: StorageClient | None, known_barcodes: set[str]) -> int:
-    """Process scraped products; return 0 on success, 1 if any errors occurred."""
-    created = skipped = errors = 0
-    store_ids = _parse_store_ids(args.store)
-    price_scrapers = _make_price_scrapers(store_ids) if not args.dry_run else []
-
-    avail_scrapers: list[KRuokaScraper] = []
-    if not args.dry_run:
-        # Availability via GraphQL only — kr-api is reserved for prices.
-        avail_scrapers = [KRuokaScraper(store_id=args.store,
-                                        use_graphql=args.use_graphql)]
-        _register_stores(storage, store_ids, price_scrapers)
-
-    for product in _run_scraper(args):
-        if args.dry_run:
-            ean_display = product.ean or "(no EAN)"
-            img_display = f"  IMG:{product.image_url}" if product.image_url else ""
-            print(f"{product.name!r}  EAN:{ean_display}{img_display}")
-            created += 1
-            continue
-
-        assert storage is not None
-        try:
-            added = sync_product(
-                product,
-                storage,
-                location_id=args.location_id,
-                quantity_unit_id=args.quantity_unit_id,
-                skip_existing=args.skip_existing,
-                known_barcodes=known_barcodes,
-                upload_images=args.upload_images,
-                price_scrapers=price_scrapers,
-                avail_scrapers=avail_scrapers,
-            )
-        except StorageAPIError as exc:
-            logger.error("Storage error for '%s': %s", product.name, exc)
-            errors += 1
-            continue
-
-        if added:
-            created += 1
-        else:
-            skipped += 1
-
-    if args.dry_run:
-        logger.info("Dry run complete – %d product(s) found.", created)
-    else:
-        logger.info(
-            "Done – created: %d  skipped: %d  errors: %d", created, skipped, errors
-        )
-
-    return 0 if errors == 0 else 1
-
-
 def _discover_single_barcode(
     args: argparse.Namespace,
     barcode: str,
@@ -746,10 +348,7 @@ def _discover_single_barcode(
     """
     storage = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
-    scrapers = [
-        KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
-        for sid in store_ids
-    ]
+    scrapers = [KRuokaScraper(store_id=sid) for sid in store_ids]
     price_scrapers = _make_price_scrapers(store_ids)
     # Availability is answerable by the un-throttled GraphQL backend;
     # reserve the rate-limited kr-api strictly for price lookups.
@@ -897,10 +496,7 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     """
     storage = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
-    scrapers = [
-        KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
-        for sid in store_ids
-    ]
+    scrapers = [KRuokaScraper(store_id=sid) for sid in store_ids]
     price_scrapers = _make_price_scrapers(store_ids)
     # Availability is answerable by the un-throttled GraphQL backend;
     # reserve the rate-limited kr-api strictly for price lookups.
@@ -1076,71 +672,25 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
         created += 1
 
     logger.info(
-        "--discover complete: created/stocked: %d  not found: %d  errors: %d",
+        "Discover complete: created/stocked: %d  not found: %d  errors: %d",
         created, skipped, errors,
     )
     return (0 if errors == 0 else 1), discovered_ids
 
 
-def _delete_all_products(storage: StorageClient) -> int:
-    """Delete every product from the Storage database.
-
-    Returns 0 on success, 1 if any errors occurred.
-    """
-    try:
-        products = storage.get_all_products()
-    except StorageAPIError as exc:
-        logger.error("Failed to fetch products from Storage: %s", exc)
-        return 1
-
-    if not products:
-        logger.info("No products in Storage – nothing to delete.")
-        return 0
-
-    logger.info("Deleting %d product(s) from Storage …", len(products))
-    errors = 0
-    for product in products:
-        pid = product.get("id")
-        name = product.get("name", "?")
-        picture = product.get("picture_filename", "")
-
-        # Delete the product image file (CASCADE handles DB records).
-        if picture:
-            try:
-                storage.delete_product_image(picture)
-                logger.debug("  Deleted image '%s' for product %s.", picture, pid)
-            except StorageAPIError as exc:
-                logger.debug("  Could not delete image for product %s: %s", pid, exc)
-
-        try:
-            storage.delete_product(int(pid))
-            logger.debug("  Deleted product %s ('%s').", pid, name)
-        except StorageAPIError as exc:
-            logger.error("  Failed to delete product %s ('%s'): %s", pid, name, exc)
-            errors += 1
-
-    deleted = len(products) - errors
-    logger.info("Deleted %d product(s), %d error(s).", deleted, errors)
-    return 0 if errors == 0 else 1
-
-
 # --------------------------------------------------------------------------
-# Price refresh budget — kr-api is rate limited, so --update refreshes at
-# most KRAPI_PRICE_BUDGET products per run, oldest-refreshed first, skipping
-# products refreshed within KRAPI_PRICE_TTL_DAYS.  State lives in /data so
-# rotation survives restarts.
+# Price refresh budget — kr-api is rate limited, so Update refreshes at most
+# _PRICE_BUDGET products per run, oldest-refreshed first, skipping products
+# refreshed within _PRICE_TTL_SECONDS.  State lives in /data so rotation
+# survives restarts.
 # --------------------------------------------------------------------------
 
-def _price_ttl_seconds() -> float:
-    return float(os.environ.get("KRAPI_PRICE_TTL_DAYS", "3")) * 86400
-
-
-def _price_budget() -> int:
-    return int(os.environ.get("KRAPI_PRICE_BUDGET", "200"))
+_PRICE_BUDGET = 200
+_PRICE_TTL_SECONDS = 3 * 86400
 
 
 def _price_state_path() -> Path:
-    return Path(os.environ.get("SCRAPER_STATE_DIR", "/data")) / "price_refresh.json"
+    return Path("/data/price_refresh.json")
 
 
 def _load_price_state() -> dict[str, float]:
@@ -1173,10 +723,12 @@ def _select_price_refresh_ids(
     Returns ``(selected_ids, deferred_count)`` where *deferred_count* is the
     number of stale products that didn't fit in this run's budget.
     """
-    ttl = _price_ttl_seconds()
-    stale = [p for p in products if now - state.get(str(p["id"]), 0.0) >= ttl]
+    stale = [
+        p for p in products
+        if now - state.get(str(p["id"]), 0.0) >= _PRICE_TTL_SECONDS
+    ]
     stale.sort(key=lambda p: state.get(str(p["id"]), 0.0))
-    selected = {int(p["id"]) for p in stale[:_price_budget()]}
+    selected = {int(p["id"]) for p in stale[:_PRICE_BUDGET]}
     return selected, max(0, len(stale) - len(selected))
 
 
@@ -1205,10 +757,7 @@ def _update_products(args: argparse.Namespace) -> int:
     """
     storage = StorageClient(base_url=args.storage_url)
     store_ids = _parse_store_ids(args.store)
-    scrapers = [
-        KRuokaScraper(store_id=sid, use_graphql=args.use_graphql)
-        for sid in store_ids
-    ]
+    scrapers = [KRuokaScraper(store_id=sid) for sid in store_ids]
     # Prices come only from the Cloudflare-protected kr-api backend, so they are
     # fetched via a separate set of kr-api scrapers (independent of the GraphQL
     # name/image lookups above).  Empty when no CF bypass is configured.
@@ -1244,7 +793,6 @@ def _update_products(args: argparse.Namespace) -> int:
 
     logger.info("Updating %d product(s) from K-Ruoka / S-kaupat …", len(products))
     updated = skipped = errors = 0
-    max_products = getattr(args, "max_products", None)
 
     # kr-api price lookups are budgeted per run (rate-limit avoidance).
     price_state = _load_price_state()
@@ -1260,14 +808,10 @@ def _update_products(args: argparse.Namespace) -> int:
         if deferred:
             logger.info(
                 "Price refresh budget (%d) reached — %d stale product(s) "
-                "deferred to a later run.", _price_budget(), deferred,
+                "deferred to a later run.", _PRICE_BUDGET, deferred,
             )
 
     for storage_product in products:
-        if max_products is not None and updated >= max_products:
-            logger.info("Reached --max-products limit (%d).", max_products)
-            break
-
         pid = int(storage_product["id"])
         current_name = storage_product.get("name", "?")
         eans = pid_to_eans.get(pid, [])
@@ -1411,47 +955,7 @@ def _update_products(args: argparse.Namespace) -> int:
         updated += 1
 
     logger.info(
-        "--update complete: updated: %d  skipped: %d  errors: %d",
+        "Update complete: updated: %d  skipped: %d  errors: %d",
         updated, skipped, errors,
     )
     return 0 if errors == 0 else 1
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    if _validate_args(args) != 0:
-        return 1
-
-    if not args.dry_run:
-        wait_for_storage(args.storage_url)
-
-    # Discover mode: barcode queue → K-Ruoka → Storage pipeline.
-    # AI categorisation is owned by HA-Storage now; callers are expected
-    # to POST to /api/ai/optimize themselves with the discovered ids.
-    if args.discover:
-        rc, _discovered_ids = _discover_products(args)
-        return rc
-
-    # Delete-all mode: wipe all products from Storage.
-    if args.delete_all:
-        storage = StorageClient(base_url=args.storage_url)
-        return _delete_all_products(storage)
-
-    # Update mode: refresh product names/images from online sources.
-    if args.update:
-        return _update_products(args)
-
-    storage, known_barcodes = _setup_storage(args)
-    return _process_products(args, storage, known_barcodes)
-
-
-if __name__ == "__main__":
-    try:
-        sys.exit(main())
-    except KeyboardInterrupt:
-        logger.info("Interrupted – exiting.")
-        sys.exit(130)

@@ -48,7 +48,6 @@
 | `storage_hostname` | `""` | Hostname of the Storage add-on (reached on port `8099`). Leave empty to auto-detect. A full `storage_url` is also accepted in the schema and takes priority. |
 | `store_id` | `K532` | K-group store ID, or several comma-separated (e.g. `K532,N110`). Search tries them in order; availability is checked in all of them. |
 | `upload_images` | `true` | Download product images and upload them to Storage |
-| `use_graphql` | `true` | Use the mobile GraphQL API for name and image lookups. Set `false` to use kr-api, which needs a Cloudflare bypass. |
 | `flaresolverr_url` | `""` | FlareSolverr address (with or without `/v1`). Needed for prices. |
 | `searxng_url` | `""` | SearXNG instance used as a last-resort barcode lookup |
 

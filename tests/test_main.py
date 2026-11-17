@@ -1,4 +1,4 @@
-"""Integration tests for the main CLI entry point."""
+"""Tests for the scraper's operations (addon/main.py)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import pytest
 import requests
 
 from main import (
-    main, parse_args, sync_product, _parse_store_ids,
-    _sync_availability, _register_stores,
+    sync_product, _parse_store_ids,
+    _collect_availability, _write_availability, _register_stores,
 )
 from scraper.scraper import KRuokaScraper as RealScraper, Product
 from scraper.storage_client import StorageAPIError, StorageClient
@@ -19,89 +19,6 @@ from scraper.storage_client import StorageAPIError, StorageClient
 # ---------------------------------------------------------------------------
 # parse_args
 # ---------------------------------------------------------------------------
-
-class TestParseArgs:
-    def test_query_mode(self):
-        args = parse_args(["--store", "N110", "--query", "maito",
-                           "--storage-url", "https://storage.example.com"])
-        assert args.query == "maito"
-        assert not args.browse
-
-    def test_browse_mode(self):
-        args = parse_args(["--store", "N110", "--browse",
-                           "--storage-url", "https://storage.example.com"])
-        assert args.browse
-        assert args.query is None
-
-    def test_mutually_exclusive(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--store", "N110", "--browse", "--query", "x"])
-
-    def test_dry_run_flag(self):
-        args = parse_args(["--store", "N110", "--browse", "--dry-run"])
-        assert args.dry_run
-
-    def test_max_products(self):
-        args = parse_args(["--store", "N110", "--browse",
-                           "--storage-url", "u",
-                           "--max-products", "10"])
-        assert args.max_products == 10
-
-    def test_graphql_default(self):
-        """use_graphql should default to True."""
-        args = parse_args(["--store", "N110", "--browse", "--dry-run"])
-        assert args.use_graphql is True
-
-    def test_no_graphql_flag(self):
-        """--no-graphql should set use_graphql=False."""
-        args = parse_args(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
-        assert args.use_graphql is False
-
-    def test_location_id_from_env(self):
-        """--location-id default should be read from GROCY_LOCATION_ID as int."""
-        with patch.dict("os.environ", {"GROCY_LOCATION_ID": "42"}):
-            args = parse_args(["--store", "N110", "--browse", "--dry-run"])
-        assert args.location_id == 42
-        assert isinstance(args.location_id, int)
-
-    def test_quantity_unit_id_from_env(self):
-        """--quantity-unit-id default should be read from GROCY_QUANTITY_UNIT_ID as int."""
-        with patch.dict("os.environ", {"GROCY_QUANTITY_UNIT_ID": "7"}):
-            args = parse_args(["--store", "N110", "--browse", "--dry-run"])
-        assert args.quantity_unit_id == 7
-        assert isinstance(args.quantity_unit_id, int)
-
-    def test_location_id_none_when_unset(self):
-        """--location-id default should be None when env var is unset."""
-        with patch.dict("os.environ", {}, clear=True):
-            args = parse_args(["--store", "N110", "--browse", "--dry-run"])
-        assert args.location_id is None
-
-
-class TestEnvInt:
-    """Unit tests for the _env_int helper."""
-
-    def test_returns_int(self):
-        from main import _env_int
-        with patch.dict("os.environ", {"MY_VAR": "5"}):
-            assert _env_int("MY_VAR") == 5
-
-    def test_returns_none_when_unset(self):
-        from main import _env_int
-        with patch.dict("os.environ", {}, clear=True):
-            assert _env_int("MY_VAR") is None
-
-    def test_returns_none_for_empty_string(self):
-        from main import _env_int
-        with patch.dict("os.environ", {"MY_VAR": ""}):
-            assert _env_int("MY_VAR") is None
-
-    def test_raises_on_non_numeric(self):
-        from main import _env_int
-        with patch.dict("os.environ", {"MY_VAR": "abc"}):
-            with pytest.raises(ValueError):
-                _env_int("MY_VAR")
-
 
 # ---------------------------------------------------------------------------
 # sync_product
@@ -263,260 +180,29 @@ class TestImageExtension:
 # main – dry run
 # ---------------------------------------------------------------------------
 
-class TestMainDryRun:
-    def test_dry_run_missing_store(self, capsys):
-        rc = main(["--browse", "--dry-run"])
-        assert rc == 1
-
-    def test_dry_run_prints_products(self, capsys):
-        products = [
-            Product(name="Maito", ean="111"),
-            Product(name="Kerma", ean="222"),
-        ]
-        with patch("main.KRuokaScraper") as MockScraper:
-            instance = MockScraper.return_value
-            instance.browse.return_value = iter(products)
-            rc = main(["--store", "N110", "--browse", "--dry-run"])
-
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "Maito" in out
-        assert "111" in out
-
-    def test_dry_run_passes_use_graphql_true(self, capsys):
-        """By default, KRuokaScraper is constructed with use_graphql=True."""
-        with patch("main.KRuokaScraper") as MockScraper:
-            instance = MockScraper.return_value
-            instance.browse.return_value = iter([])
-            main(["--store", "N110", "--browse", "--dry-run"])
-
-        _, kwargs = MockScraper.call_args
-        assert kwargs.get("use_graphql", True) is True
-
-    def test_no_graphql_flag_passes_false(self, capsys):
-        """--no-graphql passes use_graphql=False to KRuokaScraper."""
-        with patch("main.KRuokaScraper") as MockScraper:
-            instance = MockScraper.return_value
-            instance.browse.return_value = iter([])
-            main(["--store", "N110", "--browse", "--dry-run", "--no-graphql"])
-
-        _, kwargs = MockScraper.call_args
-        assert kwargs.get("use_graphql") is False
-
-
 # ---------------------------------------------------------------------------
 # main – missing Storage config
 # ---------------------------------------------------------------------------
-
-class TestMainMissingStorage:
-    def test_missing_storage_url(self, capsys):
-        rc = main(["--store", "N110", "--browse"])
-        assert rc == 1
-
 
 # ---------------------------------------------------------------------------
 # _validate_args
 # ---------------------------------------------------------------------------
 
-class TestValidateArgs:
-    def test_no_mode_fails(self):
-        from main import _validate_args
-        from argparse import Namespace
-        args = Namespace(
-            sort=False, date=False, group=False, optimize=False,
-            query=None, browse=False,
-            discover=False, delete_all=False, update=False,
-            dry_run=False,
-            storage_url="", gemini_api_key="",
-            store="", location_id=None, quantity_unit_id=None,
-        )
-        assert _validate_args(args) == 1
-
-    def test_dry_run_alone_fails(self):
-        from main import _validate_args
-        from argparse import Namespace
-        args = Namespace(
-            sort=False, date=False, group=False, optimize=False,
-            query=None, browse=False,
-            discover=False, delete_all=False, update=False,
-            dry_run=True,
-            storage_url="", gemini_api_key="",
-            store="N110", location_id=None, quantity_unit_id=None,
-        )
-        assert _validate_args(args) == 1
-
-
-class TestParseArgsDeleteAll:
-    def test_delete_all_flag(self):
-        args = parse_args([
-            "--delete-all",
-            "--storage-url", "https://storage.example.com",
-        ])
-        assert args.delete_all is True
-
-    def test_delete_all_mutually_exclusive_with_query(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--delete-all", "--query", "maito"])
-
-    def test_delete_all_mutually_exclusive_with_browse(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--delete-all", "--browse"])
-
-    def test_delete_all_mutually_exclusive_with_discover(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--delete-all", "--discover"])
-
-
 # ---------------------------------------------------------------------------
 # _validate_args – --delete-all
 # ---------------------------------------------------------------------------
-
-class TestValidateArgsDeleteAll:
-    def _base_args(self, **overrides):
-        from argparse import Namespace
-        defaults = dict(
-            delete_all=True,
-            storage_url="https://storage.example.com",
-            query=None, browse=False, discover=False,
-            sort=False, date=False, group=False, optimize=False,
-            update=False,
-            dry_run=False,
-            store="",
-            location_id=None,
-            quantity_unit_id=None,
-            gemini_api_key="",
-        )
-        defaults.update(overrides)
-        return Namespace(**defaults)
-
-    def test_valid_delete_all_passes(self):
-        from main import _validate_args
-        assert _validate_args(self._base_args()) == 0
-
-    def test_missing_storage_url_fails(self):
-        from main import _validate_args
-        assert _validate_args(self._base_args(storage_url="")) == 1
-
-    def test_store_not_required(self):
-        from main import _validate_args
-        assert _validate_args(self._base_args(store="")) == 0
-
 
 # ---------------------------------------------------------------------------
 # _delete_all_products
 # ---------------------------------------------------------------------------
 
-class TestDeleteAllProducts:
-    @patch("main.StorageClient")
-    def test_empty_database_returns_0(self, MockStorage):
-        from main import _delete_all_products
-        storage = MockStorage.return_value
-        storage.get_all_products.return_value = []
-        assert _delete_all_products(storage) == 0
-        storage.delete_product.assert_not_called()
-
-    @patch("main.StorageClient")
-    def test_deletes_all_products(self, MockStorage):
-        from main import _delete_all_products
-        storage = MockStorage.return_value
-        storage.get_all_products.return_value = [
-            {"id": 1, "name": "Milk"},
-            {"id": 2, "name": "Bread"},
-            {"id": 3, "name": "Eggs"},
-        ]
-        assert _delete_all_products(storage) == 0
-        assert storage.delete_product.call_count == 3
-        storage.delete_product.assert_any_call(1)
-        storage.delete_product.assert_any_call(2)
-        storage.delete_product.assert_any_call(3)
-
-    @patch("main.StorageClient")
-    def test_fetch_error_returns_1(self, MockStorage):
-        from main import _delete_all_products
-        storage = MockStorage.return_value
-        storage.get_all_products.side_effect = StorageAPIError("connection refused")
-        assert _delete_all_products(storage) == 1
-
-    @patch("main.StorageClient")
-    def test_partial_failure_returns_1(self, MockStorage):
-        from main import _delete_all_products
-        storage = MockStorage.return_value
-        storage.get_all_products.return_value = [
-            {"id": 1, "name": "Milk"},
-            {"id": 2, "name": "Bread"},
-        ]
-        storage.delete_product.side_effect = [None, StorageAPIError("failed")]
-        assert _delete_all_products(storage) == 1
-        assert storage.delete_product.call_count == 2
-
-
 # ---------------------------------------------------------------------------
 # parse_args – --discover flag
 # ---------------------------------------------------------------------------
 
-class TestParseArgsDiscover:
-    def test_discover_flag(self):
-        args = parse_args([
-            "--discover",
-            "--store", "N110",
-            "--storage-url", "https://storage.example.com",
-            "--location-id", "2",
-            "--quantity-unit-id", "2",
-        ])
-        assert args.discover is True
-
-    def test_discover_mutually_exclusive_with_query(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--discover", "--query", "maito"])
-
-    def test_discover_mutually_exclusive_with_browse(self):
-        with pytest.raises(SystemExit):
-            parse_args(["--discover", "--browse"])
-
-
 # ---------------------------------------------------------------------------
 # _validate_args – --discover mode
 # ---------------------------------------------------------------------------
-
-class TestValidateArgsDiscover:
-    def _base_discover_args(self, **overrides):
-        from argparse import Namespace
-        defaults = dict(
-            discover=True, query=None, browse=False,
-            sort=False, date=False, group=False, optimize=False,
-            delete_all=False, update=False,
-            store="N110",
-            storage_url="https://storage.example.com",
-            location_id=2,
-            quantity_unit_id=2,
-            dry_run=False,
-            gemini_api_key="",
-        )
-        defaults.update(overrides)
-        return Namespace(**defaults)
-
-    def test_valid_discover_passes(self):
-        from main import _validate_args
-        assert _validate_args(self._base_discover_args()) == 0
-
-    def test_missing_store_fails(self):
-        from main import _validate_args
-        assert _validate_args(self._base_discover_args(store="")) == 1
-
-    def test_missing_storage_url_fails(self):
-        from main import _validate_args
-        assert _validate_args(self._base_discover_args(storage_url="")) == 1
-
-    def test_missing_location_id_ok(self):
-        """location_id=None is now allowed (auto-detected by StorageClient)."""
-        from main import _validate_args
-        assert _validate_args(self._base_discover_args(location_id=None)) == 0
-
-    def test_missing_quantity_unit_id_ok(self):
-        """quantity_unit_id=None is now allowed (auto-detected by StorageClient)."""
-        from main import _validate_args
-        assert _validate_args(self._base_discover_args(quantity_unit_id=None)) == 0
-
 
 # ---------------------------------------------------------------------------
 # _discover_products
@@ -535,7 +221,6 @@ class TestDiscoverProducts:
         args = Namespace(
             storage_url="https://storage.example.com",
             store="N110",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -569,7 +254,6 @@ class TestDiscoverProducts:
         args = Namespace(
             storage_url="https://storage.example.com",
             store="N110",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -606,7 +290,6 @@ class TestDiscoverProducts:
         args = Namespace(
             storage_url="https://storage.example.com",
             store="N110",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -640,7 +323,6 @@ class TestDiscoverProducts:
         args = Namespace(
             storage_url="https://storage.example.com",
             store="N110",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -689,7 +371,6 @@ class TestDiscoverProducts:
         args = Namespace(
             storage_url="https://storage.example.com",
             store="N110",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -719,7 +400,6 @@ class TestDiscoverProducts:
         args = Namespace(
             storage_url="https://storage.example.com",
             store="N110",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -756,68 +436,6 @@ class TestParseStoreIds:
 # ---------------------------------------------------------------------------
 # Multi-store fallback – _run_scraper
 # ---------------------------------------------------------------------------
-
-class TestMultiStoreFallbackRunScraper:
-    """Test that _run_scraper tries the next store when one fails."""
-
-    def test_first_store_succeeds(self, capsys):
-        """When the first store works, only one scraper is created."""
-        products = [Product(name="Maito", ean="111")]
-        with patch("main.KRuokaScraper") as MockScraper:
-            instance = MockScraper.return_value
-            instance.browse.return_value = iter(products)
-            rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
-
-        assert rc == 0
-        # Only one scraper should be instantiated (first store succeeded).
-        assert MockScraper.call_count == 1
-        _, kwargs = MockScraper.call_args
-        assert kwargs["store_id"] == "N110"
-
-    def test_fallback_to_second_store_on_error(self, capsys):
-        """When the first store raises, the second store is tried."""
-        products = [Product(name="Maito", ean="111")]
-        call_count = {"n": 0}
-
-        def make_scraper(**kwargs):
-            call_count["n"] += 1
-            instance = MagicMock()
-            if call_count["n"] == 1:
-                # First store fails.
-                instance.browse.return_value = iter([])
-                instance.browse.side_effect = RuntimeError("store down")
-            else:
-                # Second store succeeds.
-                instance.browse.return_value = iter(products)
-            return instance
-
-        with patch("main.KRuokaScraper", side_effect=make_scraper):
-            rc = main(["--store", "N110,N137", "--browse", "--dry-run"])
-
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "Maito" in out
-
-    def test_all_stores_fail_raises(self, capsys):
-        """When all stores fail, the last error is raised."""
-        with patch("main.KRuokaScraper") as MockScraper:
-            instance = MockScraper.return_value
-            instance.browse.side_effect = RuntimeError("all fail")
-            with pytest.raises(RuntimeError, match="all fail"):
-                main(["--store", "N110,N137", "--browse", "--dry-run"])
-
-    def test_single_store_still_works(self, capsys):
-        """Single store (no comma) still works as before."""
-        products = [Product(name="Kerma", ean="222")]
-        with patch("main.KRuokaScraper") as MockScraper:
-            instance = MockScraper.return_value
-            instance.search.return_value = iter(products)
-            rc = main(["--store", "N110", "--query", "kerma", "--dry-run"])
-
-        assert rc == 0
-        _, kwargs = MockScraper.call_args
-        assert kwargs["store_id"] == "N110"
-
 
 # ---------------------------------------------------------------------------
 # Multi-store fallback – _discover_products
@@ -867,7 +485,6 @@ class TestMultiStoreDiscoverFallback:
             delete_all=False, update=False,
             storage_url="https://storage.example.com",
             store="N110,N137",
-            use_graphql=True,
             location_id=2,
             quantity_unit_id=2,
             upload_images=False,
@@ -924,9 +541,7 @@ class TestMultiStoreUpdateFallback:
         args = Namespace(
             store="N110,N137",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
         )
         rc = _update_products(args)
         assert MockScraper.call_count == 2
@@ -942,9 +557,7 @@ class TestUpdateSearXNGConfidence:
         return Namespace(
             store="K532",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
             searxng_url="http://searxng:8080",
         )
 
@@ -1070,9 +683,7 @@ class TestUpdateRenamesOnlyPlaceholders:
         rc = _update_products(Namespace(
             store="K532",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
         ))
         assert rc == 0
         return storage_instance
@@ -1103,9 +714,7 @@ class TestUpdateTrafficReduction:
         return Namespace(
             store="K532,N141",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
         )
 
     @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
@@ -1117,7 +726,6 @@ class TestUpdateTrafficReduction:
     ):
         from main import _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
             {"id": 1, "name": "Maito", "unit_price": None},
@@ -1144,9 +752,8 @@ class TestUpdateTrafficReduction:
         assert any(s.check_store_availability.called for s in graphql_scrapers)
         assert not any(s.check_store_availability.called for s in krapi_scrapers)
 
-    @patch.dict("os.environ", {
-        "FLARESOLVERR_URL": "http://fs:8191", "KRAPI_PRICE_BUDGET": "1",
-    })
+    @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
+    @patch("main._PRICE_BUDGET", 1)
     @patch("main.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
@@ -1155,7 +762,6 @@ class TestUpdateTrafficReduction:
     ):
         from main import _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
             {"id": 1, "name": "Maito", "unit_price": None},
@@ -1207,7 +813,6 @@ class TestUpdateTrafficReduction:
         import time as _time
         from main import _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         # Product 1 was price-refreshed moments ago -> within TTL, skip.
         (tmp_path / "price_refresh.json").write_text(
             _json.dumps({"1": _time.time()})
@@ -1260,9 +865,7 @@ class TestPriceRotation:
         return Namespace(
             store="K532",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
         )
 
     def _graphql_scraper(self, **kwargs):
@@ -1289,9 +892,8 @@ class TestPriceRotation:
             {"product_id": i, "barcode": str(i) * 3} for i in ids
         ]
 
-    @patch.dict("os.environ", {
-        "FLARESOLVERR_URL": "http://fs:8191", "KRAPI_PRICE_BUDGET": "3",
-    })
+    @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
+    @patch("main._PRICE_BUDGET", 3)
     @patch("main.skaupat_lookup", return_value=None)
     @patch("main.StorageClient")
     @patch("main.KRuokaScraper")
@@ -1300,7 +902,6 @@ class TestPriceRotation:
     ):
         from main import _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = (
             [{"id": i, "name": f"Concept {i}", "unit_price": None} for i in (1, 2, 3)]
@@ -1339,7 +940,6 @@ class TestPriceRotation:
         import scraper.scraper as scraper_mod
         from main import _load_price_state, _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
         monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
         self._products(MockStorage.return_value)
@@ -1367,7 +967,6 @@ class TestPriceRotation:
     ):
         from main import _load_price_state, _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         self._products(MockStorage.return_value)
         MockScraper.side_effect = self._graphql_scraper
 
@@ -1388,7 +987,6 @@ class TestPriceRotation:
     ):
         from main import _load_price_state, _update_products
 
-        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
         storage_instance = MockStorage.return_value
         self._products(storage_instance, ids=(1, 2))
         # The run dies while writing the second product.
@@ -1451,9 +1049,7 @@ class TestUpdatePrices:
         args = Namespace(
             store="K532",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
         )
         rc = _update_products(args)
 
@@ -1477,7 +1073,6 @@ class TestUpdatePrices:
 
         # Ensure no CF bypass is configured.
         os.environ.pop("FLARESOLVERR_URL", None)
-        os.environ.pop("CF_CLEARANCE", None)
 
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
@@ -1498,9 +1093,7 @@ class TestUpdatePrices:
         args = Namespace(
             store="K532",
             storage_url="https://storage.example.com",
-            use_graphql=True,
             upload_images=False,
-            max_products=None,
         )
         rc = _update_products(args)
 
@@ -1512,7 +1105,7 @@ class TestUpdatePrices:
         assert "unit_price" not in kwargs
 
 
-class TestSyncAvailability:
+class TestAvailabilitySweep:
     def test_writes_merged_entries(self):
         from unittest.mock import MagicMock
         from scraper.scraper import StoreAvailability
@@ -1526,7 +1119,7 @@ class TestSyncAvailability:
         s2.check_store_availability.return_value = [
             StoreAvailability(store_id="K532", available=False),
         ]
-        _sync_availability(storage, 42, "6410405082657", [s1, s2])
+        _write_availability(storage, 42, _collect_availability("6410405082657", [s1, s2]))
         storage.set_product_availability.assert_called_once_with(42, [
             {"store_id": "N110", "available": True,
              "price": 2.35, "price_currency": "EUR"},
@@ -1546,7 +1139,7 @@ class TestSyncAvailability:
         s2.check_store_availability.return_value = [
             StoreAvailability(store_id="N110", available=False),
         ]
-        _sync_availability(storage, 1, "123", [s1, s2])
+        _write_availability(storage, 1, _collect_availability("123", [s1, s2]))
         entries = storage.set_product_availability.call_args[0][1]
         assert entries == [{"store_id": "N110", "available": True,
                             "price": 2.0, "price_currency": "EUR"}]
@@ -1556,14 +1149,14 @@ class TestSyncAvailability:
         storage = MagicMock()
         scraper = MagicMock()
         scraper.check_store_availability.return_value = []
-        _sync_availability(storage, 1, "123", [scraper])
+        _write_availability(storage, 1, _collect_availability("123", [scraper]))
         storage.set_product_availability.assert_not_called()
 
     def test_empty_ean_or_scrapers_noop(self):
         from unittest.mock import MagicMock
         storage = MagicMock()
-        _sync_availability(storage, 1, "", [MagicMock()])
-        _sync_availability(storage, 1, "123", [])
+        _write_availability(storage, 1, _collect_availability("", [MagicMock()]))
+        _write_availability(storage, 1, _collect_availability("123", []))
         storage.set_product_availability.assert_not_called()
 
     def test_scraper_exception_skipped_storage_error_swallowed(self):
@@ -1580,7 +1173,7 @@ class TestSyncAvailability:
             StoreAvailability(store_id="N110", available=True),
         ]
         # Must not raise despite both failure modes.
-        _sync_availability(storage, 1, "123", [bad, good])
+        _write_availability(storage, 1, _collect_availability("123", [bad, good]))
         storage.set_product_availability.assert_called_once()
 
 
@@ -1678,7 +1271,7 @@ class TestScanWhileKrApiFails:
 
         result = _discover_single_barcode(Namespace(
             storage_url="https://storage.example.com", store="N110",
-            use_graphql=True, location_id=None, quantity_unit_id=None,
+            location_id=None, quantity_unit_id=None,
             upload_images=False,
         ), ean)
 
@@ -1843,7 +1436,7 @@ class TestDiscoverSingleBarcode:
         ])
         args = Namespace(
             storage_url="https://storage.example.com", store="N110",
-            use_graphql=True, location_id=2, quantity_unit_id=2,
+            location_id=2, quantity_unit_id=2,
             upload_images=False,
         )
         return _discover_single_barcode(args, self.EAN)

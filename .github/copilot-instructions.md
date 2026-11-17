@@ -23,12 +23,12 @@ No linter or formatter is configured.
 
 ### Deployment modes
 
-1. **HA Supervisor Add-on** (`addon/`) — Docker container with s6-overlay running two services: `scraper` (no periodic loop — it just `sleep infinity`s to keep the container alive) and the ingress web server (`ingress_server.py` on port 8099). All work is on demand from the ingress UI / its `/api/*` endpoints (search, discover, update, add_products), which call into `addon/main.py` (also usable as a CLI).
+1. **HA Supervisor Add-on** (`addon/`) — Docker container with s6-overlay running two services: `scraper` (no periodic loop — it just `sleep infinity`s to keep the container alive) and the ingress web server (`ingress_server.py` on port 8099). All work is on demand from the ingress UI / its `/api/*` endpoints (search, discover, update, add_products), which call into `addon/main.py`.
 2. **HA Custom Integration** (`custom_components/scraper/`) — Config flow + two actions, `scraper.search_products` and `scraper.add_product` (`services.py` / `services.yaml`). No entities, no sidebar panel (the add-on's ingress panel is the UI; setup removes a stale panel left by versions before 2.1.6).
 
 ### Data flow
 
-`main.py` (CLI + orchestration) → `scraper.py` (fetch products) → `storage_client.py` (write to Storage)
+`ingress_server.py` (HTTP API, tasks) → `main.py` (discover and update pipelines) → `scraper.py` (fetch products) → `storage_client.py` (write to Storage)
 
 ### Key modules
 
@@ -38,7 +38,7 @@ No linter or formatter is configured.
 | `addon/scraper/storage_client.py` | HA-Storage REST API client |
 | `addon/scraper/skaupat_client.py` | S-kaupat.fi EAN lookup (fallback) |
 | `addon/scraper/searxng_client.py` | SearXNG EAN lookup (last-resort fallback) |
-| `addon/main.py` | Entry point — argparse, `--query`/`--browse`/`--discover`/`--update`/`--delete-all`, discover/update pipelines, price budget |
+| `addon/main.py` | The operations the ingress server runs: single and queue discover, update, price budget, store registration |
 | `addon/ingress_server.py` | HTTP server for HA ingress web UI; fire-and-poll `/api/*` tasks |
 | `custom_components/scraper/services.py` | `scraper.search_products` / `scraper.add_product` handlers |
 | `custom_components/scraper/scraperlib/` | Copy of `addon/scraper/` for HACS installs |
@@ -49,19 +49,20 @@ No linter or formatter is configured.
 
 ### Scraper backends
 
-- **GraphQL** (default): `mobile.k-ruoka.fi/graphql`. No Cloudflare bypass. Hard limit of `offset ≤ 1000`. No prices. Used for name/image lookups and per-store availability sweeps.
-- **kr-api REST** (fallback): `www.k-ruoka.fi/kr-api`. Requires Cloudflare bypass (FlareSolverr via the `flaresolverr_url` option → `FLARESOLVERR_URL`, or `CF_CLEARANCE` + `CF_USER_AGENT`). The only source of prices and friendly store names; price scrapers are skipped when no bypass is configured.
+- **GraphQL** (`KRuokaScraper(store_id)`): `mobile.k-ruoka.fi/graphql`. No Cloudflare bypass. Hard limit of `offset ≤ 1000`. No prices. Used for name/image lookups and per-store availability sweeps.
+- **kr-api REST** (`KRuokaScraper(store_id, use_graphql=False)`): `www.k-ruoka.fi/kr-api`. Needs a Cloudflare clearance from FlareSolverr (the `flaresolverr_url` option → `FLARESOLVERR_URL`). The only source of prices and friendly store names; price scrapers are not built without FlareSolverr.
 
-`store_id` may be comma-separated; stores are tried in order. EAN lookups fall back K-Ruoka → S-kaupat → SearXNG (only if `searxng_url` is set). `--update` only replaces placeholder names (`Unknown product (…)`, bare barcodes); a real name is never overwritten, whatever the source.
+`store_id` may be comma-separated; stores are tried in order. EAN lookups fall back K-Ruoka → S-kaupat → SearXNG (only if `searxng_url` is set). Update only replaces placeholder names (`Unknown product (…)`, bare barcodes); a real name is never overwritten, whatever the source.
 
 ### kr-api rate limiting
 
 kr-api rate-limits aggressively, so (see `scraper.py` and `_update_products` in `main.py`):
 
-- Global jittered pacing across all scrapers: `KRAPI_MIN_INTERVAL` (default 2 s, 0.7–1.5× jitter). 429s retry up to 3 times with Retry-After/exponential backoff capped at 120 s.
-- Circuit breaker: after 3 consecutive refused requests (429 retries exhausted, or a 403 that a fresh clearance did not fix), all kr-api traffic pauses for `KRAPI_CIRCUIT_COOLDOWN` (default 900 s); GraphQL lookups continue.
-- Price budget: `--update` refreshes at most `KRAPI_PRICE_BUDGET` (default 200) prices per run, oldest first, skipping ones refreshed within `KRAPI_PRICE_TTL_DAYS` (default 3). Only products with a barcode are selected, and a product counts as refreshed only once kr-api answered (`KRuokaScraper.failed_requests` tells "no result" from "no answer"). State in `/data/price_refresh.json`, saved after each product.
-- The FlareSolverr clearance is cached in memory and in `/data/cf_clearance.json` for `CF_CLEARANCE_TTL` (default 1500 s). A 403 drops it, solves again and retries the request once. Both state files honour `SCRAPER_STATE_DIR`.
+- Global jittered pacing across all scrapers: `_KRAPI_MIN_INTERVAL` (2 s, 0.7–1.5× jitter). 429s retry up to 3 times with Retry-After/exponential backoff capped at 120 s.
+- Circuit breaker: after 3 consecutive refused requests (429 retries exhausted, or a 403 that a fresh clearance did not fix), all kr-api traffic pauses for `_KRAPI_CIRCUIT_COOLDOWN` (900 s); GraphQL lookups continue.
+- Price budget: Update refreshes at most `_PRICE_BUDGET` (200) prices per run, oldest first, skipping ones refreshed within `_PRICE_TTL_SECONDS` (3 days). Only products with a barcode are selected, and a product counts as refreshed only once kr-api answered (`KRuokaScraper.failed_requests` tells "no result" from "no answer"). State in `/data/price_refresh.json`, saved after each product.
+- The FlareSolverr clearance is cached in memory and in `/data/cf_clearance.json` for `_CF_CACHE_TTL` (1500 s). A 403 drops it, solves again and retries the request once.
+- These are module constants, not options: nothing in the add-on can set an environment variable except `flaresolverr_url` → `FLARESOLVERR_URL`. Tests redirect the two state files to `tmp_path` (`tests/conftest.py`).
 
 ### Two copies of the library
 
@@ -73,7 +74,7 @@ There is none in this repo — all AI code and options were removed in 1.21.23 (
 
 ### Retry logic
 
-`wait_for_storage()` in `main.py` retries Storage's `/api/health` (30 attempts × 5 seconds), then exits. `_wait_for_storage()` in `ingress_server.py` does the same but is best-effort, and a background health monitor re-checks every 30 s and re-detects the Storage URL (`storage_url` → `storage_hostname` → auto-detect) if it disappears.
+`_wait_for_storage()` in `ingress_server.py` retries Storage's `/api/health` at start-up (30 attempts × 5 seconds, best-effort), and a background health monitor re-checks every 30 s and re-detects the Storage URL (`storage_url` → `storage_hostname` → auto-detect) if it disappears.
 
 ### Error handling
 
@@ -104,7 +105,7 @@ Do **not** bump the version or update the changelog for changes that only touch 
 
 ## Conventions
 
-- Main CLI options have env-var defaults (`KRUOKA_STORE_ID`, `STORAGE_URL`, `GROCY_LOCATION_ID`, `GROCY_QUANTITY_UNIT_ID`, `SEARXNG_URL`); `.env` is loaded via `python-dotenv` when installed. In the add-on, options come from `/data/options.json` (only `flaresolverr_url` is exported to the environment).
+- Options come from `/data/options.json`, read by `ingress_server.py` for every operation (only `flaresolverr_url` is exported to the environment). There is no CLI.
 - External API errors are wrapped in `StorageAPIError` / `SKaupatError` / `SearXNGError` rather than leaking `requests` exceptions.
 - Tests import `main`, `ingress_server` and the `scraper` package from `addon/`. New tests use the `world` fixture (`tests/conftest.py`): an in-memory `FakeStorage` and a `FakeKRuoka` session (`tests/fakes.py`), so the scraper's own code runs; older tests inject `unittest.mock` objects.
 - The scraper yields `Product` objects lazily via generators.

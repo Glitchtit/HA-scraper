@@ -44,13 +44,7 @@ except ImportError:  # running in bare test env without homeassistant installed
         def string(value):
             return str(value)
 
-from .const import (
-    DOMAIN,
-    CONF_STORAGE_URL,
-    CONF_STORE_ID,
-    CONF_USE_GRAPHQL,
-    DEFAULT_USE_GRAPHQL,
-)
+from .const import DOMAIN, CONF_STORAGE_URL, CONF_STORE_ID
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -176,11 +170,11 @@ def _entry(hass: HomeAssistant) -> ConfigEntry:
     return entries[0]
 
 
-def _search_sync(store_id: str, use_graphql: bool, query: str, max_products: int):
+def _search_sync(store_id: str, query: str, max_products: int):
     """Run a synchronous K-Ruoka search and return shaped result dicts."""
     from .scraperlib.scraper import KRuokaScraper  # noqa: PLC0415
 
-    scraper = KRuokaScraper(store_id=store_id, use_graphql=use_graphql)
+    scraper = KRuokaScraper(store_id=store_id)
     products = list(scraper.search(query, max_products=max_products))
     return shape_search_results(products)
 
@@ -232,12 +226,10 @@ def async_register_services(hass: HomeAssistant) -> None:
     async def handle_search(call: ServiceCall) -> dict[str, Any]:
         entry = _entry(hass)
         store_id: str = entry.data.get(CONF_STORE_ID, "")
-        use_graphql: bool = entry.options.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL)
         try:
             products = await hass.async_add_executor_job(
                 _search_sync,
                 store_id,
-                use_graphql,
                 call.data["query"],
                 call.data["max_products"],
             )

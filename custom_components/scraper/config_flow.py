@@ -12,9 +12,7 @@ from .const import (
     CONF_STORAGE_URL,
     CONF_STORE_ID,
     CONF_UPLOAD_IMAGES,
-    CONF_USE_GRAPHQL,
     DEFAULT_UPLOAD_IMAGES,
-    DEFAULT_USE_GRAPHQL,
 )
 
 _USER_SCHEMA = vol.Schema(
@@ -86,10 +84,6 @@ class ScraperOptionsFlow(config_entries.OptionsFlow):
                 vol.Optional(
                     CONF_UPLOAD_IMAGES,
                     default=opts.get(CONF_UPLOAD_IMAGES, DEFAULT_UPLOAD_IMAGES),
-                ): bool,
-                vol.Optional(
-                    CONF_USE_GRAPHQL,
-                    default=opts.get(CONF_USE_GRAPHQL, DEFAULT_USE_GRAPHQL),
                 ): bool,
             }
         )

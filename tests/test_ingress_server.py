@@ -79,16 +79,7 @@ class TestBuildArgs:
         ns = ingress_mod._build_args({})
         assert ns.store == ""
         assert ns.upload_images is True
-        assert ns.use_graphql is True
-        assert ns.verbose is False
-        assert ns.dry_run is False
-        assert ns.skip_existing is True
-        assert ns.max_products is None
-
-    def test_overrides(self, ingress_mod: ModuleType) -> None:
-        ns = ingress_mod._build_args({"store_id": "X"}, store="OVERRIDE", verbose=True)
-        assert ns.store == "OVERRIDE"
-        assert ns.verbose is True
+        assert ns.searxng_url == ""
 
 
 # ---------------------------------------------------------------------------

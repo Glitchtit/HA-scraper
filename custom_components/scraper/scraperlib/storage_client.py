@@ -79,10 +79,6 @@ class StorageClient:
         })
         self.timeout = timeout
 
-        # Maps ingredient-id → recipe-id so that update_recipe_position
-        # can route to the correct nested endpoint.
-        self._ingredient_to_recipe: dict[int, int] = {}
-
         # Cached default unit ID (lazy-loaded on first use).
         self._default_unit_id: int | None = None
 
@@ -113,24 +109,11 @@ class StorageClient:
 
     def get_product_by_barcode(self, barcode: str) -> Optional[dict]:
         """Return the product dict for *barcode*, or ``None`` if not found."""
-        url = self._url(f"/api/products/by-barcode/{barcode}")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            if resp.status_code == 404:
-                return None
-            resp.raise_for_status()
-            return resp.json()
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                return None
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to look up barcode {barcode}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to look up barcode {barcode}: {exc}"
-            ) from exc
+        resp = self._request(
+            "get", f"/api/products/by-barcode/{barcode}",
+            f"look up barcode {barcode}", missing_ok=True,
+        )
+        return resp.json() if resp is not None else None
 
     def create_product(
         self,
@@ -168,69 +151,36 @@ class StorageClient:
             "default_best_before_days": 60,
             **kwargs,
         }
-
-        url = self._url("/api/products")
+        resp = self._request(
+            "post", "/api/products", f"create product '{name}'", json=payload
+        )
         try:
-            resp = self._session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
             return int(resp.json()["id"])
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to create product '{name}': {exc}{body}"
-            ) from exc
-        except (requests.RequestException, KeyError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise StorageAPIError(
                 f"Failed to create product '{name}': {exc}"
             ) from exc
 
     def update_product(self, product_id: int, **fields) -> None:
         """Partially update an existing product."""
-        url = self._url(f"/api/products/{product_id}")
-        try:
-            resp = self._session.put(url, json=fields, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to update product {product_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to update product {product_id}: {exc}"
-            ) from exc
+        self._request(
+            "put", f"/api/products/{product_id}",
+            f"update product {product_id}", json=fields,
+        )
 
     def delete_product(self, product_id: int) -> None:
         """Delete a product by ID."""
-        url = self._url(f"/api/products/{product_id}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to delete product {product_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete product {product_id}: {exc}"
-            ) from exc
+        self._request(
+            "delete", f"/api/products/{product_id}", f"delete product {product_id}"
+        )
 
     def get_all_products(self, active_only: bool = False) -> list[dict]:
         """Return all products (or only active ones)."""
-        url = self._url("/api/products")
-        params = {"active_only": str(active_only).lower()}
-        try:
-            resp = self._session.get(url, params=params, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch products: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(f"Failed to fetch products: {exc}") from exc
+        resp = self._request(
+            "get", "/api/products", "fetch products",
+            params={"active_only": str(active_only).lower()},
+        )
+        return resp.json() or []
 
     # ------------------------------------------------------------------
     # Barcodes
@@ -250,60 +200,14 @@ class StorageClient:
             "pack_size": pack_size,
             "pack_unit_id": pack_unit_id,
         }
-        url = self._url("/api/barcodes")
-        try:
-            resp = self._session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to add barcode {barcode} to product {product_id}: "
-                f"{exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to add barcode {barcode} to product {product_id}: "
-                f"{exc}"
-            ) from exc
+        self._request(
+            "post", "/api/barcodes",
+            f"add barcode {barcode} to product {product_id}", json=payload,
+        )
 
     def get_all_barcodes(self) -> list[dict]:
         """Return all barcode entries."""
-        url = self._url("/api/barcodes")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch barcodes: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(f"Failed to fetch barcodes: {exc}") from exc
-
-    def get_product_barcodes(self, product_id: int) -> list[dict]:
-        """Return barcode entries for *product_id* (client-side filter)."""
-        all_barcodes = self.get_all_barcodes()
-        return [
-            b for b in all_barcodes
-            if int(b.get("product_id", 0)) == product_id
-        ]
-
-    def update_barcode(self, barcode_id: int, **fields) -> None:
-        """Update fields on an existing barcode entry."""
-        url = self._url(f"/api/barcodes/{barcode_id}")
-        try:
-            resp = self._session.put(url, json=fields, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to update barcode {barcode_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to update barcode {barcode_id}: {exc}"
-            ) from exc
+        return self._request("get", "/api/barcodes", "fetch barcodes").json() or []
 
     # ------------------------------------------------------------------
     # Stores / per-store availability
@@ -311,19 +215,10 @@ class StorageClient:
 
     def upsert_store(self, store_id: str, name: str) -> None:
         """Register or rename a store (K-group store ID → display name)."""
-        url = self._url(f"/api/stores/{store_id}")
-        try:
-            resp = self._session.put(url, json={"name": name}, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to upsert store {store_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to upsert store {store_id}: {exc}"
-            ) from exc
+        self._request(
+            "put", f"/api/stores/{store_id}", f"upsert store {store_id}",
+            json={"name": name},
+        )
 
     def set_product_availability(
         self, product_id: int, entries: list[dict]
@@ -334,19 +229,10 @@ class StorageClient:
         and ``"price_currency"``.  Stores absent from *entries* keep their
         previous state in Storage.
         """
-        url = self._url(f"/api/products/{product_id}/availability")
-        try:
-            resp = self._session.put(url, json=entries, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to set availability for product {product_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to set availability for product {product_id}: {exc}"
-            ) from exc
+        self._request(
+            "put", f"/api/products/{product_id}/availability",
+            f"set availability for product {product_id}", json=entries,
+        )
 
     # ------------------------------------------------------------------
     # Barcode Queue
@@ -354,31 +240,9 @@ class StorageClient:
 
     def get_barcode_queue(self, status: str = "pending") -> list[dict]:
         """Return barcode-queue items filtered by *status*."""
-        url = self._url(f"/api/barcode-queue?status={status}")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch barcode queue{_response_error_detail(getattr(exc, 'response', None))}"
-            ) from exc
-
-    def add_to_barcode_queue(self, barcode: str, source: str = "scraper") -> dict:
-        """Add a barcode to the queue. Returns the created item."""
-        url = self._url("/api/barcode-queue")
-        try:
-            resp = self._session.post(
-                url,
-                json={"barcode": barcode, "source": source},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to add barcode to queue{_response_error_detail(getattr(exc, 'response', None))}"
-            ) from exc
+        return self._request(
+            "get", f"/api/barcode-queue?status={status}", "fetch barcode queue"
+        ).json()
 
     def update_barcode_queue_item(
         self,
@@ -389,7 +253,6 @@ class StorageClient:
         error_message: str | None = None,
     ) -> None:
         """Update fields on a barcode-queue item."""
-        url = self._url(f"/api/barcode-queue/{item_id}")
         payload: dict = {}
         if status is not None:
             payload["status"] = status
@@ -397,26 +260,10 @@ class StorageClient:
             payload["result_product_id"] = result_product_id
         if error_message is not None:
             payload["error_message"] = error_message
-        try:
-            resp = self._session.put(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to update barcode queue item {item_id}"
-                f"{_response_error_detail(getattr(exc, 'response', None))}"
-            ) from exc
-
-    def delete_barcode_queue_item(self, item_id: int) -> None:
-        """Delete a barcode-queue item by ID."""
-        url = self._url(f"/api/barcode-queue/{item_id}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete barcode queue item {item_id}"
-                f"{_response_error_detail(getattr(exc, 'response', None))}"
-            ) from exc
+        self._request(
+            "put", f"/api/barcode-queue/{item_id}",
+            f"update barcode queue item {item_id}", json=payload,
+        )
 
     # ------------------------------------------------------------------
     # Images
@@ -435,63 +282,16 @@ class StorageClient:
         1. ``PUT /api/files/products/{filename}`` with raw bytes.
         2. ``PUT /api/products/{product_id}`` with ``picture_filename``.
         """
-        file_url = self._url(f"/api/files/products/{filename}")
-        try:
-            resp = self._session.put(
-                file_url,
-                data=image_bytes,
-                headers={"Content-Type": content_type},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to upload image for product {product_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to upload image for product {product_id}: {exc}"
-            ) from exc
-
-        # Link the uploaded file to the product.
-        prod_url = self._url(f"/api/products/{product_id}")
-        try:
-            resp = self._session.put(
-                prod_url,
-                json={"picture_filename": filename},
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to set picture for product {product_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to set picture for product {product_id}: {exc}"
-            ) from exc
-
-    def delete_product_image(self, filename: str) -> None:
-        """Delete a product picture file.  Silently ignores 404."""
-        url = self._url(f"/api/files/products/{filename}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            if resp.status_code == 404:
-                return
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                return
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to delete image '{filename}': {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete image '{filename}': {exc}"
-            ) from exc
+        self._request(
+            "put", f"/api/files/products/{filename}",
+            f"upload image for product {product_id}",
+            data=image_bytes, headers={"Content-Type": content_type},
+        )
+        self._request(
+            "put", f"/api/products/{product_id}",
+            f"set picture for product {product_id}",
+            json={"picture_filename": filename},
+        )
 
     # ------------------------------------------------------------------
     # Stock
@@ -507,433 +307,18 @@ class StorageClient:
         payload: dict = {"product_id": product_id, "amount": amount}
         if location_id is not None:
             payload["location_id"] = location_id
-
-        url = self._url("/api/stock/add")
-        try:
-            resp = self._session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to add stock for product {product_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to add stock for product {product_id}: {exc}"
-            ) from exc
-
-    def get_product_stock_locations(self, product_id: int) -> list[dict]:
-        """Return stock entries for *product_id* (each has ``location_id``, ``amount``)."""
-        url = self._url(f"/api/stock/product/{product_id}")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch stock locations for product {product_id}: "
-                f"{exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch stock locations for product {product_id}: "
-                f"{exc}"
-            ) from exc
-
-    def transfer_stock(
-        self,
-        product_id: int,
-        amount: float,
-        location_id_from: int,
-        location_id_to: int,
-    ) -> None:
-        """Transfer *amount* units between locations."""
-        url = self._url("/api/stock/transfer")
-        payload = {
-            "product_id": product_id,
-            "amount": amount,
-            "from_location_id": location_id_from,
-            "to_location_id": location_id_to,
-        }
-        try:
-            resp = self._session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to transfer stock for product {product_id}: "
-                f"{exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to transfer stock for product {product_id}: {exc}"
-            ) from exc
-
-    def get_stock_entries(self, product_id: int | None = None) -> list[dict]:
-        """Return stock entries, optionally filtered by product.
-
-        * With *product_id*: ``GET /api/stock/product/{id}``
-        * Without: ``GET /api/stock`` (returns summary list)
-        """
-        if product_id is not None:
-            url = self._url(f"/api/stock/product/{product_id}")
-        else:
-            url = self._url("/api/stock")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch stock entries: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch stock entries: {exc}"
-            ) from exc
-
-    def delete_stock_entry(self, entry_id: int) -> None:
-        """Delete a single stock entry by ID."""
-        url = self._url(f"/api/stock/{entry_id}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to delete stock entry {entry_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete stock entry {entry_id}: {exc}"
-            ) from exc
+        self._request(
+            "post", "/api/stock/add", f"add stock for product {product_id}",
+            json=payload,
+        )
 
     # ------------------------------------------------------------------
-    # Locations
-    # ------------------------------------------------------------------
-
-    def get_locations(self) -> list[dict]:
-        """Return all storage locations."""
-        url = self._url("/api/locations")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch locations: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(f"Failed to fetch locations: {exc}") from exc
-
-    # ------------------------------------------------------------------
-    # Product groups
-    # ------------------------------------------------------------------
-
-    def ensure_product_group(self, name: str) -> int:
-        """Return the ID of the product group *name*, creating it if needed."""
-        url = self._url("/api/product-groups")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            groups = resp.json() or []
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch product groups: {exc}"
-            ) from exc
-
-        for group in groups:
-            if group.get("name") == name:
-                return int(group["id"])
-
-        # Group does not exist – create it.
-        try:
-            resp = self._session.post(url, json={"name": name}, timeout=self.timeout)
-            resp.raise_for_status()
-            return int(resp.json()["id"])
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to create product group '{name}': {exc}{body}"
-            ) from exc
-        except (requests.RequestException, KeyError, ValueError) as exc:
-            raise StorageAPIError(
-                f"Failed to create product group '{name}': {exc}"
-            ) from exc
-
-    def get_product_groups(self) -> list[dict]:
-        """Return all product groups."""
-        url = self._url("/api/product-groups")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch product groups: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch product groups: {exc}"
-            ) from exc
-
-    def delete_product_group(self, group_id: int) -> None:
-        """Delete a product group by ID."""
-        url = self._url(f"/api/product-groups/{group_id}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to delete product group {group_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete product group {group_id}: {exc}"
-            ) from exc
-
-    # ------------------------------------------------------------------
-    # Quantity units & conversions
+    # Quantity units
     # ------------------------------------------------------------------
 
     def get_quantity_units(self) -> list[dict]:
         """Return all quantity units."""
-        url = self._url("/api/units")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            units = resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch quantity units: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch quantity units: {exc}"
-            ) from exc
-
-        return units
-
-    def create_quantity_unit(
-        self,
-        name: str,
-        abbreviation: str = "",
-        name_plural: str = "",
-    ) -> int:
-        """Create a quantity unit and return its ID.
-
-        Handles HTTP 409 (already exists) by looking up and returning
-        the existing unit's ID.
-        """
-        url = self._url("/api/units")
-        payload: dict = {
-            "name": name,
-            "abbreviation": abbreviation,
-            "name_plural": name_plural,
-        }
-        try:
-            resp = self._session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-            return int(resp.json()["id"])
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 409:
-                return self._find_quantity_unit_by_name(name)
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to create QU '{name}': {exc}{body}"
-            ) from exc
-        except (requests.RequestException, KeyError, ValueError) as exc:
-            raise StorageAPIError(
-                f"Failed to create QU '{name}': {exc}"
-            ) from exc
-
-    def get_quantity_unit_conversions(self) -> list[dict]:
-        """Return all quantity unit conversions."""
-        url = self._url("/api/conversions")
-        try:
-            resp = self._session.get(url, timeout=self.timeout)
-            resp.raise_for_status()
-            conversions = resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch QU conversions: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to fetch QU conversions: {exc}"
-            ) from exc
-
-        return conversions
-
-    def create_quantity_unit_conversion(
-        self,
-        from_unit_id: int,
-        to_unit_id: int,
-        factor: float,
-        product_id: int | None = None,
-    ) -> int:
-        """Create a quantity unit conversion and return its ID.
-
-        Handles HTTP 409 (already exists) gracefully by returning 0.
-        """
-        url = self._url("/api/conversions")
-        payload: dict = {
-            "from_unit_id": from_unit_id,
-            "to_unit_id": to_unit_id,
-            "factor": factor,
-        }
-        if product_id is not None:
-            payload["product_id"] = product_id
-        try:
-            resp = self._session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-            return int(resp.json()["id"])
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 409:
-                logger.debug(
-                    "QU conversion %s→%s already exists (409), skipping",
-                    from_unit_id, to_unit_id,
-                )
-                return 0
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to create QU conversion: {exc}{body}"
-            ) from exc
-        except (requests.RequestException, KeyError, ValueError) as exc:
-            raise StorageAPIError(
-                f"Failed to create QU conversion: {exc}"
-            ) from exc
-
-    def delete_quantity_unit_conversion(self, conversion_id: int) -> None:
-        """Delete a quantity unit conversion by ID."""
-        url = self._url(f"/api/conversions/{conversion_id}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            if resp.status_code == 404:
-                return
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to delete QU conversion {conversion_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete QU conversion {conversion_id}: {exc}"
-            ) from exc
-
-    def delete_quantity_unit(self, qu_id: int) -> None:
-        """Delete a quantity unit by ID."""
-        url = self._url(f"/api/units/{qu_id}")
-        try:
-            resp = self._session.delete(url, timeout=self.timeout)
-            if resp.status_code == 404:
-                return
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to delete QU {qu_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to delete QU {qu_id}: {exc}"
-            ) from exc
-
-    # ------------------------------------------------------------------
-    # Recipes
-    # ------------------------------------------------------------------
-
-    def get_recipe_positions(self) -> list[dict]:
-        """Return all recipe ingredient positions across every recipe.
-
-        Fetches every recipe, then every recipe's ingredients, and
-        flattens them into a single list.  Each dict gets a ``recipe_id``
-        field.  An internal mapping is cached so
-        :meth:`update_recipe_position` can route updates.
-        """
-        recipes_url = self._url("/api/recipes")
-        try:
-            resp = self._session.get(recipes_url, timeout=self.timeout)
-            resp.raise_for_status()
-            recipes = resp.json() or []
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to fetch recipes: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(f"Failed to fetch recipes: {exc}") from exc
-
-        positions: list[dict] = []
-        self._ingredient_to_recipe.clear()
-
-        for recipe in recipes:
-            recipe_id = int(recipe["id"])
-            detail_url = self._url(f"/api/recipes/{recipe_id}")
-            try:
-                resp = self._session.get(detail_url, timeout=self.timeout)
-                resp.raise_for_status()
-                detail = resp.json()
-            except requests.HTTPError as exc:
-                body = _response_error_detail(exc.response)
-                logger.warning(
-                    "Skipping recipe %s: %s%s", recipe_id, exc, body,
-                )
-                continue
-            except requests.RequestException as exc:
-                logger.warning("Skipping recipe %s: %s", recipe_id, exc)
-                continue
-
-            ingredients = detail.get("ingredients") or []
-            for ing in ingredients:
-                ing["recipe_id"] = recipe_id
-                ingredient_id = int(ing["id"])
-                self._ingredient_to_recipe[ingredient_id] = recipe_id
-                positions.append(ing)
-
-        return positions
-
-    def update_recipe_position(self, pos_id: int, **fields) -> None:
-        """Update fields on a recipe ingredient.
-
-        Uses the internal ``_ingredient_to_recipe`` mapping (populated by
-        :meth:`get_recipe_positions`) to determine the parent recipe.
-
-        Parameters
-        ----------
-        pos_id:
-            Ingredient ID (as returned in ``get_recipe_positions``).
-        **fields:
-            Fields to update (e.g. ``unit_id=7``).
-        """
-        recipe_id = self._ingredient_to_recipe.get(pos_id)
-        if recipe_id is None:
-            raise StorageAPIError(
-                f"Unknown recipe for ingredient {pos_id} – call "
-                f"get_recipe_positions() first to populate the mapping"
-            )
-
-        url = self._url(f"/api/recipes/{recipe_id}/ingredients/{pos_id}")
-        try:
-            resp = self._session.put(url, json=fields, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.HTTPError as exc:
-            body = _response_error_detail(exc.response)
-            raise StorageAPIError(
-                f"Failed to update recipe position {pos_id}: {exc}{body}"
-            ) from exc
-        except requests.RequestException as exc:
-            raise StorageAPIError(
-                f"Failed to update recipe position {pos_id}: {exc}"
-            ) from exc
+        return self._request("get", "/api/units", "fetch quantity units").json() or []
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -943,15 +328,24 @@ class StorageClient:
         """Build an absolute URL from a relative API path."""
         return self.base_url + "/" + path.lstrip("/")
 
-    def _find_quantity_unit_by_name(self, name: str) -> int:
-        """Look up an existing quantity unit by *name* and return its ID.
+    def _request(
+        self, method: str, path: str, action: str, *,
+        missing_ok: bool = False, **kwargs,
+    ) -> Optional[requests.Response]:
+        """Send one request and return the response.
 
-        Raises :class:`StorageAPIError` if the unit cannot be found.
+        Every failure is raised as ``StorageAPIError("Failed to <action>: …")``,
+        with Storage's own error detail when it sent one.  With *missing_ok*
+        an HTTP 404 returns ``None`` instead.
         """
-        units = self.get_quantity_units()
-        for unit in units:
-            if unit.get("name") == name:
-                return int(unit["id"])
-        raise StorageAPIError(
-            f"QU '{name}' reported as duplicate (409) but not found in listing"
-        )
+        try:
+            resp = getattr(self._session, method)(
+                self._url(path), timeout=self.timeout, **kwargs
+            )
+            if missing_ok and resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as exc:
+            detail = _response_error_detail(getattr(exc, "response", None))
+            raise StorageAPIError(f"Failed to {action}: {exc}{detail}") from exc
