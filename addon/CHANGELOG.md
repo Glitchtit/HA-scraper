@@ -1,3 +1,14 @@
+## 2.7.0
+- The add-on runs Update by itself once a night, at 03:00 by default. Set the new `update_hour` option to another hour (0–23), or to -1 to turn it off. It never runs twice in one day, skips the night when no stores are set or Storage does not answer, and you can still press Update any time
+- Searches, barcode scans and adding products keep working while an Update or queue Discover runs, instead of being refused until it finishes. Starting a second Update or queue Discover still waits its turn
+- The panel shows what a running Update or Discover is doing, line by line, instead of only at the end
+- When K-Ruoka cannot be reached, a scanned barcode reports that the lookup failed and can be scanned again later, instead of creating a product named "Unknown product (…)" or saying it was not found. Queued barcodes stay in the queue for the next Discover, and Update leaves the product as it is
+- Products added from search, from Stock's quick-add or with the `scraper.add_product` action are created the same way as scanned ones: with their price and per-store availability, and without leaving a barcode-less product behind when Storage refuses the barcode. `scraper.add_product` reports an error for a barcode that already belongs to a product instead of creating a second one
+- Queue Discover saves the product's price, as a single scan already did
+- A queued barcode whose "done" state cannot be saved stays in the queue, and its stock is added only once when it is processed again
+- Update leaves a product's picture alone once it has one, writes the description only when it changed, and asks K-Ruoka fewer questions per product
+- The `use_graphql` option is gone; the add-on always uses the mobile API for names and availability and kr-api for prices and store names
+
 ## 2.6.4
 - Update no longer renames products that already have a real name. A name you changed in Storage, or one Storage tidied up itself, stays as it is; only placeholder names such as "Unknown product (…)" are filled in
 - Price refresh reaches every product again: products without a barcode no longer use up the 200 price lookups of an Update, and a product whose lookup failed (rate limit or Cloudflare block) is tried again on the next Update instead of being skipped for three days
