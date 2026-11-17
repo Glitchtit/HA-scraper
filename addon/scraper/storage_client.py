@@ -14,6 +14,7 @@ Key characteristics
 from __future__ import annotations
 
 import logging
+import posixpath
 from typing import Optional
 
 import requests
@@ -349,3 +350,140 @@ class StorageClient:
         except requests.RequestException as exc:
             detail = _response_error_detail(getattr(exc, "response", None))
             raise StorageAPIError(f"Failed to {action}: {exc}{detail}") from exc
+
+
+# ------------------------------------------------------------------
+# Creating a product
+# ------------------------------------------------------------------
+
+def create_in_storage(
+    storage: StorageClient,
+    found,
+    *,
+    ean: str,
+    price: Optional[float] = None,
+    parent_id: Optional[int] = None,
+    product_group_id: Optional[int] = None,
+    availability: Optional[list[dict]] = None,
+) -> Optional[int]:
+    """Create the product *found* in Storage and return its ID.
+
+    *found* carries ``name``, ``description`` and ``image_url`` (a
+    ``Product``).  Returns ``None``, writing nothing, when *ean* already
+    belongs to a product.  The sequence every caller shares:
+
+    1. Create the product, with *price* as its ``unit_price`` and with
+       *parent_id* / *product_group_id* when given.
+    2. Attach *ean* as its barcode.  A product without its barcode is never
+       found by a scan, so every later scan would create another one: when
+       the barcode cannot be attached the product is deleted again and the
+       error raised.
+    3. Download and upload the image, and write the per-store
+       *availability* rows.  Both are best-effort: a failure is logged.
+
+    Raises :class:`StorageAPIError` when the product could not be created or
+    its barcode attached.
+    """
+    if ean and storage.get_product_by_barcode(ean):
+        return None
+
+    fields: dict = {}
+    if price is not None:
+        fields["unit_price"] = price
+        fields["unit_price_currency"] = "EUR"
+    if parent_id is not None:
+        fields["parent_id"] = parent_id
+    if product_group_id is not None:
+        fields["product_group_id"] = product_group_id
+    product_id = storage.create_product(
+        found.name, description=found.description, **fields
+    )
+    logger.info("Created product '%s' (Storage product ID %d).", found.name, product_id)
+
+    if ean:
+        try:
+            storage.add_barcode(product_id, ean)
+        except StorageAPIError as exc:
+            logger.error(
+                "Product '%s' created but failed to add barcode %s: %s",
+                found.name, ean, exc,
+            )
+            try:
+                storage.delete_product(product_id)
+                logger.info("  → Deleted product %d again.", product_id)
+            except StorageAPIError as del_exc:
+                logger.error(
+                    "Could not delete barcode-less product %d: %s", product_id, del_exc
+                )
+            raise
+        logger.info("  → Added barcode %s.", ean)
+
+    if found.image_url:
+        upload_image(storage, product_id, found.image_url, ean or f"product-{product_id}")
+    if availability:
+        write_availability(storage, product_id, availability)
+    return product_id
+
+
+def write_availability(
+    storage: StorageClient, product_id: int, entries: list[dict]
+) -> None:
+    """Upsert per-store availability *entries* for a product.
+
+    Best-effort: Storage errors are logged, never raised. No-op if *entries*
+    is empty.
+    """
+    if not entries:
+        return
+    try:
+        storage.set_product_availability(product_id, entries)
+        logger.info(
+            "  → Availability: %s",
+            ", ".join(f"{e['store_id']}={'✓' if e['available'] else '✗'}"
+                      for e in entries),
+        )
+    except StorageAPIError as exc:
+        logger.warning(
+            "Failed to write availability for product %d: %s", product_id, exc
+        )
+
+
+_MIME_TO_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+
+def _image_extension(content_type: str, url: str) -> str:
+    """Derive a file extension from the MIME type, falling back to the URL."""
+    ext = _MIME_TO_EXT.get(content_type, "")
+    if not ext:
+        ext = posixpath.splitext(url.split("?")[0])[1] or ".jpg"
+    return ext
+
+
+def upload_image(
+    storage: StorageClient, product_id: int, image_url: str, stem: str
+) -> None:
+    """Download *image_url* and make it the product's picture, ``<stem><ext>``.
+
+    Best-effort: a failed download or upload is logged, never raised.
+    """
+    try:
+        resp = requests.get(image_url, timeout=15)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("Could not download image %s: %s", image_url, exc)
+        return
+
+    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
+    filename = f"{stem}{_image_extension(content_type, image_url)}"
+    try:
+        storage.upload_product_image(
+            product_id, filename, resp.content, content_type=content_type
+        )
+        logger.info("  → Uploaded image %s.", filename)
+    except StorageAPIError as exc:
+        logger.warning("Could not upload image for product %d: %s", product_id, exc)

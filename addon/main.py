@@ -11,15 +11,19 @@ import argparse
 import json
 import logging
 import os
-import posixpath
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from scraper.lookup import LookupFailed, resolve_ean
-from scraper.storage_client import StorageAPIError, StorageClient
+from scraper.storage_client import (
+    StorageAPIError,
+    StorageClient,
+    create_in_storage,
+    upload_image,
+    write_availability,
+)
 from scraper.scraper import KRuokaScraper, Product
-
-import requests
 
 logger = logging.getLogger(__name__)
 
@@ -145,31 +149,6 @@ def _collect_availability(
     return entries
 
 
-def _write_availability(
-    storage: StorageClient,
-    product_id: int,
-    entries: list[dict],
-) -> None:
-    """Upsert already-collected availability *entries* in Storage.
-
-    Best-effort: Storage errors are logged, never raised. No-op if *entries*
-    is empty.
-    """
-    if not entries:
-        return
-    try:
-        storage.set_product_availability(product_id, entries)
-        logger.info(
-            "  → Availability: %s",
-            ", ".join(f"{e['store_id']}={'✓' if e['available'] else '✗'}"
-                      for e in entries),
-        )
-    except StorageAPIError as exc:
-        logger.warning(
-            "Failed to write availability for product %d: %s", product_id, exc
-        )
-
-
 def _price_from_entries(entries: list[dict]) -> float | None:
     """Return the first available entry's price, or ``None``.
 
@@ -187,150 +166,40 @@ def sync_product(
     product: Product,
     storage: StorageClient,
     *,
-    location_id: int | None,
-    quantity_unit_id: int | None,
-    skip_existing: bool,
-    known_barcodes: set[str],
     upload_images: bool = True,
     price_scrapers: list[KRuokaScraper] | None = None,
     avail_scrapers: list[KRuokaScraper] | None = None,
-) -> bool:
-    """Add *product* to Storage.
+    parent_id: int | None = None,
+    product_group_id: int | None = None,
+) -> int | None:
+    """Create *product* in Storage with its price and per-store availability.
 
-    Returns ``True`` if the product was created/updated, ``False`` if skipped.
-    Raises ``StorageAPIError`` if the product cannot be created or its barcode
-    cannot be attached (the barcode-less product is then deleted again).
-    When *price_scrapers* is provided, the product's K-Ruoka price is looked up
-    by barcode and stored as ``unit_price`` on creation.
+    Returns the new product ID, or ``None`` when its barcode already belongs
+    to a product.  Raises ``StorageAPIError`` when it cannot be saved.
+    When *price_scrapers* is provided, the product's K-Ruoka price is looked
+    up by barcode and stored as ``unit_price``.
     """
-    if not product.ean:
-        logger.debug("Skipping '%s' – no EAN code.", product.name)
-        return False
+    # Asked before the sweeps below: a product that will not be created
+    # needs no store lookups.
+    if product.ean and storage.get_product_by_barcode(product.ean):
+        return None
 
-    if skip_existing and product.ean in known_barcodes:
-        logger.debug("Skipping '%s' – EAN %s already in Storage.", product.name, product.ean)
-        return False
-
-    # Check live against the Storage API in case known_barcodes is stale.
-    try:
-        existing = storage.get_product_by_barcode(product.ean)
-    except StorageAPIError as exc:
-        logger.warning("Could not check barcode %s in Storage: %s", product.ean, exc)
-        existing = None
-
-    if existing and skip_existing:
-        logger.debug(
-            "Skipping '%s' – EAN %s already mapped to product %s.",
-            product.name,
-            product.ean,
-            existing.get("id") or existing.get("name"),
-        )
-        known_barcodes.add(product.ean)
-        return False
-
-    # Sweep per-store availability once up front so its entries can also
-    # supply the creation price below — avoids a second Cloudflare-bypassed
-    # kr-api query for the same EAN.
-    avail_entries: list[dict] = []
-    if avail_scrapers:
-        avail_entries = _collect_availability(product.ean, avail_scrapers)
-
-    # Resolve a K-Ruoka price for this barcode (kr-api only; needs CF bypass).
+    # Sweep per-store availability once; a kr-api sweep also carries the
+    # price, which saves a second Cloudflare-bypassed query for the same EAN.
+    availability = _collect_availability(product.ean, avail_scrapers or [])
     price = product.price
     if price is None:
-        price = _price_from_entries(avail_entries)
+        price = _price_from_entries(availability)
     if price is None and price_scrapers:
         price = _lookup_price(price_scrapers, product.ean)
-    price_kwargs: dict = {}
-    if price is not None:
-        price_kwargs["unit_price"] = price
-        price_kwargs["unit_price_currency"] = "EUR"
 
-    # Create the product entry (a StorageAPIError propagates to the caller).
-    product_id = storage.create_product(
-        name=product.name,
-        description=product.description,
-        location_id=location_id,
-        unit_id=quantity_unit_id,
-        **price_kwargs,
+    if not upload_images:
+        product = replace(product, image_url="")
+    return create_in_storage(
+        storage, product, ean=product.ean, price=price,
+        parent_id=parent_id, product_group_id=product_group_id,
+        availability=availability,
     )
-    if price is not None:
-        logger.info(
-            "Created product '%s' (Storage product ID %d, price %.2f EUR).",
-            product.name, product_id, price,
-        )
-    else:
-        logger.info("Created product '%s' (Storage product ID %d).", product.name, product_id)
-
-    # Attach the EAN barcode.  A product without it is never found by barcode,
-    # so every later scan would create another one: delete it and fail instead.
-    try:
-        storage.add_barcode(product_id, product.ean)
-        known_barcodes.add(product.ean)
-        logger.info("  → Added barcode %s.", product.ean)
-    except StorageAPIError as exc:
-        logger.error(
-            "Product '%s' created but failed to add barcode %s: %s",
-            product.name,
-            product.ean,
-            exc,
-        )
-        try:
-            storage.delete_product(product_id)
-            logger.info("  → Deleted product %d again.", product_id)
-        except StorageAPIError as del_exc:
-            logger.error("Could not delete barcode-less product %d: %s", product_id, del_exc)
-        raise
-
-    # Upload product image.
-    if upload_images and product.image_url:
-        _upload_product_image(product, storage, product_id)
-
-    # Record per-store assortment availability (best-effort) using the
-    # entries already collected above — no second sweep.
-    if avail_scrapers:
-        _write_availability(storage, product_id, avail_entries)
-
-    return True
-
-
-def _upload_product_image(product: Product, storage: StorageClient, product_id: int) -> None:
-    """Download the product image and upload it to Storage."""
-    url = product.image_url
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("Could not download image for '%s': %s", product.name, exc)
-        return
-
-    content_type = resp.headers.get("Content-Type", "image/jpeg").split(";")[0].strip()
-    ext = _image_extension(content_type, url)
-    filename = f"{product.ean}{ext}"
-
-    try:
-        storage.upload_product_image(
-            product_id, filename, resp.content, content_type=content_type
-        )
-        logger.info("  → Uploaded image %s.", filename)
-    except StorageAPIError as exc:
-        logger.warning("Could not upload image for '%s': %s", product.name, exc)
-
-
-_MIME_TO_EXT = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-    "image/gif": ".gif",
-}
-
-
-def _image_extension(content_type: str, url: str) -> str:
-    """Derive a file extension from the MIME type, falling back to the URL."""
-    ext = _MIME_TO_EXT.get(content_type, "")
-    if not ext:
-        ext = posixpath.splitext(url.split("?")[0])[1] or ".jpg"
-    return ext
 
 
 def _discover_single_barcode(
@@ -392,32 +261,21 @@ def _discover_single_barcode(
 
     logger.info("Found: '%s' (EAN %s).", product.name, product.ean)
 
-    # Sync product to Storage.
-    known_barcodes: set[str] = set()
     try:
-        added = sync_product(
+        product_id = sync_product(
             product,
             storage,
-            location_id=args.location_id,
-            quantity_unit_id=args.quantity_unit_id,
-            skip_existing=False,
-            known_barcodes=known_barcodes,
             upload_images=args.upload_images,
             price_scrapers=price_scrapers,
             avail_scrapers=avail_scrapers,
         )
+        already_existed = product_id is None
+        if already_existed:
+            # The barcode was added while it was being looked up.
+            product_id = (storage.get_product_by_barcode(barcode) or {}).get("id")
     except StorageAPIError as exc:
         logger.error("Storage error for '%s': %s", product.name, exc)
         return {"success": False, "error": f"Found {product.name} but could not save it to Storage: {exc}"}
-
-    # Look up the Storage product ID.
-    product_id = None
-    try:
-        existing = storage.get_product_by_barcode(barcode)
-        if existing:
-            product_id = existing.get("id")
-    except StorageAPIError as exc:
-        logger.error("Could not look up barcode %s after saving: %s", barcode, exc)
     if product_id is None:
         return {
             "success": False,
@@ -440,7 +298,7 @@ def _discover_single_barcode(
             "description": product.description or "",
         },
         "product_id": product_id,
-        "already_existed": not added,
+        "already_existed": already_existed,
     }
 
 
@@ -454,8 +312,8 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
 
     1. Search K-Ruoka by EAN; fall back to S-kaupat, SearXNG.
     2. Create the product in Storage (via ``sync_product``).
-    3. Add 1 unit to Storage stock.
-    4. Mark the barcode queue item as done with the resulting product ID.
+    3. Mark the barcode queue item as done with the resulting product ID.
+    4. Add 1 unit to Storage stock.
 
     Returns a ``(return_code, product_ids)`` tuple.  *return_code* is 0 on
     success and 1 if any errors occurred.  *product_ids* contains the Storage
@@ -470,17 +328,6 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
     # reserve the rate-limited kr-api strictly for price lookups.
     avail_scrapers: list[KRuokaScraper] = scrapers
     _register_stores(storage, store_ids, price_scrapers)
-
-    # Pre-load known barcodes.
-    known_barcodes: set[str] = set()
-    try:
-        for entry in storage.get_all_barcodes():
-            bc = entry.get("barcode")
-            if bc:
-                known_barcodes.add(str(bc))
-        logger.info("  %d barcode(s) already registered in Storage.", len(known_barcodes))
-    except StorageAPIError as exc:
-        logger.warning("Could not fetch existing barcodes: %s", exc)
 
     # Fetch pending barcodes from the Storage barcode queue.
     try:
@@ -530,19 +377,17 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
 
         logger.info("  Found: '%s' (EAN %s).", product.name, product.ean)
 
-        # Sync product to Storage.
         try:
-            added = sync_product(
+            product_id = sync_product(
                 product,
                 storage,
-                location_id=args.location_id,
-                quantity_unit_id=args.quantity_unit_id,
-                # An already-mapped barcode is stocked below, not re-created.
-                skip_existing=True,
-                known_barcodes=known_barcodes,
                 upload_images=args.upload_images,
+                price_scrapers=price_scrapers,
                 avail_scrapers=avail_scrapers,
             )
+            if product_id is None:
+                # The barcode already belongs to a product: stock that one.
+                product_id = (storage.get_product_by_barcode(barcode) or {}).get("id")
         except StorageAPIError as exc:
             logger.error("Storage error for '%s': %s", product.name, exc)
             if queue_id is not None:
@@ -554,55 +399,47 @@ def _discover_products(args: argparse.Namespace) -> tuple[int, list[int]]:
                     pass
             errors += 1
             continue
+        if product_id is None:
+            logger.error("  Could not find the product for EAN %s in Storage.", barcode)
+            errors += 1
+            continue
 
-        if not added:
-            # Product already exists — look up its Storage product ID for stocking.
-            existing = storage.get_product_by_barcode(barcode)
-            if existing:
-                product_id = existing.get("id")
-            else:
-                logger.info("  Product already in Storage – skipping.")
-                skipped += 1
-                continue
-        else:
-            # Newly created — get the Storage product ID via barcode lookup.
-            existing = storage.get_product_by_barcode(barcode)
-            product_id = existing.get("id") if existing else None
-
-        # Add to Storage stock.
-        if product_id is not None:
-            discovered_ids.append(int(product_id))
-            raw_stock = entry.get("import_stock_amount")
-            is_storage_import = entry.get("source") == "storage-import"
-            if is_storage_import and raw_stock is None:
-                # Storage import with NULL amount = product had no stock in Storage — skip.
-                logger.info(
-                    "  → Skipping stock for product ID %s (not in Storage stock).",
-                    product_id,
-                )
-            else:
-                stock_amount = float(raw_stock) if raw_stock is not None else 1.0
-                try:
-                    storage.add_stock(int(product_id), amount=stock_amount)
-                    logger.info(
-                        "  → Added %g unit(s) to Storage stock (product ID %s).",
-                        stock_amount, product_id,
-                    )
-                except (StorageAPIError, ValueError) as exc:
-                    logger.warning("  Could not add stock for '%s': %s", product.name, exc)
-
-        # Mark the queue item as done.
+        # Record "done" before adding stock.  If it cannot be recorded the
+        # item stays pending and the next run starts over, so stock is never
+        # added twice for one queue item.
         if queue_id is not None:
             try:
                 storage.update_barcode_queue_item(
-                    queue_id, status="done",
-                    result_product_id=int(product_id) if product_id else None,
+                    queue_id, status="done", result_product_id=int(product_id),
                 )
                 logger.info("  → Marked queue item %s as done.", queue_id)
             except StorageAPIError as exc:
                 logger.warning(
-                    "  Could not update queue item %s: %s", queue_id, exc,
+                    "  Could not mark queue item %s as done: %s – left in the queue.",
+                    queue_id, exc,
                 )
+                errors += 1
+                continue
+
+        discovered_ids.append(int(product_id))
+        raw_stock = entry.get("import_stock_amount")
+        is_storage_import = entry.get("source") == "storage-import"
+        if is_storage_import and raw_stock is None:
+            # Storage import with NULL amount = product had no stock in Storage — skip.
+            logger.info(
+                "  → Skipping stock for product ID %s (not in Storage stock).",
+                product_id,
+            )
+        else:
+            stock_amount = float(raw_stock) if raw_stock is not None else 1.0
+            try:
+                storage.add_stock(int(product_id), amount=stock_amount)
+                logger.info(
+                    "  → Added %g unit(s) to Storage stock (product ID %s).",
+                    stock_amount, product_id,
+                )
+            except (StorageAPIError, ValueError) as exc:
+                logger.warning("  Could not add stock for '%s': %s", product.name, exc)
 
         created += 1
 
@@ -785,7 +622,7 @@ def _update_products(args: argparse.Namespace) -> int:
         avail_entries: list[dict] = []
         if avail_ean:
             avail_entries = _collect_availability(avail_ean, avail_scrapers)
-            _write_availability(storage, pid, avail_entries)
+            write_availability(storage, pid, avail_entries)
 
         if found is None:
             # Nothing to price: stamp it anyway, so unfound products rotate
@@ -854,7 +691,7 @@ def _update_products(args: argparse.Namespace) -> int:
 
         # Upload image if available.
         if found.image_url and args.upload_images:
-            _upload_product_image(found, storage, pid)
+            upload_image(storage, pid, found.image_url, found.ean)
 
         updated += 1
 

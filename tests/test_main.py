@@ -10,10 +10,10 @@ import requests
 
 from main import (
     sync_product, _parse_store_ids,
-    _collect_availability, _write_availability, _register_stores,
+    _collect_availability, _register_stores,
 )
 from scraper.scraper import KRuokaScraper as RealScraper, Product
-from scraper.storage_client import StorageAPIError, StorageClient
+from scraper.storage_client import StorageAPIError, StorageClient, write_availability
 
 
 # ---------------------------------------------------------------------------
@@ -25,135 +25,26 @@ from scraper.storage_client import StorageAPIError, StorageClient
 # ---------------------------------------------------------------------------
 
 class TestSyncProduct:
-    def _storage(self):
-        g = MagicMock(spec=StorageClient)
-        g.get_product_by_barcode.return_value = None
-        g.create_product.return_value = 99
-        return g
+    """The create sequence itself is tested in test_create_in_storage.py."""
 
-    def test_skips_product_without_ean(self):
-        storage = self._storage()
-        product = Product(name="Tuote", ean="")
-        result = sync_product(
-            product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=True, known_barcodes=set()
-        )
-        assert result is False
-        storage.create_product.assert_not_called()
+    def test_existing_barcode_returns_none_without_store_lookups(self, world):
+        world.storage.add_product("Maito", barcode="555")
+        scraper = MagicMock()
 
-    def test_skips_known_barcode(self):
-        storage = self._storage()
-        product = Product(name="Maito", ean="111")
-        known = {"111"}
-        result = sync_product(
-            product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=True, known_barcodes=known
-        )
-        assert result is False
-        storage.create_product.assert_not_called()
+        assert sync_product(
+            Product(name="Maito", ean="555"), world.storage,
+            price_scrapers=[scraper], avail_scrapers=[scraper],
+        ) is None
+        scraper.check_store_availability.assert_not_called()
+        scraper.search.assert_not_called()
+        assert world.storage.called("create_product") == []
 
-    def test_creates_new_product(self):
-        storage = self._storage()
-        product = Product(name="Maito", ean="999")
-        result = sync_product(
-            product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=True, known_barcodes=set()
-        )
-        assert result is True
-        storage.create_product.assert_called_once_with(
-            name="Maito", description="", location_id=None, unit_id=None
-        )
-        storage.add_barcode.assert_called_once_with(99, "999")
-
-    def test_skips_existing_barcode_from_storage_api(self):
-        storage = self._storage()
-        storage.get_product_by_barcode.return_value = {"id": 5, "name": "Existing"}
-        product = Product(name="Maito", ean="555")
-        result = sync_product(
-            product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=True, known_barcodes=set()
-        )
-        assert result is False
-        storage.create_product.assert_not_called()
-
-    def test_create_product_error_raises(self):
-        storage = self._storage()
-        storage.create_product.side_effect = StorageAPIError("fail")
-        product = Product(name="Voi", ean="777")
-        with pytest.raises(StorageAPIError):
-            sync_product(
-                product, storage,
-                location_id=None, quantity_unit_id=None,
-                skip_existing=False, known_barcodes=set()
-            )
-
-    def test_add_barcode_error_deletes_product_and_raises(self):
-        storage = self._storage()
-        storage.add_barcode.side_effect = StorageAPIError("fail")
-        product = Product(name="Voi", ean="777")
-        known = set()
-        with pytest.raises(StorageAPIError):
-            sync_product(
-                product, storage,
-                location_id=None, quantity_unit_id=None,
-                skip_existing=False, known_barcodes=known
-            )
-        storage.delete_product.assert_called_once_with(99)
-        assert known == set()
-
-    @patch("main.requests.get")
-    def test_uploads_image_when_enabled(self, mock_get):
-        mock_resp = MagicMock()
-        mock_resp.content = b"\xff\xd8image-data"
-        mock_resp.headers = {"Content-Type": "image/jpeg"}
-        mock_resp.raise_for_status.return_value = None
-        mock_get.return_value = mock_resp
-
-        storage = self._storage()
+    def test_no_image_upload_when_disabled(self, world):
         product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
-        sync_product(
-            product, storage,
-            location_id=1, quantity_unit_id=1,
-            skip_existing=False, known_barcodes=set(),
-            upload_images=True,
-        )
-        storage.upload_product_image.assert_called_once_with(
-            99, "123.jpg", b"\xff\xd8image-data", content_type="image/jpeg"
-        )
 
-    @patch("main.requests.get")
-    def test_no_image_upload_when_disabled(self, mock_get):
-        storage = self._storage()
-        product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
-        sync_product(
-            product, storage,
-            location_id=1, quantity_unit_id=1,
-            skip_existing=False, known_barcodes=set(),
-            upload_images=False,
-        )
-        mock_get.assert_not_called()
-        storage.upload_product_image.assert_not_called()
-
-    @patch("main.requests.get")
-    def test_image_download_failure_does_not_break_sync(self, mock_get):
-        import requests as req
-        mock_get.side_effect = req.RequestException("timeout")
-
-        storage = self._storage()
-        product = Product(name="Maito", ean="123", image_url="https://img.example.com/photo.jpg")
-        result = sync_product(
-            product, storage,
-            location_id=1, quantity_unit_id=1,
-            skip_existing=False, known_barcodes=set(),
-            upload_images=True,
-        )
-        assert result is True
-        storage.create_product.assert_called_once()
-        storage.upload_product_image.assert_not_called()
+        assert sync_product(product, world.storage, upload_images=False) == 1
+        assert world.downloads == []
+        assert world.storage.products[1]["picture_filename"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +53,17 @@ class TestSyncProduct:
 
 class TestImageExtension:
     def test_known_mime_types(self):
-        from main import _image_extension
+        from scraper.storage_client import _image_extension
         assert _image_extension("image/jpeg", "") == ".jpg"
         assert _image_extension("image/png", "") == ".png"
         assert _image_extension("image/webp", "") == ".webp"
 
     def test_unknown_mime_falls_back_to_url(self):
-        from main import _image_extension
+        from scraper.storage_client import _image_extension
         assert _image_extension("application/octet-stream", "https://example.com/img.png?w=100") == ".png"
 
     def test_unknown_mime_no_ext_defaults_to_jpg(self):
-        from main import _image_extension
+        from scraper.storage_client import _image_extension
         assert _image_extension("application/octet-stream", "https://example.com/img") == ".jpg"
 
 
@@ -242,7 +133,7 @@ class TestDiscoverProducts:
         ]
         storage_instance.get_product_by_barcode.side_effect = [
             None,  # sync_product check
-            {"id": 99, "name": "Maito"},  # post-creation lookup
+            None,  # create_in_storage check
         ]
         storage_instance.create_product.return_value = 99
 
@@ -352,8 +243,8 @@ class TestDiscoverProducts:
             {"id": 77, "barcode": "6414893095588", "source": "scanner"},
         ]
         storage_instance.get_product_by_barcode.side_effect = [
-            None,
-            {"id": 88, "name": "Kotimaista luomukananmunat M6"},
+            None,  # sync_product check
+            None,  # create_in_storage check
         ]
         storage_instance.create_product.return_value = 88
 
@@ -381,7 +272,7 @@ class TestDiscoverProducts:
         mock_sk.assert_called_once_with("6414893095588")
         storage_instance.create_product.assert_called_once()
         call_args = storage_instance.create_product.call_args
-        assert call_args[1]["name"] == "Kotimaista luomukananmunat M6"
+        assert call_args[0][0] == "Kotimaista luomukananmunat M6"
         storage_instance.add_stock.assert_called_once_with(88, amount=1.0)
         storage_instance.update_barcode_queue_item.assert_called_once_with(
             77, status="done", result_product_id=88,
@@ -1119,7 +1010,7 @@ class TestAvailabilitySweep:
         s2.check_store_availability.return_value = [
             StoreAvailability(store_id="K532", available=False),
         ]
-        _write_availability(storage, 42, _collect_availability("6410405082657", [s1, s2]))
+        write_availability(storage, 42, _collect_availability("6410405082657", [s1, s2]))
         storage.set_product_availability.assert_called_once_with(42, [
             {"store_id": "N110", "available": True,
              "price": 2.35, "price_currency": "EUR"},
@@ -1139,7 +1030,7 @@ class TestAvailabilitySweep:
         s2.check_store_availability.return_value = [
             StoreAvailability(store_id="N110", available=False),
         ]
-        _write_availability(storage, 1, _collect_availability("123", [s1, s2]))
+        write_availability(storage, 1, _collect_availability("123", [s1, s2]))
         entries = storage.set_product_availability.call_args[0][1]
         assert entries == [{"store_id": "N110", "available": True,
                             "price": 2.0, "price_currency": "EUR"}]
@@ -1149,14 +1040,14 @@ class TestAvailabilitySweep:
         storage = MagicMock()
         scraper = MagicMock()
         scraper.check_store_availability.return_value = []
-        _write_availability(storage, 1, _collect_availability("123", [scraper]))
+        write_availability(storage, 1, _collect_availability("123", [scraper]))
         storage.set_product_availability.assert_not_called()
 
     def test_empty_ean_or_scrapers_noop(self):
         from unittest.mock import MagicMock
         storage = MagicMock()
-        _write_availability(storage, 1, _collect_availability("", [MagicMock()]))
-        _write_availability(storage, 1, _collect_availability("123", []))
+        write_availability(storage, 1, _collect_availability("", [MagicMock()]))
+        write_availability(storage, 1, _collect_availability("123", []))
         storage.set_product_availability.assert_not_called()
 
     def test_scraper_exception_skipped_storage_error_swallowed(self):
@@ -1173,7 +1064,7 @@ class TestAvailabilitySweep:
             StoreAvailability(store_id="N110", available=True),
         ]
         # Must not raise despite both failure modes.
-        _write_availability(storage, 1, _collect_availability("123", [bad, good]))
+        write_availability(storage, 1, _collect_availability("123", [bad, good]))
         storage.set_product_availability.assert_called_once()
 
 
@@ -1265,7 +1156,7 @@ class TestScanWhileKrApiFails:
         storage.get_product_by_barcode.side_effect = [
             None,  # already-known check
             None,  # sync_product check
-            {"id": 99, "name": "Pirkka kevytmaito 1l"},  # post-creation lookup
+            None,  # create_in_storage check
         ]
         storage.create_product.return_value = 99
 
@@ -1345,15 +1236,13 @@ class TestSyncProductSweepPricing:
 
         result = sync_product(
             product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=False, known_barcodes=set(),
             price_scrapers=[price_scraper],
             avail_scrapers=[avail_scraper],
         )
 
-        assert result is True
+        assert result == 123
         storage.create_product.assert_called_once_with(
-            name="Maito", description="", location_id=None, unit_id=None,
+            "Maito", description="",
             unit_price=3.49, unit_price_currency="EUR",
         )
         # Price came from the availability sweep — _lookup_price's
@@ -1382,16 +1271,14 @@ class TestSyncProductSweepPricing:
 
         result = sync_product(
             product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=False, known_barcodes=set(),
             price_scrapers=[price_scraper],
             avail_scrapers=[avail_scraper],
         )
 
-        assert result is True
+        assert result == 123
         price_scraper.search.assert_called_once()
         storage.create_product.assert_called_once_with(
-            name="Maito", description="", location_id=None, unit_id=None,
+            "Maito", description="",
             unit_price=2.10, unit_price_currency="EUR",
         )
 
@@ -1404,15 +1291,13 @@ class TestSyncProductSweepPricing:
 
         sync_product(
             product, storage,
-            location_id=None, quantity_unit_id=None,
-            skip_existing=False, known_barcodes=set(),
             price_scrapers=[price_scraper],
             avail_scrapers=[],
         )
 
         price_scraper.search.assert_called_once()
         storage.create_product.assert_called_once_with(
-            name="Maito", description="", location_id=None, unit_id=None,
+            "Maito", description="",
             unit_price=1.99, unit_price_currency="EUR",
         )
 
@@ -1446,7 +1331,7 @@ class TestDiscoverSingleBarcode:
         storage.get_product_by_barcode.side_effect = [
             None,  # already-known check
             None,  # sync_product check
-            {"id": 99, "name": "Pirkka kevytmaito 1l"},  # post-creation lookup
+            None,  # create_in_storage check
         ]
         storage.create_product.return_value = 99
         result = self._run(MockStorage, MockScraper)

@@ -5,7 +5,8 @@ Exposes two agent-callable services:
 * ``scraper.search_products`` (SupportsResponse.ONLY) — wraps the same
   K-Ruoka product search used by the add-on's ``/api/search``.
 * ``scraper.add_product`` (SupportsResponse.OPTIONAL) — creates a found
-  product in HA-Storage (product → optional barcode → optional image).
+  product in HA-Storage with the library's ``create_in_storage``, the same
+  sequence the add-on uses.
 
 The integration uses the vendored ``scraperlib`` subpackage bundled inside
 ``custom_components/scraper/scraperlib/`` so it works on a clean HACS install
@@ -48,7 +49,6 @@ from .const import DOMAIN, CONF_STORAGE_URL, CONF_STORE_ID
 
 _LOGGER = logging.getLogger(__name__)
 
-# Repo root is three levels up: custom_components/scraper/ -> repo root
 SERVICE_SEARCH_PRODUCTS = "search_products"
 SERVICE_ADD_PRODUCT = "add_product"
 
@@ -83,85 +83,6 @@ def shape_search_results(raw: list[Any]) -> list[dict[str, str]]:
     return shaped
 
 
-# ---------------------------------------------------------------------------
-# add_product orchestration (pure sequencing; I/O injected via fetch_image)
-# ---------------------------------------------------------------------------
-
-
-def add_product_sync(
-    storage: Any,
-    *,
-    name: str,
-    ean: str,
-    description: str,
-    image_url: str,
-    fetch_image: Any,
-) -> int:
-    """Create a product in Storage and return its id.
-
-    Sequence: ``create_product`` → (optional) ``add_barcode`` →
-    (optional) download + ``upload_product_image``.
-
-    ``fetch_image`` is a callable ``(url) -> (filename, bytes, content_type)``
-    or ``None`` when the image could not be retrieved. It is only invoked when
-    ``image_url`` is non-empty. Injecting it keeps this function free of network
-    code and unit-testable.
-    """
-    product_id = storage.create_product(name=name, description=description)
-
-    if ean:
-        storage.add_barcode(product_id, barcode=ean)
-
-    if image_url:
-        fetched = fetch_image(image_url)
-        if fetched is not None:
-            filename, image_bytes, content_type = fetched
-            storage.upload_product_image(
-                product_id,
-                filename,
-                image_bytes,
-                content_type=content_type,
-            )
-
-    return int(product_id)
-
-
-def _download_image(url: str) -> tuple[str, bytes, str] | None:
-    """Download *url* and return ``(filename, bytes, content_type)`` or ``None``.
-
-    Uses ``requests`` (the same HTTP library the scraper package already ships)
-    so the whole add_product flow stays in one synchronous executor job.
-    Returns ``None`` on any download failure so product creation still succeeds.
-    """
-    import os
-    from urllib.parse import urlparse
-
-    import requests  # noqa: PLC0415
-
-    try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-    except requests.RequestException as exc:  # pragma: no cover - network
-        _LOGGER.warning("Could not download product image %s: %s", url, exc)
-        return None
-
-    content_type = resp.headers.get("Content-Type", "").split(";")[0].strip()
-    if not content_type:
-        content_type = "application/octet-stream"
-
-    filename = os.path.basename(urlparse(url).path) or "product_image"
-    if "." not in filename:
-        ext = {
-            "image/jpeg": ".jpg",
-            "image/png": ".png",
-            "image/webp": ".webp",
-            "image/gif": ".gif",
-        }.get(content_type, "")
-        filename = f"{filename}{ext}"
-
-    return filename, resp.content, content_type
-
-
 def _entry(hass: HomeAssistant) -> ConfigEntry:
     """Return the single scraper config entry, raising if unconfigured."""
     entries = hass.config_entries.async_entries(DOMAIN)
@@ -180,18 +101,28 @@ def _search_sync(store_id: str, query: str, max_products: int):
 
 
 def _add_product_sync_worker(storage_url: str, data: dict[str, Any]) -> int:
-    """Construct a StorageClient and run the add_product sequence."""
-    from .scraperlib.storage_client import StorageClient  # noqa: PLC0415
-
-    storage = StorageClient(base_url=storage_url)
-    return add_product_sync(
-        storage,
-        name=data["name"],
-        ean=data.get("ean", "") or "",
-        description=data.get("description", "") or "",
-        image_url=data.get("image_url", "") or "",
-        fetch_image=_download_image,
+    """Create the product in Storage the way the add-on does; return its id."""
+    from .scraperlib.scraper import Product  # noqa: PLC0415
+    from .scraperlib.storage_client import (  # noqa: PLC0415
+        StorageAPIError,
+        StorageClient,
+        create_in_storage,
     )
+
+    ean = data.get("ean", "") or ""
+    product_id = create_in_storage(
+        StorageClient(base_url=storage_url),
+        Product(
+            name=data["name"],
+            ean=ean,
+            description=data.get("description", "") or "",
+            image_url=data.get("image_url", "") or "",
+        ),
+        ean=ean,
+    )
+    if product_id is None:
+        raise StorageAPIError(f"Barcode {ean} already belongs to a product")
+    return product_id
 
 
 _SEARCH_SCHEMA = vol.Schema(

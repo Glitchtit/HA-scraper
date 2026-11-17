@@ -257,8 +257,6 @@ def _build_args(opts: dict[str, Any]) -> argparse.Namespace:
     return argparse.Namespace(
         store=opts.get("store_id", ""),
         storage_url=_resolve_storage_url(opts),
-        location_id=None,
-        quantity_unit_id=None,
         upload_images=opts.get("upload_images", True),
         searxng_url=opts.get("searxng_url", ""),
     )
@@ -373,22 +371,18 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
 
     storage = StorageClient(base_url=storage_url)
     upload_images = opts.get("upload_images", True)
-    # Price lookups use the kr-api backend (CF bypass required); empty list
-    # when no FlareSolverr / cf_clearance is configured.
+    # Price lookups use the kr-api backend; an empty list without FlareSolverr.
     store_ids = [s.strip() for s in str(opts.get("store_id", "")).split(",") if s.strip()]
     price_scrapers = _main._make_price_scrapers(store_ids)
 
-    # Sweep per-store availability for products added here too, same as the
-    # discover and update flows.  Register stores once and build the
-    # sweep-scraper list up front (best-effort; skipped entirely when no
-    # stores are configured).
+    # Per-store availability is swept for products added here too, same as
+    # the discover and update flows: through kr-api when it is available
+    # (its sweep carries the price), otherwise through GraphQL.
     avail_scrapers: list = []
     if store_ids:
-        avail_scrapers = list(price_scrapers)
-        if not avail_scrapers:
-            avail_scrapers = [
-                _main.KRuokaScraper(store_id=str(opts.get("store_id", "")))
-            ]
+        avail_scrapers = list(price_scrapers) or [
+            _main.KRuokaScraper(store_id=str(opts.get("store_id", "")))
+        ]
         _main._register_stores(storage, store_ids, price_scrapers)
 
     added = 0
@@ -400,69 +394,29 @@ def _handle_add_products(body: dict[str, Any]) -> dict[str, Any]:
             if not name:
                 continue
             ean = str(item.get("ean", "")).strip()
-            description = str(item.get("description", "")).strip()
-            image_url = str(item.get("image_url", "")).strip()
+            # HA-storage files a product it finds for a generic item directly
+            # under it (which also skips its auto-placement).
+            placement = {
+                key: item[key] for key in ("parent_id", "product_group_id")
+                if isinstance(item.get(key), int) and not isinstance(item.get(key), bool)
+            }
             try:
-                # Skip if a product with this barcode already exists.
-                if ean and storage.get_product_by_barcode(ean):
+                product_id = _main.sync_product(
+                    Product(
+                        name=name,
+                        ean=ean,
+                        description=str(item.get("description", "")).strip(),
+                        image_url=str(item.get("image_url", "")).strip(),
+                    ),
+                    storage,
+                    upload_images=upload_images,
+                    price_scrapers=price_scrapers,
+                    avail_scrapers=avail_scrapers,
+                    **placement,
+                )
+                if product_id is None:
                     logger.info("Skipped '%s' – barcode %s already exists.", name, ean)
                     continue
-
-                # Sweep per-store availability once up front so its entries
-                # can also supply the creation price below — avoids a
-                # second Cloudflare-bypassed kr-api query for the same EAN.
-                # Best-effort: sweep failures never fail the add request.
-                avail_entries: list[dict] = []
-                if ean:
-                    try:
-                        avail_entries = _main._collect_availability(ean, avail_scrapers)
-                    except Exception as exc:
-                        logger.debug("Availability sweep failed for %s: %s", ean, exc)
-                        avail_entries = []
-
-                price_kwargs: dict = {}
-                price = _main._price_from_entries(avail_entries) if ean else None
-                if price is None and ean and price_scrapers:
-                    price = _main._lookup_price(price_scrapers, ean)
-                if price is not None:
-                    price_kwargs["unit_price"] = price
-                    price_kwargs["unit_price_currency"] = "EUR"
-
-                # HA-storage files a product it finds for a generic item
-                # directly under it (which also skips its auto-placement).
-                create_kwargs = dict(price_kwargs)
-                for key in ("parent_id", "product_group_id"):
-                    value = item.get(key)
-                    if isinstance(value, int) and not isinstance(value, bool):
-                        create_kwargs[key] = value
-
-                product_id = storage.create_product(
-                    name,
-                    description=description,
-                    location_id=None,
-                    unit_id=None,
-                    **create_kwargs,
-                )
-                if ean:
-                    storage.add_barcode(product_id, ean)
-                if price is not None:
-                    logger.info("  → price %.2f EUR.", price)
-                if upload_images and image_url:
-                    product = Product(
-                        name=name, ean=ean, description=description,
-                        image_url=image_url,
-                    )
-                    _main._upload_product_image(product, storage, product_id)
-                # Record per-store assortment availability (best-effort)
-                # using the entries already collected above — no second
-                # sweep. Failures never fail the add request.
-                if ean:
-                    try:
-                        _main._write_availability(storage, product_id, avail_entries)
-                    except Exception as exc:
-                        logger.debug(
-                            "Availability write failed for product %d: %s", product_id, exc
-                        )
                 logger.info("Added '%s' (id=%d, ean=%s).", name, product_id, ean or "–")
                 added += 1
                 added_ids.append(product_id)
