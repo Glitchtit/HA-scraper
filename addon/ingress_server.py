@@ -19,7 +19,10 @@ POST /api/add_products  Add selected products to the Storage database (an item m
                         carry parent_id / product_group_id to file it under a generic item)
 
 All POST endpoints return ``{"task_id": "...", "status": "running"}`` immediately.
-The frontend polls ``GET /api/task/{id}`` until the task completes.
+The frontend polls ``GET /api/task/{id}`` until the task completes; while it
+runs, the task carries the log lines so far in ``logs``.  Update and queue
+discover run one at a time (another one gets 409); searches, single scans and
+adds run alongside them.
 """
 
 from __future__ import annotations
@@ -43,7 +46,9 @@ _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 if _APP_DIR not in sys.path:
     sys.path.insert(0, _APP_DIR)
 
-# Serialise long-running operations so only one runs at a time.
+# Update and queue discover run one at a time.  Searches, single scans and
+# adds run alongside them: the kr-api throttle, circuit breaker and
+# Cloudflare solution are process-wide and locked in the library.
 _op_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
@@ -206,7 +211,9 @@ def _resolve_storage_url(opts: dict[str, Any]) -> str:
 
 
 class _CapturingHandler(logging.Handler):
-    """Logging handler that stores records for returning to the frontend."""
+    """Logging handler that stores the records logged by the thread that
+    created it, for returning to the frontend.  Operations run side by side,
+    each in its own thread; each task gets only its own lines."""
 
     _FORMATTER = logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -217,8 +224,11 @@ class _CapturingHandler(logging.Handler):
         super().__init__(level=logging.DEBUG)
         self.setFormatter(self._FORMATTER)
         self.records: list[dict[str, str]] = []
+        self._thread = threading.get_ident()
 
     def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread:
+            return
         self.records.append(
             {
                 "level": record.levelname,
@@ -227,23 +237,40 @@ class _CapturingHandler(logging.Handler):
         )
 
 
+_capture_count = 0
+_capture_levels: list[tuple[logging.Logger, int]] = []
+_capture_lock = threading.Lock()
+
+
 @contextmanager
 def _capture_logs() -> Generator[list[dict[str, str]], None, None]:
-    """Temporarily attach a capturing handler to scraper loggers."""
+    """Temporarily attach a capturing handler to scraper loggers.
+
+    The loggers are lowered to DEBUG while any capture is active and get
+    their own levels back when the last one ends.
+    """
+    global _capture_count
     cap = _CapturingHandler()
     targets = [logging.getLogger(ns) for ns in _CAPTURE_NAMESPACES]
-    saved: list[tuple[logging.Logger, int]] = []
-    for lgr in targets:
-        saved.append((lgr, lgr.level))
-        lgr.addHandler(cap)
-        if lgr.level == logging.NOTSET or lgr.level > logging.DEBUG:
-            lgr.setLevel(logging.DEBUG)
+    with _capture_lock:
+        if _capture_count == 0:
+            _capture_levels[:] = [(lgr, lgr.level) for lgr in targets]
+            for lgr in targets:
+                if lgr.level == logging.NOTSET or lgr.level > logging.DEBUG:
+                    lgr.setLevel(logging.DEBUG)
+        _capture_count += 1
+        for lgr in targets:
+            lgr.addHandler(cap)
     try:
         yield cap.records
     finally:
-        for lgr, old_level in saved:
-            lgr.removeHandler(cap)
-            lgr.setLevel(old_level)
+        with _capture_lock:
+            for lgr in targets:
+                lgr.removeHandler(cap)
+            _capture_count -= 1
+            if _capture_count == 0:
+                for lgr, old_level in _capture_levels:
+                    lgr.setLevel(old_level)
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +759,7 @@ _HTML = """\
     });
   }
 
-  function pollTask(taskId) {
+  function pollTask(taskId, onProgress) {
     return new Promise(function (resolve, reject) {
       var iv = setInterval(function () {
         fetch("api/task/" + taskId)
@@ -744,6 +771,8 @@ _HTML = """\
             if (data.status && data.status !== "running") {
               clearInterval(iv);
               resolve(data);
+            } else if (onProgress && data.logs && data.logs.length) {
+              onProgress(data.logs[data.logs.length - 1].message);
             }
           })
           .catch(function (err) {
@@ -902,7 +931,12 @@ _HTML = """\
     actionStat.innerHTML = '<span class="loader"></span>Running ' + esc(label) + ' \\u2026';
 
     api("POST", "api/" + endpoint)
-      .then(function (resp) { return pollTask(resp.task_id); })
+      .then(function (resp) {
+        return pollTask(resp.task_id, function (line) {
+          actionStat.innerHTML = '<span class="loader"></span>Running ' + esc(label) +
+            ' \\u2026 ' + esc(line);
+        });
+      })
       .then(function (data) {
         if (data.logs && data.logs.length) appendLogs(label, data.logs);
 
@@ -1035,9 +1069,12 @@ class _Handler(BaseHTTPRequestHandler):
                 self._json_response({"error": "Invalid JSON"}, status=400)
                 return
 
-        # Prevent concurrent long-running operations.
-        acquired = _op_lock.acquire(blocking=False)
-        if not acquired:
+        # Update and queue discover are single-flight; everything else runs
+        # alongside them.
+        single_flight = handler is _handle_update or (
+            handler is _handle_discover and not str(body.get("barcode", "")).strip()
+        )
+        if single_flight and not _op_lock.acquire(blocking=False):
             self._json_response(
                 {
                     "success": False,
@@ -1050,19 +1087,23 @@ class _Handler(BaseHTTPRequestHandler):
         # Fire-and-poll: run handler in a background thread, return task_id
         # immediately so Cloudflare never times out.
         task_id = _next_task_id()
-        _tasks[task_id] = {"status": "running"}
+        _tasks[task_id] = {"status": "running", "logs": []}
 
         def _run() -> None:
             try:
-                if handler is _handle_search or handler is _handle_add_products or handler is _handle_discover:
-                    result = handler(body)
-                else:
-                    result = handler()
+                # The running task shows the lines logged so far.
+                with _capture_logs() as live:
+                    _tasks[task_id] = {"status": "running", "logs": live}
+                    if handler is _handle_update:
+                        result = handler()
+                    else:
+                        result = handler(body)
             except Exception as exc:
                 logger.exception("API handler %s failed", path)
                 result = {"success": False, "error": str(exc)}
             finally:
-                _op_lock.release()
+                if single_flight:
+                    _op_lock.release()
             result["status"] = "done"
             _tasks[task_id] = result
 

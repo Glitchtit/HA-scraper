@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from io import BytesIO
 from pathlib import Path
@@ -630,6 +631,75 @@ class TestHTTPHandler:
         assert status2 == 200
         assert result["success"] is False
         assert "No products" in result["error"]
+
+
+class TestSingleFlight:
+    """Only Update and queue discover take the long-operation lock; scans,
+    searches and adds are served while one of them runs."""
+
+    _make_handler = TestHTTPHandler._make_handler
+    _wait_for_task = TestHTTPHandler._wait_for_task
+
+    @pytest.fixture
+    def running_update(self, ingress_mod: ModuleType, world, options):
+        world.kruoka.catalogue = {"K532": {EAN: "Pirkka kevytmaito 1l"}}
+        release = threading.Event()
+
+        def slow_update(args):
+            logging.getLogger("main").info("Updating product 1 of 2")
+            release.wait(5)
+            return 0
+
+        with mock.patch("main._update_products", slow_update):
+            status, body = self._make_handler(ingress_mod, "POST", "/api/update")
+            assert status == 200
+            yield body["task_id"]
+            release.set()
+            assert self._wait_for_task(ingress_mod, body["task_id"])["success"] is True
+
+    def _task_now(self, ingress_mod, task_id):
+        return self._make_handler(ingress_mod, "GET", f"/api/task/{task_id}")[1]
+
+    def test_running_task_publishes_its_log_lines(self, ingress_mod, running_update):
+        deadline = time.monotonic() + 5
+        while not self._task_now(ingress_mod, running_update).get("logs"):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        task = self._task_now(ingress_mod, running_update)
+        assert task["status"] == "running"
+        assert "Updating product 1 of 2" in task["logs"][0]["message"]
+
+    def test_second_update_and_queue_discover_get_409(self, ingress_mod, running_update):
+        assert self._make_handler(ingress_mod, "POST", "/api/update")[0] == 409
+        assert self._make_handler(ingress_mod, "POST", "/api/discover")[0] == 409
+        assert self._make_handler(ingress_mod, "POST", "/api/discover", body={})[0] == 409
+
+    def test_search_is_served_during_update(self, ingress_mod, running_update):
+        status, body = self._make_handler(
+            ingress_mod, "POST", "/api/search", body={"query": "kevytmaito"})
+
+        assert status == 200
+        result = self._wait_for_task(ingress_mod, body["task_id"])
+        assert [p["ean"] for p in result["products"]] == [EAN]
+
+    def test_single_scan_is_served_during_update(self, ingress_mod, world, running_update):
+        status, body = self._make_handler(
+            ingress_mod, "POST", "/api/discover", body={"barcode": EAN})
+
+        assert status == 200
+        result = self._wait_for_task(ingress_mod, body["task_id"])
+        assert result["success"] is True
+        assert result["product_id"] == world.storage.barcodes[EAN]
+        # The scan's log is its own, not the Update's.
+        assert not any("Updating product" in line["message"] for line in result["logs"])
+
+    def test_add_products_is_served_during_update(self, ingress_mod, running_update):
+        status, body = self._make_handler(
+            ingress_mod, "POST", "/api/add_products",
+            body={"products": [{"name": "Pirkka kevytmaito 1l", "ean": EAN}]})
+
+        assert status == 200
+        assert self._wait_for_task(ingress_mod, body["task_id"])["added"] == 1
 
 
 # ---------------------------------------------------------------------------
