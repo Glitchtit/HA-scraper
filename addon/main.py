@@ -289,18 +289,26 @@ def _lookup_price(price_scrapers: list[KRuokaScraper], ean: str) -> float | None
     return None
 
 
+# Store ids this process has already named in Storage (names do not change).
+_registered_stores: set[str] = set()
+
+
 def _register_stores(
     storage: StorageClient,
     store_ids: list[str],
     name_scrapers: list[KRuokaScraper],
 ) -> None:
-    """Register every configured store in Storage with a friendly name.
+    """Give every configured store its friendly name in Storage, once.
 
-    Names come from the kr-api store-search (first scraper that resolves
-    wins); without a CF bypass the raw store ID is used as the name.
+    Names come from kr-api ``store/{id}`` (first scraper that resolves wins).
+    A store whose name cannot be resolved is left alone — Storage registers
+    it under its raw ID on the first availability write and keeps any name
+    it already has — and is tried again on the next operation.
     Best-effort: never raises.
     """
     for sid in store_ids:
+        if sid in _registered_stores:
+            continue
         name: str | None = None
         for scraper in name_scrapers:
             try:
@@ -310,8 +318,11 @@ def _register_stores(
                 name = None
             if name:
                 break
+        if not name:
+            continue
         try:
-            storage.upsert_store(sid, name or sid)
+            storage.upsert_store(sid, name)
+            _registered_stores.add(sid)
         except StorageAPIError as exc:
             logger.warning("Could not register store %s in Storage: %s", sid, exc)
 
@@ -1143,8 +1154,13 @@ def _load_price_state() -> dict[str, float]:
 
 def _save_price_state(state: dict[str, float]) -> None:
     """Best-effort persist — never raises."""
+    path = _price_state_path()
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        _price_state_path().write_text(json.dumps(state))
+        # Written after every refreshed product, so replace atomically: a run
+        # killed mid-write must not leave a truncated file.
+        tmp.write_text(json.dumps(state))
+        os.replace(tmp, path)
     except OSError:
         pass
 
@@ -1182,8 +1198,8 @@ def _update_products(args: argparse.Namespace) -> int:
     """Update existing Storage products with names and images from K-Ruoka / S-kaupat.
 
     For each product in Storage that has at least one barcode, search K-Ruoka
-    by EAN.  If not found, try S-kaupat.  When a match is found, update the
-    product name (and optionally description) and upload the product image.
+    by EAN.  If not found, try S-kaupat.  When a match is found, fill in a
+    placeholder name, update the description and upload the product image.
 
     Returns 0 on success, 1 if any errors occurred.
     """
@@ -1235,8 +1251,11 @@ def _update_products(args: argparse.Namespace) -> int:
     now = time.time()
     price_refresh_ids: set[int] = set()
     if price_scrapers:
+        # Only a product with a barcode can be priced; the others must not
+        # take budget slots.
         price_refresh_ids, deferred = _select_price_refresh_ids(
-            products, price_state, now,
+            [p for p in products if pid_to_eans.get(int(p["id"]))],
+            price_state, now,
         )
         if deferred:
             logger.info(
@@ -1261,9 +1280,6 @@ def _update_products(args: argparse.Namespace) -> int:
         # Try each EAN until we find a match, trying all configured stores.
         found: Product | None = None
         matched_ean = ""
-        # SearXNG web-search names are low-confidence: they may fill in
-        # placeholder names but must never overwrite an existing real name.
-        name_low_confidence = False
         for ean in eans:
             # K-Ruoka first — try each store.
             for scraper in scrapers:
@@ -1309,7 +1325,6 @@ def _update_products(args: argparse.Namespace) -> int:
                             image_url=sx.image_url,
                         )
                         matched_ean = ean
-                        name_low_confidence = True
                         break
                 except SearXNGError as exc:
                     logger.debug("  SearXNG lookup failed for %s: %s", ean, exc)
@@ -1324,27 +1339,22 @@ def _update_products(args: argparse.Namespace) -> int:
             avail_entries = _collect_availability(avail_ean, avail_scrapers)
             _write_availability(storage, pid, avail_entries)
 
-        # Consume this product's budget slot even if it isn't found online,
-        # so unfound products rotate out instead of re-selecting every run.
-        if pid in price_refresh_ids:
-            price_state[str(pid)] = now
-
         if found is None:
+            # Nothing to price: stamp it anyway, so unfound products rotate
+            # out instead of re-selecting every run.
+            if pid in price_refresh_ids:
+                price_state[str(pid)] = now
+                _save_price_state(price_state)
             logger.debug("  Product %d ('%s') not found online – skipping.", pid, current_name)
             skipped += 1
             continue
 
         # Update product in Storage.
         update_fields: dict = {}
-        if found.name and found.name != current_name:
-            if name_low_confidence and not _is_placeholder_name(current_name):
-                logger.debug(
-                    "  Keeping existing name for product %d ('%s'); "
-                    "low-confidence SearXNG name '%s' ignored.",
-                    pid, current_name, found.name,
-                )
-            else:
-                update_fields["name"] = found.name
+        # Only a placeholder name is replaced: a real one may be a rename made
+        # in Storage, by hand or by its optimizer, and must not be undone.
+        if found.name and found.name != current_name and _is_placeholder_name(current_name):
+            update_fields["name"] = found.name
         if found.description:
             update_fields["description"] = found.description
 
@@ -1355,8 +1365,15 @@ def _update_products(args: argparse.Namespace) -> int:
         price = found.price
         if price is None:
             price = _price_from_entries(avail_entries)
+        price_answered = True
         if price is None and price_scrapers and pid in price_refresh_ids:
+            failed_before = [s.failed_requests for s in price_scrapers]
             price = _lookup_price(price_scrapers, matched_ean)
+            # No price and a failed request (rate limit, 403, breaker open)
+            # is no answer: leave the product for the next run.
+            price_answered = price is not None or failed_before == [
+                s.failed_requests for s in price_scrapers
+            ]
         if price is not None and storage_product.get("unit_price") != price:
             update_fields["unit_price"] = price
             update_fields["unit_price_currency"] = "EUR"
@@ -1380,13 +1397,19 @@ def _update_products(args: argparse.Namespace) -> int:
         else:
             logger.debug("  Product %d ('%s') already up to date.", pid, current_name)
 
+        # kr-api answered and Storage took the result: the price is fresh.
+        # Saved per product, so a run that dies later does not spend the
+        # same budget again.
+        if pid in price_refresh_ids and price_answered:
+            price_state[str(pid)] = now
+            _save_price_state(price_state)
+
         # Upload image if available.
         if found.image_url and args.upload_images:
             _upload_product_image(found, storage, pid)
 
         updated += 1
 
-    _save_price_state(price_state)
     logger.info(
         "--update complete: updated: %d  skipped: %d  errors: %d",
         updated, skipped, errors,

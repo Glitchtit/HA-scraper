@@ -1472,3 +1472,104 @@ class TestCfClearancePersistence:
         monkeypatch.setenv("SCRAPER_STATE_DIR", "/nonexistent/nope")
         _save_cached_cf({"cf_clearance": "x"}, "UA")  # must not raise
         assert _load_cached_cf() is None
+
+
+# ---------------------------------------------------------------------------
+# CF clearance expiry in memory and on HTTP 403
+# ---------------------------------------------------------------------------
+
+def _make_403_response() -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 403
+    resp.headers = {}
+    resp.raise_for_status.side_effect = requests.HTTPError(
+        "403 Client Error: Forbidden", response=resp
+    )
+    return resp
+
+
+class TestCfClearanceExpiry:
+    """The add-on is one long-lived process, so the in-memory clearance has
+    to expire like the disk copy and be replaced when Cloudflare rejects it."""
+
+    @pytest.fixture(autouse=True)
+    def _flaresolverr(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        monkeypatch.setenv("FLARESOLVERR_URL", "http://fs:8191")
+        monkeypatch.delenv("CF_CLEARANCE", raising=False)
+        monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
+
+        # Each solve hands out the next clearance: c1, c2, ...
+        self.solves: list[str] = []
+
+        def solve(site_url):
+            self.solves.append(f"c{len(self.solves) + 1}")
+            return {"cf_clearance": self.solves[-1]}, "UA"
+
+        monkeypatch.setattr("scraper.scraper._resolve_cf_flaresolverr", solve)
+
+        # kr-api accepts only the clearances in self.accepted.
+        self.accepted: set[str] = set()
+        self.posts: list[str] = []
+
+        def build(cookies, user_agent):
+            session = MagicMock()
+
+            def post(url, json=None, timeout=None):
+                clearance = cookies["cf_clearance"]
+                self.posts.append(clearance)
+                if clearance in self.accepted:
+                    return _make_ok_response({"result": []})
+                return _make_403_response()
+
+            session.post.side_effect = post
+            return session
+
+        monkeypatch.setattr("scraper.scraper._build_krapi_session", build)
+
+    def _scraper(self) -> KRuokaScraper:
+        return KRuokaScraper(store_id="N110", request_delay=0, use_graphql=False)
+
+    def test_solution_is_reused_within_ttl(self):
+        self._scraper()
+        self._scraper()
+        assert self.solves == ["c1"]
+
+    def test_expired_solution_is_solved_again(self, monkeypatch):
+        monkeypatch.setattr("scraper.scraper._CF_CACHE_TTL", 0.0)
+        self._scraper()
+        second = self._scraper()
+        assert self.solves == ["c1", "c2"]
+        assert second._session.cf_clearance == "c2"
+
+    def test_403_solves_again_and_retries_once(self):
+        from scraper.scraper import _load_cached_cf
+
+        self.accepted = {"c2"}
+        s = self._scraper()
+        assert s._post_json("https://www.k-ruoka.fi/kr-api/x", None) == {"result": []}
+        assert self.posts == ["c1", "c2"]
+        assert self.solves == ["c1", "c2"]
+        # The rejected clearance is gone from disk as well.
+        assert _load_cached_cf() == ({"cf_clearance": "c2"}, "UA")
+
+    def test_second_403_counts_toward_breaker(self):
+        s = self._scraper()
+        for _ in range(3):
+            assert s._post_json("https://www.k-ruoka.fi/kr-api/x", None) is None
+        # One solve to start with, then one more per rejected request.
+        assert self.solves == ["c1", "c2", "c3", "c4"]
+        assert len(self.posts) == 6
+
+        # Breaker is open: no request, no solve.
+        assert s._post_json("https://www.k-ruoka.fi/kr-api/x", None) is None
+        assert len(self.posts) == 6
+        assert len(self.solves) == 4
+
+    def test_scrapers_share_the_new_solution(self):
+        """One solve replaces a rejected clearance for every store's scraper."""
+        self.accepted = {"c2"}
+        first, second = self._scraper(), self._scraper()
+        assert first._post_json("https://www.k-ruoka.fi/kr-api/x", None) is not None
+        assert second._post_json("https://www.k-ruoka.fi/kr-api/x", None) is not None
+        assert self.solves == ["c1", "c2"]

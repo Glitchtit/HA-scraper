@@ -1,3 +1,11 @@
+## 2.6.4
+- Update no longer renames products that already have a real name. A name you changed in Storage, or one Storage tidied up itself, stays as it is; only placeholder names such as "Unknown product (…)" are filled in
+- Price refresh reaches every product again: products without a barcode no longer use up the 200 price lookups of an Update, and a product whose lookup failed (rate limit or Cloudflare block) is tried again on the next Update instead of being skipped for three days
+- Price refresh progress is saved product by product, so an interrupted Update continues where it stopped
+- Prices and store names keep working while the add-on stays running: the Cloudflare clearance is renewed when it expires or is rejected, instead of only after a restart
+- Stores keep their names: a failed name lookup no longer turns a name like "K-Citymarket Pirkkala" back into the store ID, and store names are looked up once instead of on every scan, search and update
+- Search in the Scraper panel looks in every configured store, not only the first one
+
 ## 2.6.3
 - Scanning an unknown barcode reports an error when the product cannot be saved to HA-storage, instead of "Discovered" with nothing saved
 - A product whose barcode cannot be attached is deleted again rather than left behind without a barcode, so later scans no longer create nameless duplicates; queue discovery and search/browse imports now count these as errors

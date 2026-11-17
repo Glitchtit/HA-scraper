@@ -192,9 +192,10 @@ _RATE_LIMIT_BACKOFF = 5.0  # base backoff (s) when no Retry-After header
 # Cloudflare sometimes demands hours via Retry-After; sleeping that long
 # would stall a whole catalogue run, so cap and give up via retries instead.
 _RATE_LIMIT_BACKOFF_MAX = 120.0
-# Circuit breaker: after this many consecutive requests exhaust their 429
-# retries, stop hitting kr-api entirely for the cooldown period.  Hammering
-# an already-throttled edge is what escalates 429s into real blocks.
+# Circuit breaker: after this many consecutive requests are refused for good
+# (429 retries exhausted, or 403 even with a fresh clearance), stop hitting
+# kr-api entirely for the cooldown period.  Hammering an already-throttled
+# edge is what escalates 429s into real blocks.
 _KRAPI_CIRCUIT_THRESHOLD = 3
 _KRAPI_CIRCUIT_COOLDOWN = float(os.environ.get("KRAPI_CIRCUIT_COOLDOWN", "900"))
 
@@ -233,7 +234,7 @@ _krapi_throttle = _KrApiThrottle()
 
 
 class _KrApiCircuit:
-    """Trip after consecutive rate-limit failures; auto-close after cooldown."""
+    """Trip after consecutive refused requests; auto-close after cooldown."""
 
     def __init__(
         self,
@@ -255,7 +256,7 @@ class _KrApiCircuit:
             self._consecutive = 0
 
     def record_failure(self) -> None:
-        """Count one request that exhausted all its 429 retries."""
+        """Count one request that was refused for good (429 or 403)."""
         with self._lock:
             self._consecutive += 1
             if (
@@ -264,9 +265,10 @@ class _KrApiCircuit:
             ):
                 self._open_until = time.monotonic() + self._cooldown
                 logger.warning(
-                    "kr-api rate limited %d times in a row — pausing all "
-                    "kr-api requests for %.0f min (prices/availability from "
-                    "kr-api will be skipped; GraphQL lookups continue).",
+                    "kr-api refused %d requests in a row (rate limit or "
+                    "Cloudflare block) — pausing all kr-api requests for "
+                    "%.0f min (prices/availability from kr-api will be "
+                    "skipped; GraphQL lookups continue).",
                     self._consecutive, self._cooldown / 60,
                 )
 
@@ -509,6 +511,7 @@ def _build_krapi_session(cf_cookies: dict, user_agent: str) -> requests.Session:
 # and would otherwise hit FlareSolverr once per store.
 _cf_solution_lock = threading.Lock()
 _cf_solution: Optional[tuple[dict, str]] = None
+_cf_solution_at = 0.0  # time.time() when _cf_solution was solved
 
 
 def _make_krapi_session() -> requests.Session:
@@ -521,22 +524,35 @@ def _make_krapi_session() -> requests.Session:
     3. curl_cffi TLS impersonation without cookies.
     4. Plain ``requests.Session`` (will likely get HTTP 403).
     """
-    global _cf_solution
+    global _cf_solution, _cf_solution_at
     site_url = f"{_BASE_URL}/kauppa"
     impersonate = os.environ.get("CURL_CFFI_IMPERSONATE", _DEFAULT_IMPERSONATE)
 
     if os.environ.get("FLARESOLVERR_URL"):
         try:
             with _cf_solution_lock:
-                if _cf_solution is None:
-                    _cf_solution = _load_cached_cf()
-                    if _cf_solution is not None:
+                # The add-on is one long-lived process, so the in-memory
+                # solution expires on the same TTL as the disk copy.
+                if (
+                    _cf_solution is not None
+                    and time.time() - _cf_solution_at >= _CF_CACHE_TTL
+                ):
+                    _cf_solution = None
+                solution = _cf_solution
+                if solution is None:
+                    solution = _load_cached_cf()
+                    if solution is not None:
                         logger.info("Reusing cached CF clearance from disk.")
-                if _cf_solution is None:
-                    _cf_solution = _resolve_cf_flaresolverr(site_url)
-                    _save_cached_cf(*_cf_solution)
-                cookies, ua = _cf_solution
-            return _build_krapi_session(cookies, ua)
+                if solution is None:
+                    solution = _cf_solution = _resolve_cf_flaresolverr(site_url)
+                    _cf_solution_at = time.time()
+                    _save_cached_cf(*solution)
+                cookies, ua = solution
+            session = _build_krapi_session(cookies, ua)
+            # Which solution this session carries (the cookie jar itself can
+            # change under us); read by _refresh_krapi_session.
+            session.cf_clearance = cookies.get("cf_clearance")  # type: ignore[attr-defined]
+            return session
         except Exception as exc:
             logger.warning("FlareSolverr bypass failed: %s", exc)
 
@@ -569,6 +585,27 @@ def _make_krapi_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({**_BROWSER_HEADERS, **_api_headers()})
     return session
+
+
+def _refresh_krapi_session(stale: requests.Session) -> requests.Session:
+    """Replace a kr-api session whose clearance Cloudflare rejected (HTTP 403).
+
+    Forgets the shared solution, in memory and on disk, so that a new one is
+    solved — unless another scraper has replaced it already, in which case
+    the newer solution is reused.
+    """
+    global _cf_solution
+    with _cf_solution_lock:
+        current = _cf_solution or _load_cached_cf()
+        if current is None or (
+            current[0].get("cf_clearance") == getattr(stale, "cf_clearance", None)
+        ):
+            _cf_solution = None
+            try:
+                _cf_cache_path().unlink(missing_ok=True)
+            except OSError:
+                pass
+    return _make_krapi_session()
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +647,9 @@ class KRuokaScraper:
         self.store_id = self.store_ids[0]
         self.request_delay = request_delay
         self._use_graphql = use_graphql
+        # kr-api requests that got no answer (error, rate limit, breaker
+        # open): lets a caller tell "no result" from "no answer".
+        self.failed_requests = 0
         if session is not None:
             self._session = session
         elif use_graphql:
@@ -1111,13 +1151,18 @@ class KRuokaScraper:
 
         All kr-api requests share the global :data:`_krapi_throttle` pacing.
         HTTP 429 responses are retried with Retry-After/exponential backoff
-        up to :data:`_RATE_LIMIT_MAX_RETRIES` times; any other failure
-        returns ``None`` as before.
+        up to :data:`_RATE_LIMIT_MAX_RETRIES` times.  An HTTP 403 means
+        Cloudflare rejected the clearance: with FlareSolverr configured it
+        is solved again and the request retried once.  Any other failure
+        returns ``None`` and is counted in ``failed_requests``.
         """
         if _krapi_circuit.is_open():
             logger.debug("kr-api circuit open — skipping %s", url)
+            self.failed_requests += 1
             return None
-        for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+        rate_limit_retries = 0
+        solved_again = False
+        while True:
             _krapi_throttle.wait()
             try:
                 if method == "GET":
@@ -1129,23 +1174,36 @@ class KRuokaScraper:
                 return resp.json()
             except requests.HTTPError as exc:
                 status = getattr(exc.response, "status_code", None)
-                if status == 429 and attempt < _RATE_LIMIT_MAX_RETRIES:
-                    backoff = _retry_after_seconds(exc.response, attempt)
+                if status == 429 and rate_limit_retries < _RATE_LIMIT_MAX_RETRIES:
+                    backoff = _retry_after_seconds(exc.response, rate_limit_retries)
+                    rate_limit_retries += 1
                     logger.warning(
                         "HTTP 429 for %s — backing off %.1fs (retry %d/%d)",
-                        url, backoff, attempt + 1, _RATE_LIMIT_MAX_RETRIES,
+                        url, backoff, rate_limit_retries, _RATE_LIMIT_MAX_RETRIES,
                     )
                     _krapi_throttle.penalize(backoff)
                     continue
-                if status == 429:
+                if (
+                    status == 403
+                    and not solved_again
+                    and os.environ.get("FLARESOLVERR_URL")
+                ):
+                    solved_again = True
+                    logger.warning(
+                        "HTTP 403 for %s — Cloudflare clearance rejected, "
+                        "solving again", url,
+                    )
+                    self._session = _refresh_krapi_session(self._session)
+                    continue
+                if status in (403, 429):
                     _krapi_circuit.record_failure()
                 logger.error("HTTP error %s for %s: %s", status, url, exc)
             except requests.RequestException as exc:
                 logger.error("Request failed for %s: %s", url, exc)
             except ValueError as exc:
                 logger.error("Failed to decode JSON from %s: %s", url, exc)
+            self.failed_requests += 1
             return None
-        return None
 
     def _post_json(self, url: str, payload: Optional[dict]) -> Optional[dict]:
         """Perform a POST request and return parsed JSON, or ``None`` on failure."""

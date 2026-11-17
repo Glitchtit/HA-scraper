@@ -13,6 +13,15 @@ def _skip_storage_wait():
 
 
 @pytest.fixture(autouse=True)
+def _fresh_registered_stores():
+    """Stores are named in Storage once per process; start each test clean."""
+    import addon.main as main_mod
+
+    with patch.object(main_mod, "_registered_stores", set()):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _fresh_krapi_throttle():
     """Give each test a fresh zero-interval kr-api throttle.
 

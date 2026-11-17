@@ -182,6 +182,37 @@ class TestHandleSearch:
         assert result["products"][0]["name"] == "Maito 1L"
         assert result["products"][0]["ean"] == "6411234000001"
 
+    def test_search_falls_through_to_second_store(self, ingress_mod: ModuleType) -> None:
+        """With several stores configured, hits from a later store are
+        returned when the first store has none."""
+        asked: list[str] = []
+
+        def post(url, json=None, timeout=None):
+            store_id = json["variables"]["storeId"]
+            asked.append(store_id)
+            results = [] if store_id == "K532" else [{
+                "__typename": "Product",
+                "ean": "6410405082657",
+                "localizedName": {"finnish": "Pirkka kevytmaito 1l"},
+            }]
+            resp = mock.MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {"data": {"productAndAssortmentSearchV2": {
+                "results": results, "totalHits": len(results),
+            }}}
+            return resp
+
+        session = mock.MagicMock()
+        session.post.side_effect = post
+
+        with mock.patch.object(ingress_mod, "_read_options", return_value={"store_id": "K532,N110"}):
+            with mock.patch("scraper.scraper._make_graphql_session", return_value=session):
+                result = ingress_mod._handle_search({"query": "kevytmaito"})
+
+        assert asked == ["K532", "N110"]
+        assert result["success"] is True
+        assert [p["ean"] for p in result["products"]] == ["6410405082657"]
+
     def test_search_exception(self, ingress_mod: ModuleType) -> None:
         with mock.patch.object(ingress_mod, "_read_options", return_value={}):
             with mock.patch(

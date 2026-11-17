@@ -6,12 +6,13 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 from addon.main import (
     main, parse_args, sync_product, _parse_store_ids,
     _sync_availability, _register_stores,
 )
-from scraper.scraper import Product
+from scraper.scraper import KRuokaScraper as RealScraper, Product
 from scraper.storage_client import StorageAPIError, StorageClient
 
 
@@ -894,7 +895,7 @@ class TestMultiStoreUpdateFallback:
 
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
-            {"id": 1, "name": "Old Milk"},
+            {"id": 1, "name": "Unknown product (123)"},
         ]
         storage_instance.get_all_barcodes.return_value = [
             {"product_id": 1, "barcode": "123"},
@@ -931,8 +932,8 @@ class TestMultiStoreUpdateFallback:
 
 
 class TestUpdateSearXNGConfidence:
-    """SearXNG fallback names are low-confidence: they may fill placeholder
-    names but must never overwrite an existing real product name."""
+    """Fallback names (SearXNG, S-kaupat) may fill placeholder names but
+    must never overwrite an existing real product name."""
 
     def _args(self):
         return Namespace(
@@ -1012,10 +1013,10 @@ class TestUpdateSearXNGConfidence:
     @patch("addon.main.skaupat_lookup")
     @patch("addon.main.StorageClient")
     @patch("addon.main.KRuokaScraper")
-    def test_skaupat_still_overwrites_real_name(
+    def test_skaupat_does_not_overwrite_real_name(
         self, MockScraper, MockStorage, mock_skaupat, mock_searxng,
     ):
-        """Real store hits (S-kaupat) keep full overwrite rights."""
+        """A real store hit (S-kaupat) does not replace a real name either."""
         from addon.main import _update_products
         from scraper.skaupat_client import SKaupatProduct
 
@@ -1034,8 +1035,61 @@ class TestUpdateSearXNGConfidence:
         rc = _update_products(self._args())
         assert rc == 0
         mock_searxng.assert_not_called()
-        _, kwargs = storage_instance.update_product.call_args
-        assert kwargs["name"] == "Fresh S-kaupat name"
+        for call in storage_instance.update_product.call_args_list:
+            assert "name" not in call.kwargs
+
+
+class TestUpdateRenamesOnlyPlaceholders:
+    """Update never undoes a rename made in Storage, by hand or by the
+    optimizer: only placeholder names are replaced."""
+
+    def _update(self, MockScraper, MockStorage, current_name):
+        from addon.main import _update_products
+
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = [
+            {"id": 1, "name": current_name},
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": "123"},
+        ]
+
+        def make_scraper(**kwargs):
+            s = MagicMock()
+            s.store_id = kwargs.get("store_id", "")
+            s.search.return_value = iter(
+                [Product(name="Sprite Zero 6x0,33l", ean="123")]
+            )
+            s.check_store_availability.return_value = []
+            return s
+
+        MockScraper.side_effect = make_scraper
+        rc = _update_products(Namespace(
+            store="K532",
+            storage_url="https://storage.example.com",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+        ))
+        assert rc == 0
+        return storage_instance
+
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_real_name_is_kept(self, MockScraper, MockStorage, mock_skaupat):
+        storage = self._update(MockScraper, MockStorage, "Sprite Zero 0,33l")
+        for call in storage.update_product.call_args_list:
+            assert "name" not in call.kwargs
+
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_placeholder_name_is_replaced(self, MockScraper, MockStorage, mock_skaupat):
+        storage = self._update(MockScraper, MockStorage, "Unknown product (123)")
+        storage.update_product.assert_called_once()
+        _, kwargs = storage.update_product.call_args
+        assert kwargs["name"] == "Sprite Zero 6x0,33l"
 
 
 class TestUpdateTrafficReduction:
@@ -1181,6 +1235,177 @@ class TestUpdateTrafficReduction:
         assert not any(s.search.called for s in krapi_scrapers)
 
 
+def _krapi_response(status: int, payload: dict | None = None) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.headers = {}
+    if status >= 400:
+        resp.raise_for_status.side_effect = requests.HTTPError(
+            f"{status} Client Error", response=resp
+        )
+    else:
+        resp.raise_for_status.return_value = None
+        resp.json.return_value = payload
+    return resp
+
+
+class TestPriceRotation:
+    """The price budget goes to products kr-api can price, and a product
+    counts as refreshed only once kr-api has answered for it."""
+
+    def _args(self):
+        return Namespace(
+            store="K532",
+            storage_url="https://storage.example.com",
+            use_graphql=True,
+            upload_images=False,
+            max_products=None,
+        )
+
+    def _graphql_scraper(self, **kwargs):
+        s = MagicMock()
+        s.store_id = kwargs.get("store_id", "")
+        s.search.side_effect = lambda q, max_products=None: iter(
+            [Product(name="X", ean=q)]
+        )
+        s.check_store_availability.return_value = []
+        return s
+
+    def _krapi_scraper(self, session):
+        """A real kr-api scraper on a fake session, so failures take the
+        real path through _request_json."""
+        return RealScraper(
+            store_id="K532", session=session, request_delay=0, use_graphql=False
+        )
+
+    def _products(self, storage_instance, ids=(1,)):
+        storage_instance.get_all_products.return_value = [
+            {"id": i, "name": f"Product {i}", "unit_price": None} for i in ids
+        ]
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": i, "barcode": str(i) * 3} for i in ids
+        ]
+
+    @patch.dict("os.environ", {
+        "FLARESOLVERR_URL": "http://fs:8191", "KRAPI_PRICE_BUDGET": "3",
+    })
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_products_without_barcodes_take_no_budget(
+        self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
+    ):
+        from addon.main import _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        storage_instance = MockStorage.return_value
+        storage_instance.get_all_products.return_value = (
+            [{"id": i, "name": f"Concept {i}", "unit_price": None} for i in (1, 2, 3)]
+            + [{"id": i, "name": f"Real {i}", "unit_price": None} for i in (4, 5)]
+        )
+        storage_instance.get_all_barcodes.return_value = [
+            {"product_id": 4, "barcode": "444"},
+            {"product_id": 5, "barcode": "555"},
+        ]
+
+        priced: list[str] = []
+
+        def make_scraper(**kwargs):
+            s = self._graphql_scraper(**kwargs)
+            if not kwargs.get("use_graphql", True):
+                def search(q, max_products=None):
+                    priced.append(q)
+                    return iter([Product(name="X", ean=q, price=2.0)])
+                s.search.side_effect = search
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        assert _update_products(self._args()) == 0
+        assert sorted(priced) == ["444", "555"]
+
+    @pytest.mark.parametrize("failure", ["429", "403", "breaker open"])
+    @patch("addon.main._make_price_scrapers")
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_failed_lookup_leaves_product_unstamped(
+        self, MockScraper, MockStorage, mock_skaupat, mock_price_scrapers,
+        failure, tmp_path, monkeypatch,
+    ):
+        import scraper.scraper as scraper_mod
+        from addon.main import _load_price_state, _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
+        monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
+        self._products(MockStorage.return_value)
+        MockScraper.side_effect = self._graphql_scraper
+
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        if failure == "breaker open":
+            for _ in range(3):
+                scraper_mod._krapi_circuit.record_failure()
+        else:
+            session.post.return_value = _krapi_response(int(failure))
+        mock_price_scrapers.return_value = [self._krapi_scraper(session)]
+
+        assert _update_products(self._args()) == 0
+        assert _load_price_state() == {}
+
+    @patch("addon.main._make_price_scrapers")
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_definite_no_price_is_stamped(
+        self, MockScraper, MockStorage, mock_skaupat, mock_price_scrapers,
+        tmp_path, monkeypatch,
+    ):
+        from addon.main import _load_price_state, _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        self._products(MockStorage.return_value)
+        MockScraper.side_effect = self._graphql_scraper
+
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.post.return_value = _krapi_response(200, {"result": []})
+        mock_price_scrapers.return_value = [self._krapi_scraper(session)]
+
+        assert _update_products(self._args()) == 0
+        assert list(_load_price_state()) == ["1"]
+
+    @patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs:8191"})
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_state_is_saved_after_each_stamped_product(
+        self, MockScraper, MockStorage, mock_skaupat, tmp_path, monkeypatch,
+    ):
+        from addon.main import _load_price_state, _update_products
+
+        monkeypatch.setenv("SCRAPER_STATE_DIR", str(tmp_path))
+        storage_instance = MockStorage.return_value
+        self._products(storage_instance, ids=(1, 2))
+        # The run dies while writing the second product.
+        storage_instance.update_product.side_effect = [None, RuntimeError("killed")]
+
+        def make_scraper(**kwargs):
+            s = self._graphql_scraper(**kwargs)
+            if not kwargs.get("use_graphql", True):
+                s.search.side_effect = lambda q, max_products=None: iter(
+                    [Product(name="X", ean=q, price=2.0)]
+                )
+            return s
+
+        MockScraper.side_effect = make_scraper
+
+        with pytest.raises(RuntimeError):
+            _update_products(self._args())
+        assert list(_load_price_state()) == ["1"]
+
+
 class TestUpdatePrices:
     """Prices are fetched via the kr-api backend and written as unit_price."""
 
@@ -1253,7 +1478,7 @@ class TestUpdatePrices:
 
         storage_instance = MockStorage.return_value
         storage_instance.get_all_products.return_value = [
-            {"id": 1, "name": "Old Milk", "unit_price": None},
+            {"id": 1, "name": "Unknown product (123)", "unit_price": None},
         ]
         storage_instance.get_all_barcodes.return_value = [
             {"product_id": 1, "barcode": "123"},
@@ -1368,12 +1593,32 @@ class TestRegisterStores:
         _register_stores(storage, ["N110"], [s1, s2])
         storage.upsert_store.assert_called_once_with("N110", "K-Citymarket Kupittaa")
 
-    def test_fallback_to_raw_id(self):
-        from unittest.mock import MagicMock
-
+    def test_unresolved_name_is_not_written(self):
+        """A failed name lookup must not overwrite the name Storage has."""
         storage = MagicMock()
+        s = MagicMock()
+        s.fetch_store_name.return_value = None
+        _register_stores(storage, ["N110"], [s])
         _register_stores(storage, ["N110"], [])
-        storage.upsert_store.assert_called_once_with("N110", "N110")
+        storage.upsert_store.assert_not_called()
+
+    def test_registered_once_per_process(self):
+        storage = MagicMock()
+        s = MagicMock()
+        s.fetch_store_name.return_value = "K-Citymarket Kupittaa"
+        _register_stores(storage, ["N110"], [s])
+        _register_stores(storage, ["N110"], [s])
+        storage.upsert_store.assert_called_once_with("N110", "K-Citymarket Kupittaa")
+        s.fetch_store_name.assert_called_once_with("N110")
+
+    def test_failed_lookup_is_retried_on_the_next_operation(self):
+        storage = MagicMock()
+        s = MagicMock()
+        s.fetch_store_name.side_effect = [None, "K-Citymarket Kupittaa"]
+        _register_stores(storage, ["N110"], [s])
+        storage.upsert_store.assert_not_called()
+        _register_stores(storage, ["N110"], [s])
+        storage.upsert_store.assert_called_once_with("N110", "K-Citymarket Kupittaa")
 
     def test_errors_never_raise(self):
         from unittest.mock import MagicMock
@@ -1381,10 +1626,62 @@ class TestRegisterStores:
 
         storage = MagicMock()
         storage.upsert_store.side_effect = StorageAPIError("down")
-        s = MagicMock()
-        s.fetch_store_name.side_effect = RuntimeError("cf")
-        _register_stores(storage, ["N110", "K532"], [s])  # must not raise
+        bad = MagicMock()
+        bad.fetch_store_name.side_effect = RuntimeError("cf")
+        good = MagicMock()
+        good.fetch_store_name.return_value = "K-Citymarket Kupittaa"
+        _register_stores(storage, ["N110", "K532"], [bad, good])  # must not raise
         assert storage.upsert_store.call_count == 2
+
+
+class TestScanWhileKrApiFails:
+    """kr-api refusing every request during one barcode scan: the store keeps
+    the name Storage has and the scan still succeeds, without a price."""
+
+    @patch("addon.main._make_price_scrapers")
+    @patch("addon.main.skaupat_lookup", return_value=None)
+    @patch("addon.main.StorageClient")
+    @patch("addon.main.KRuokaScraper")
+    def test_scan_succeeds_and_store_name_is_untouched(
+        self, MockScraper, MockStorage, mock_skaupat, mock_price_scrapers,
+        monkeypatch,
+    ):
+        from addon.main import _discover_single_barcode
+
+        monkeypatch.delenv("FLARESOLVERR_URL", raising=False)
+        monkeypatch.setattr("scraper.scraper.time.sleep", lambda s: None)
+        ean = "6410405082657"
+        graphql = MockScraper.return_value
+        graphql.search.return_value = iter(
+            [Product(name="Pirkka kevytmaito 1l", ean=ean)]
+        )
+        graphql.check_store_availability.return_value = []
+
+        session = MagicMock(spec=requests.Session)
+        session.headers = {}
+        session.get.return_value = _krapi_response(403)
+        session.post.return_value = _krapi_response(403)
+        mock_price_scrapers.return_value = [RealScraper(
+            store_id="N110", session=session, request_delay=0, use_graphql=False,
+        )]
+
+        storage = MockStorage.return_value
+        storage.get_product_by_barcode.side_effect = [
+            None,  # already-known check
+            None,  # sync_product check
+            {"id": 99, "name": "Pirkka kevytmaito 1l"},  # post-creation lookup
+        ]
+        storage.create_product.return_value = 99
+
+        result = _discover_single_barcode(Namespace(
+            storage_url="https://storage.example.com", store="N110",
+            use_graphql=True, location_id=None, quantity_unit_id=None,
+            upload_images=False,
+        ), ean)
+
+        assert result["success"] is True
+        assert result["product_id"] == 99
+        storage.upsert_store.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

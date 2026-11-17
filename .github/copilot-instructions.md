@@ -5,7 +5,7 @@
 ```bash
 pip install -r requirements.txt pytest voluptuous
 
-# Run all tests (390 collected, all expected to pass)
+# Run all tests (414 collected, all expected to pass)
 python -m pytest tests/ -v
 
 # Run a single test file
@@ -52,16 +52,16 @@ No linter or formatter is configured.
 - **GraphQL** (default): `mobile.k-ruoka.fi/graphql`. No Cloudflare bypass. Hard limit of `offset ≤ 1000`. No prices. Used for name/image lookups and per-store availability sweeps.
 - **kr-api REST** (fallback): `www.k-ruoka.fi/kr-api`. Requires Cloudflare bypass (FlareSolverr via the `flaresolverr_url` option → `FLARESOLVERR_URL`, or `CF_CLEARANCE` + `CF_USER_AGENT`). The only source of prices and friendly store names; price scrapers are skipped when no bypass is configured.
 
-`store_id` may be comma-separated; stores are tried in order. EAN lookups fall back K-Ruoka → S-kaupat → SearXNG (only if `searxng_url` is set). In `--update`, SearXNG names are low-confidence and only replace placeholder names.
+`store_id` may be comma-separated; stores are tried in order. EAN lookups fall back K-Ruoka → S-kaupat → SearXNG (only if `searxng_url` is set). `--update` only replaces placeholder names (`Unknown product (…)`, bare barcodes); a real name is never overwritten, whatever the source.
 
 ### kr-api rate limiting
 
 kr-api rate-limits aggressively, so (see `scraper.py` and `_update_products` in `main.py`):
 
 - Global jittered pacing across all scrapers: `KRAPI_MIN_INTERVAL` (default 2 s, 0.7–1.5× jitter). 429s retry up to 3 times with Retry-After/exponential backoff capped at 120 s.
-- Circuit breaker: after 3 consecutive requests exhaust their retries, all kr-api traffic pauses for `KRAPI_CIRCUIT_COOLDOWN` (default 900 s); GraphQL lookups continue.
-- Price budget: `--update` refreshes at most `KRAPI_PRICE_BUDGET` (default 200) prices per run, oldest first, skipping ones refreshed within `KRAPI_PRICE_TTL_DAYS` (default 3). State in `/data/price_refresh.json`.
-- The FlareSolverr clearance is cached in `/data/cf_clearance.json` for `CF_CLEARANCE_TTL` (default 1500 s). Both state files honour `SCRAPER_STATE_DIR`.
+- Circuit breaker: after 3 consecutive refused requests (429 retries exhausted, or a 403 that a fresh clearance did not fix), all kr-api traffic pauses for `KRAPI_CIRCUIT_COOLDOWN` (default 900 s); GraphQL lookups continue.
+- Price budget: `--update` refreshes at most `KRAPI_PRICE_BUDGET` (default 200) prices per run, oldest first, skipping ones refreshed within `KRAPI_PRICE_TTL_DAYS` (default 3). Only products with a barcode are selected, and a product counts as refreshed only once kr-api answered (`KRuokaScraper.failed_requests` tells "no result" from "no answer"). State in `/data/price_refresh.json`, saved after each product.
+- The FlareSolverr clearance is cached in memory and in `/data/cf_clearance.json` for `CF_CLEARANCE_TTL` (default 1500 s). A 403 drops it, solves again and retries the request once. Both state files honour `SCRAPER_STATE_DIR`.
 
 ### Duplicated files
 
