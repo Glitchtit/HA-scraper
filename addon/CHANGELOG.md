@@ -1,3 +1,6 @@
+## 2.7.1
+- Update no longer gives a single product the price of its multi-pack. When Storage has folded a six-pack into the single can, Update looks the product up by the single barcode first, and a price found only for the pack is divided by the number of items in it, the store prices included. The pack's description is not copied onto the single product
+
 ## 2.7.0
 - The add-on runs Update by itself once a night, at 03:00 by default. Set the new `update_hour` option to another hour (0–23), or to -1 to turn it off. It never runs twice in one day, skips the night when no stores are set or Storage does not answer, and you can still press Update any time
 - Searches, barcode scans and adding products keep working while an Update or queue Discover runs, instead of being refused until it finishes. Starting a second Update or queue Discover still waits its turn
