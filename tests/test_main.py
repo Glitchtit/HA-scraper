@@ -996,6 +996,92 @@ class TestUpdatePrices:
         assert "unit_price" not in kwargs
 
 
+class TestUpdatePackBarcodes:
+    """A pack barcode Storage folded into the single product (pack_size N)
+    must not put the pack's price on one item."""
+
+    PACK, SINGLE = "5000112000001", "6408430000001"
+
+    def _run(self, barcodes, single_found=True):
+        from main import _update_products
+
+        storage = MagicMock()
+        storage.get_all_products.return_value = [
+            {"id": 1, "name": "Coca-Cola 0,33l", "unit_price": 1.20,
+             "description": "Yksi tölkki"},
+        ]
+        storage.get_all_barcodes.return_value = barcodes
+        searched: list[str] = []
+
+        def make(**kw):
+            s = MagicMock()
+            s.store_id = kw.get("store_id")
+            s.failed_requests = 0
+            priced = kw.get("use_graphql", True) is False
+
+            def search(q, max_products=10):
+                searched.append(q)
+                if q == self.PACK:
+                    return iter([Product(name="Coca-Cola 6x0,33l", ean=q,
+                                         description="Kuusi tölkkiä",
+                                         price=6.48 if priced else None)])
+                if q == self.SINGLE and single_found:
+                    return iter([Product(name="Coca-Cola 0,33l", ean=q,
+                                         price=1.29 if priced else None)])
+                return iter([])
+            s.search.side_effect = search
+            s.check_store_availability.return_value = []
+            return s
+
+        with patch.dict("os.environ", {"FLARESOLVERR_URL": "http://fs"}), \
+             patch("scraper.lookup.skaupat_lookup", return_value=None), \
+             patch("main.StorageClient", return_value=storage), \
+             patch("main.KRuokaScraper", side_effect=make), \
+             patch("main._collect_availability", return_value=[]) as collect, \
+             patch("main._save_price_state"), \
+             patch("main._load_price_state", return_value={}):
+            rc = _update_products(Namespace(
+                store="K532", storage_url="x", upload_images=False))
+        assert rc == 0
+        return storage, collect
+
+    def test_single_barcode_preferred_over_pack(self):
+        storage, collect = self._run([
+            {"product_id": 1, "barcode": self.PACK, "pack_size": 6},
+            {"product_id": 1, "barcode": self.SINGLE, "pack_size": 1},
+        ])
+        _, kwargs = storage.update_product.call_args
+        assert kwargs["unit_price"] == 1.29
+        assert collect.call_args.args[0] == self.SINGLE
+
+    def test_pack_price_divided_when_only_pack_found(self):
+        storage, collect = self._run([
+            {"product_id": 1, "barcode": self.PACK, "pack_size": 6},
+            {"product_id": 1, "barcode": self.SINGLE, "pack_size": None},
+        ], single_found=False)
+        _, kwargs = storage.update_product.call_args
+        assert kwargs["unit_price"] == pytest.approx(1.08)
+        assert "description" not in kwargs
+
+    def test_pack_availability_prices_are_per_item(self):
+        from main import _update_products
+
+        storage = MagicMock()
+        storage.get_all_products.return_value = [{"id": 1, "name": "x"}]
+        storage.get_all_barcodes.return_value = [
+            {"product_id": 1, "barcode": self.PACK, "pack_size": 6},
+        ]
+        entries = [{"store_id": "K532", "available": True, "price": 6.0}]
+        with patch("main.StorageClient", return_value=storage), \
+             patch("main.KRuokaScraper"), \
+             patch("main.resolve_ean", return_value=None), \
+             patch("main._collect_availability", return_value=entries), \
+             patch("main.write_availability") as write:
+            _update_products(Namespace(
+                store="K532", storage_url="x", upload_images=False))
+        assert write.call_args.args[2][0]["price"] == 1.0
+
+
 class TestAvailabilitySweep:
     def test_writes_merged_entries(self):
         from unittest.mock import MagicMock

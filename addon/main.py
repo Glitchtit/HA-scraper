@@ -552,13 +552,21 @@ def _update_products(args: argparse.Namespace) -> int:
         logger.error("Failed to fetch barcodes from Storage: %s", exc)
         return 1
 
-    # Build product_id → list of EANs mapping.
+    # Build product_id → list of EANs mapping.  Storage folds a multi-pack
+    # into its single product and marks the pack's barcode with pack_size N:
+    # single-item barcodes are tried first, and a pack's prices are divided
+    # by N, so one can is not priced as the six-pack.
     pid_to_eans: dict[int, list[str]] = {}
+    ean_pack: dict[str, float] = {}
     for entry in barcodes:
         pid = entry.get("product_id")
         ean = entry.get("barcode")
         if pid is not None and ean:
             pid_to_eans.setdefault(int(pid), []).append(str(ean))
+            pack = entry.get("pack_size")
+            ean_pack[str(ean)] = pack if isinstance(pack, (int, float)) and pack > 0 else 1
+    for eans in pid_to_eans.values():
+        eans.sort(key=lambda e: ean_pack[e] != 1)
 
     if not products:
         logger.info("No products in Storage – nothing to update.")
@@ -623,6 +631,10 @@ def _update_products(args: argparse.Namespace) -> int:
         avail_entries: list[dict] = []
         if avail_ean:
             avail_entries = _collect_availability(avail_ean, avail_scrapers)
+            if ean_pack.get(avail_ean, 1) != 1:
+                for entry in avail_entries:
+                    if entry.get("price") is not None:
+                        entry["price"] = entry["price"] / ean_pack[avail_ean]
             write_availability(storage, pid, avail_entries)
 
         if found is None:
@@ -641,20 +653,26 @@ def _update_products(args: argparse.Namespace) -> int:
         # in Storage, by hand or by its optimizer, and must not be undone.
         if found.name and found.name != current_name and _is_placeholder_name(current_name):
             update_fields["name"] = found.name
-        if found.description and found.description != storage_product.get("description"):
+        pack = ean_pack.get(matched_ean, 1)
+        # A pack's description describes the pack, not the single product.
+        if (pack == 1 and found.description
+                and found.description != storage_product.get("description")):
             update_fields["description"] = found.description
 
         # Refresh the K-Ruoka price (kr-api only).  Reuse the price already
         # attached to *found* when it came from the kr-api backend, then the
         # availability sweep entries collected above, and only fall back to
         # a fresh _lookup_price query if neither yielded a price.
-        price = found.price
+        # The availability entries are already per item.
+        price = found.price / pack if found.price is not None else None
         if price is None:
             price = _price_from_entries(avail_entries)
         price_answered = True
         if price is None and price_scrapers and pid in price_refresh_ids:
             failed_before = [s.failed_requests for s in price_scrapers]
             price = _lookup_price(price_scrapers, matched_ean)
+            if price is not None:
+                price = price / pack
             # No price and a failed request (rate limit, 403, breaker open)
             # is no answer: leave the product for the next run.
             price_answered = price is not None or failed_before == [
