@@ -361,15 +361,48 @@ class TestGraphqlSearch:
 
         assert len(products) == 2
 
-    def test_multi_word_query_sends_first_word_to_api(self):
-        """Multi-word queries send only the first word to the upstream API."""
+    def test_multi_word_query_sends_whole_query_to_api(self):
+        """Multi-word queries send the whole query to the upstream API first."""
         items = [_gql_product("Lotus Soft Embo 8 rll wc-paperi", "1")]
         session = _make_mock_session([_gql_page(items, total=1)])
         scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
         list(scraper.search("lotus paperi"))
 
-        sent_query = session.post.call_args[1]["json"]["variables"]["query"]
-        assert sent_query == "lotus"
+        sent_query = (
+            session.post.call_args_list[0][1]["json"]["variables"]["query"]
+        )
+        assert sent_query == "lotus paperi"
+
+    def test_multi_word_query_skips_first_word_when_whole_query_matches(self):
+        """When the whole-query pass matches, no first-word search is sent."""
+        items = [_gql_product("Lotus Soft Embo 8 rll wc-paperi", "1")]
+        session = _make_mock_session([_gql_page(items, total=1)])
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("lotus paperi"))
+
+        assert [p.name for p in products] == ["Lotus Soft Embo 8 rll wc-paperi"]
+        sent_queries = [
+            call[1]["json"]["variables"]["query"]
+            for call in session.post.call_args_list
+        ]
+        assert "lotus" not in sent_queries
+
+    def test_multi_word_query_falls_back_to_first_word(self):
+        """When the whole-query pass finds nothing, the first word is sent."""
+        pages = [
+            _gql_page([_gql_product("Kahvi 500g", "9")], total=1),
+            _gql_page([_gql_product("Lotus Soft Embo 8 rll wc-paperi", "1")], total=1),
+        ]
+        session = _make_mock_session(pages)
+        scraper = KRuokaScraper(store_id="N110", session=session, request_delay=0)
+        products = list(scraper.search("lotus paperi"))
+
+        assert [p.name for p in products] == ["Lotus Soft Embo 8 rll wc-paperi"]
+        sent_queries = [
+            call[1]["json"]["variables"]["query"]
+            for call in session.post.call_args_list
+        ]
+        assert sent_queries == ["lotus paperi", "lotus"]
 
     def test_single_word_query_sends_full_query_to_api(self):
         """Single-word queries send the full query string to the API."""
