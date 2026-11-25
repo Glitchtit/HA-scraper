@@ -1,3 +1,6 @@
+## 2.7.2
+- Searching for a product by brand and name, such as "pirkka tryffelijuusto", finds it again. The whole search is sent to K-Ruoka first, and only when that finds nothing does the add-on search for the first word and filter the rest itself
+
 ## 2.7.1
 - Update no longer gives a single product the price of its multi-pack. When Storage has folded a six-pack into the single can, Update looks the product up by the single barcode first, and a price found only for the pack is divided by the number of items in it, the store prices included. The pack's description is not copied onto the single product
 

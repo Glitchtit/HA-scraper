@@ -596,9 +596,11 @@ class KRuokaScraper:
         Words can appear in any order and need not be contiguous, so
         ``"lotus paperi"`` matches ``"Lotus Soft Embo 8 rll wc-paperi"``.
 
-        For multi-word queries the *first* word is sent to the upstream API
-        (the API may not match non-contiguous words) and the remaining words
-        are matched client-side.
+        For multi-word queries the *whole* query is sent to the upstream API
+        first, and only when that finds nothing is the *first* word sent as a
+        fallback — the API caps a search at 1,100 results, so a first-word
+        search misses products of big brands like Pirkka.  Results of either
+        pass are matched client-side for all query words.
 
         Uses the GraphQL backend by default (``use_graphql=True``).  Each page
         returns up to 100 results; the server stops serving results at
@@ -623,29 +625,37 @@ class KRuokaScraper:
 
         words = query.lower().split()
 
-        # For multi-word queries, send only the first word to the upstream API
-        # so that the result set is broad enough for client-side filtering to
-        # match products where the query words appear non-contiguously
-        # (e.g. "lotus paperi" → API query "lotus", then filter for "paperi").
+        # For multi-word queries, send the whole query to the upstream API
+        # first, and only when that finds nothing fall back to the first word
+        # so that client-side filtering can match products where the query
+        # words appear non-contiguously (e.g. "lotus paperi" → API query
+        # "lotus", then filter for "paperi").  The API caps a search at
+        # 1,100 results, so sending only the first word misses products of
+        # big brands like Pirkka.
         is_multi = len(words) > 1
-        api_query = words[0] if is_multi else query
+        api_queries = [query, words[0]] if is_multi else [query]
         # Don't cap API results for multi-word queries — the client-side
         # filter will discard many rows, so we need a larger pool.
         api_limit = None if is_multi else max_products
 
-        if self._use_graphql:
-            results = self._paginate_graphql(query=api_query, max_products=api_limit)
-        else:
-            results = self._paginate_search(api_query, api_limit)
+        for api_query in api_queries:
+            if self._use_graphql:
+                results = self._paginate_graphql(
+                    query=api_query, max_products=api_limit
+                )
+            else:
+                results = self._paginate_search(api_query, api_limit)
 
-        yielded = 0
-        for product in results:
-            name_lower = product.name.lower()
-            if all(w in name_lower for w in words):
-                yield product
-                yielded += 1
-                if max_products is not None and yielded >= max_products:
-                    return
+            yielded = 0
+            for product in results:
+                name_lower = product.name.lower()
+                if all(w in name_lower for w in words):
+                    yield product
+                    yielded += 1
+                    if max_products is not None and yielded >= max_products:
+                        return
+            if yielded:
+                break
 
     def check_store_availability(self, ean: str) -> list[StoreAvailability]:
         """Check every configured store for *ean* (assortment sweep).
